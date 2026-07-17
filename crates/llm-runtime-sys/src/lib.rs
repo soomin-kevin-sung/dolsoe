@@ -1,5 +1,8 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("llm-runtime-sys supports only 64-bit targets");
+
 use std::ffi::{c_char, c_void};
 
 pub const ABI_MAJOR: u32 = 1;
@@ -41,7 +44,6 @@ impl Default for Error {
 }
 
 #[repr(C)]
-#[derive(Default)]
 pub struct AbiQuery {
     pub struct_size: u32,
     pub flags: u32,
@@ -50,8 +52,19 @@ pub struct AbiQuery {
     pub reserved: [u64; 8],
 }
 
+impl Default for AbiQuery {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            flags: 0,
+            requested_major: ABI_MAJOR,
+            requested_minor: ABI_MINOR,
+            reserved: [0; 8],
+        }
+    }
+}
+
 #[repr(C)]
-#[derive(Default)]
 pub struct AbiInfo {
     pub struct_size: u32,
     pub flags: u32,
@@ -61,6 +74,21 @@ pub struct AbiInfo {
     pub min_supported_minor: u32,
     pub feature_flags: u64,
     pub reserved: [u64; 8],
+}
+
+impl Default for AbiInfo {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            flags: 0,
+            abi_major: 0,
+            abi_minor: 0,
+            min_supported_major: 0,
+            min_supported_minor: 0,
+            feature_flags: 0,
+            reserved: [0; 8],
+        }
+    }
 }
 
 pub type EventCallback = unsafe extern "C" fn(event: *const Event, user_data: *mut c_void);
@@ -105,7 +133,6 @@ impl Default for CallbackTable {
 }
 
 #[repr(C)]
-#[derive(Default)]
 pub struct RuntimeCreateParams {
     pub struct_size: u32,
     pub flags: u32,
@@ -113,8 +140,18 @@ pub struct RuntimeCreateParams {
     pub reserved: [u64; 8],
 }
 
+impl Default for RuntimeCreateParams {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            flags: 0,
+            callbacks: CallbackTable::default(),
+            reserved: [0; 8],
+        }
+    }
+}
+
 #[repr(C)]
-#[derive(Default)]
 pub struct Capabilities {
     pub struct_size: u32,
     pub flags: u32,
@@ -125,6 +162,22 @@ pub struct Capabilities {
     pub supports_cancellation: u32,
     pub max_parallel_slots: u32,
     pub reserved: [u64; 8],
+}
+
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            flags: 0,
+            supports_cpu: 0,
+            supports_cuda: 0,
+            supports_vulkan: 0,
+            supports_streaming: 0,
+            supports_cancellation: 0,
+            max_parallel_slots: 0,
+            reserved: [0; 8],
+        }
+    }
 }
 
 #[repr(C)]
@@ -209,7 +262,14 @@ pub struct Api {
 impl Api {
     /// # Safety
     ///
-    /// The library at `path` must implement the declared LLW ABI for all loaded symbols.
+    /// The library at `path` must implement the declared LLW ABI for all loaded symbols. Loading
+    /// may run library initializers, and dropping this `Api` may run library finalizers; both must
+    /// be safe to execute in the current process.
+    ///
+    /// Function pointers exposed by this type are copyable, so `Api` cannot enforce their
+    /// lifetimes. Before dropping the owning `Api`, callers must destroy every runtime created by
+    /// it and stop using copied function pointers, runtime-owned static strings, runtime handles,
+    /// and callback or user-data relationships associated with the library.
     pub unsafe fn load(path: &std::path::Path) -> Result<Self, libloading::Error> {
         let library = unsafe { libloading::Library::new(path)? };
         let get_abi_info = unsafe { *library.get::<GetAbiInfoFn>(b"llw_get_abi_info\0")? };
@@ -240,9 +300,186 @@ impl Api {
 mod tests {
     use super::*;
 
+    macro_rules! assert_layout {
+        ($ty:ty, $size:expr) => {
+            assert_eq!(std::mem::size_of::<$ty>(), $size);
+            assert_eq!(std::mem::align_of::<$ty>(), 8);
+        };
+    }
+
+    macro_rules! assert_offset {
+        ($ty:ty, $field:ident, $offset:expr) => {
+            assert_eq!(std::mem::offset_of!($ty, $field), $offset);
+        };
+    }
+
     #[test]
     fn ffi_layout_starts_with_struct_size() {
         assert_eq!(std::mem::offset_of!(AbiInfo, struct_size), 0);
         assert_eq!(std::mem::size_of::<Handle>(), 8);
+    }
+
+    #[test]
+    fn abi_query_default_initializes_header_and_requested_version() {
+        let query = AbiQuery::default();
+
+        assert_eq!(query.struct_size, std::mem::size_of::<AbiQuery>() as u32);
+        assert_eq!(query.flags, 0);
+        assert_eq!(query.requested_major, ABI_MAJOR);
+        assert_eq!(query.requested_minor, ABI_MINOR);
+        assert_eq!(query.reserved, [0; 8]);
+    }
+
+    #[test]
+    fn abi_info_default_initializes_header_and_zeroes_fields() {
+        let info = AbiInfo::default();
+
+        assert_eq!(info.struct_size, std::mem::size_of::<AbiInfo>() as u32);
+        assert_eq!(info.flags, 0);
+        assert_eq!(info.abi_major, 0);
+        assert_eq!(info.abi_minor, 0);
+        assert_eq!(info.min_supported_major, 0);
+        assert_eq!(info.min_supported_minor, 0);
+        assert_eq!(info.feature_flags, 0);
+        assert_eq!(info.reserved, [0; 8]);
+    }
+
+    #[test]
+    fn runtime_create_params_default_initializes_nested_callback_table() {
+        let params = RuntimeCreateParams::default();
+
+        assert_eq!(
+            params.struct_size,
+            std::mem::size_of::<RuntimeCreateParams>() as u32
+        );
+        assert_eq!(params.flags, 0);
+        assert_eq!(
+            params.callbacks.struct_size,
+            std::mem::size_of::<CallbackTable>() as u32
+        );
+        assert_eq!(params.callbacks.flags, 0);
+        assert!(params.callbacks.on_event.is_none());
+        assert!(params.callbacks.user_data.is_null());
+        assert_eq!(params.callbacks.reserved, [0; 8]);
+        assert_eq!(params.reserved, [0; 8]);
+    }
+
+    #[test]
+    fn capabilities_default_initializes_header_and_zeroes_fields() {
+        let capabilities = Capabilities::default();
+
+        assert_eq!(
+            capabilities.struct_size,
+            std::mem::size_of::<Capabilities>() as u32
+        );
+        assert_eq!(capabilities.flags, 0);
+        assert_eq!(capabilities.supports_cpu, 0);
+        assert_eq!(capabilities.supports_cuda, 0);
+        assert_eq!(capabilities.supports_vulkan, 0);
+        assert_eq!(capabilities.supports_streaming, 0);
+        assert_eq!(capabilities.supports_cancellation, 0);
+        assert_eq!(capabilities.max_parallel_slots, 0);
+        assert_eq!(capabilities.reserved, [0; 8]);
+    }
+
+    #[test]
+    fn ffi_struct_layouts_match_x64_c_contract() {
+        assert_layout!(Error, 592);
+        assert_offset!(Error, struct_size, 0);
+        assert_offset!(Error, code, 4);
+        assert_offset!(Error, flags, 8);
+        assert_offset!(Error, message, 12);
+        assert_offset!(Error, reserved, 528);
+
+        assert_layout!(AbiQuery, 80);
+        assert_offset!(AbiQuery, struct_size, 0);
+        assert_offset!(AbiQuery, flags, 4);
+        assert_offset!(AbiQuery, requested_major, 8);
+        assert_offset!(AbiQuery, requested_minor, 12);
+        assert_offset!(AbiQuery, reserved, 16);
+
+        assert_layout!(AbiInfo, 96);
+        assert_offset!(AbiInfo, struct_size, 0);
+        assert_offset!(AbiInfo, flags, 4);
+        assert_offset!(AbiInfo, abi_major, 8);
+        assert_offset!(AbiInfo, abi_minor, 12);
+        assert_offset!(AbiInfo, min_supported_major, 16);
+        assert_offset!(AbiInfo, min_supported_minor, 20);
+        assert_offset!(AbiInfo, feature_flags, 24);
+        assert_offset!(AbiInfo, reserved, 32);
+
+        assert_layout!(Capabilities, 96);
+        assert_offset!(Capabilities, struct_size, 0);
+        assert_offset!(Capabilities, flags, 4);
+        assert_offset!(Capabilities, supports_cpu, 8);
+        assert_offset!(Capabilities, supports_cuda, 12);
+        assert_offset!(Capabilities, supports_vulkan, 16);
+        assert_offset!(Capabilities, supports_streaming, 20);
+        assert_offset!(Capabilities, supports_cancellation, 24);
+        assert_offset!(Capabilities, max_parallel_slots, 28);
+        assert_offset!(Capabilities, reserved, 32);
+
+        assert_layout!(DeviceInfo, 336);
+        assert_offset!(DeviceInfo, struct_size, 0);
+        assert_offset!(DeviceInfo, flags, 4);
+        assert_offset!(DeviceInfo, backend, 8);
+        assert_offset!(DeviceInfo, device_index, 12);
+        assert_offset!(DeviceInfo, id, 16);
+        assert_offset!(DeviceInfo, name, 80);
+        assert_offset!(DeviceInfo, vendor, 208);
+        assert_offset!(DeviceInfo, reserved, 272);
+
+        assert_layout!(DeviceList, 104);
+        assert_offset!(DeviceList, struct_size, 0);
+        assert_offset!(DeviceList, flags, 4);
+        assert_offset!(DeviceList, capacity, 8);
+        assert_offset!(DeviceList, count, 12);
+        assert_offset!(DeviceList, element_size, 16);
+        assert_offset!(DeviceList, reserved0, 20);
+        assert_offset!(DeviceList, devices, 24);
+        assert_offset!(DeviceList, required_count, 32);
+        assert_offset!(DeviceList, reserved, 40);
+
+        assert_layout!(Event, 136);
+        assert_offset!(Event, struct_size, 0);
+        assert_offset!(Event, flags, 4);
+        assert_offset!(Event, event_type, 8);
+        assert_offset!(Event, error_code, 12);
+        assert_offset!(Event, model_handle, 16);
+        assert_offset!(Event, request_handle, 24);
+        assert_offset!(Event, slot_id, 32);
+        assert_offset!(Event, reserved0, 36);
+        assert_offset!(Event, sequence_number, 40);
+        assert_offset!(Event, data, 48);
+        assert_offset!(Event, data_len, 56);
+        assert_offset!(Event, request_user_data, 64);
+        assert_offset!(Event, reserved, 72);
+
+        assert_layout!(CallbackTable, 88);
+        assert_offset!(CallbackTable, struct_size, 0);
+        assert_offset!(CallbackTable, flags, 4);
+        assert_offset!(CallbackTable, on_event, 8);
+        assert_offset!(CallbackTable, user_data, 16);
+        assert_offset!(CallbackTable, reserved, 24);
+
+        assert_layout!(RuntimeCreateParams, 160);
+        assert_offset!(RuntimeCreateParams, struct_size, 0);
+        assert_offset!(RuntimeCreateParams, flags, 4);
+        assert_offset!(RuntimeCreateParams, callbacks, 8);
+        assert_offset!(RuntimeCreateParams, reserved, 96);
+    }
+
+    #[test]
+    fn ffi_function_pointers_use_x64_pointer_representation() {
+        assert_eq!(std::mem::size_of::<EventCallback>(), 8);
+        assert_eq!(std::mem::size_of::<Option<EventCallback>>(), 8);
+        assert_eq!(std::mem::size_of::<GetAbiInfoFn>(), 8);
+        assert_eq!(std::mem::size_of::<RuntimeVersionFn>(), 8);
+        assert_eq!(std::mem::size_of::<LlamaCommitFn>(), 8);
+        assert_eq!(std::mem::size_of::<RuntimeCreateFn>(), 8);
+        assert_eq!(std::mem::size_of::<RuntimeDestroyFn>(), 8);
+        assert_eq!(std::mem::size_of::<RuntimeGetCapabilitiesFn>(), 8);
+        assert_eq!(std::mem::size_of::<RuntimeListDevicesFn>(), 8);
+        assert_eq!(std::mem::size_of::<*mut Runtime>(), 8);
     }
 }
