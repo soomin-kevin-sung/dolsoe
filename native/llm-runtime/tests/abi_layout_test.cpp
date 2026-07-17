@@ -107,5 +107,43 @@ int main() {
     llw_abi_info_t info{};
     info.struct_size = sizeof(info);
     assert(info.struct_size >= sizeof(std::uint32_t));
+
+    llw_abi_query_t query{};
+    query.struct_size = sizeof(query);
+    query.requested_major = LLW_ABI_MAJOR;
+    query.requested_minor = LLW_ABI_MINOR;
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    assert(llw_get_abi_info(&query, &info, &error) == LLW_OK);
+    assert(info.abi_major == LLW_ABI_MAJOR);
+    assert(info.abi_minor == LLW_ABI_MINOR);
+
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    llw_runtime_t* runtime = nullptr;
+    assert(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
+    assert(runtime != nullptr);
+
+    llw_capabilities_t capabilities{};
+    capabilities.struct_size = sizeof(capabilities);
+    assert(llw_runtime_get_capabilities(runtime, &capabilities, &error) == LLW_OK);
+    assert(capabilities.supports_cpu == 1u);
+    assert(capabilities.max_parallel_slots == 4u);
+
+    llw_device_list_t devices{};
+    devices.struct_size = sizeof(devices);
+    assert(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) == LLW_ERR_BUFFER_TOO_SMALL);
+    assert(devices.required_count == 1u);
+
+    llw_device_info_t storage[1]{};
+    storage[0].struct_size = sizeof(llw_device_info_t);
+    devices.capacity = 1u;
+    devices.devices = storage;
+    devices.element_size = sizeof(llw_device_info_t);
+    assert(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) == LLW_OK);
+    assert(devices.count == 1u);
+    assert(storage[0].backend == LLW_BACKEND_CPU);
+
+    llw_runtime_destroy(runtime);
     return 0;
 }
