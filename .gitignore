@@ -4,6 +4,7 @@ Thumbs.db
 .vscode/
 .idea/
 .superpowers/
+.worktrees/
 
 # Environment files
 .env
