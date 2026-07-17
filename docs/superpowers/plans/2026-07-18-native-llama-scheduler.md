@@ -703,6 +703,9 @@ Create `native/llm-runtime/tests/scheduler_test.cpp`:
 
 ```cpp
 #include "event_dispatcher.h"
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
@@ -715,7 +718,14 @@ struct Received {
     std::vector<uint8_t> data;
     std::thread::id thread;
 };
-struct Collector { std::mutex mutex; std::vector<Received> events; };
+struct Collector {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::vector<Received> events;
+    bool block{};
+    bool entered{};
+    bool release{};
+};
 
 void LLW_CALL collect(const llw_event_t* event, void* user_data) {
     auto& collector = *static_cast<Collector*>(user_data);
@@ -724,8 +734,13 @@ void LLW_CALL collect(const llw_event_t* event, void* user_data) {
     received.thread = std::this_thread::get_id();
     if (event->data && event->data_len)
         received.data.assign(event->data, event->data + event->data_len);
-    std::lock_guard lock(collector.mutex);
+    std::unique_lock lock(collector.mutex);
     collector.events.push_back(std::move(received));
+    if (collector.block) {
+        collector.entered = true;
+        collector.changed.notify_all();
+        collector.changed.wait(lock, [&collector] { return collector.release; });
+    }
 }
 
 int main() {
@@ -751,12 +766,36 @@ int main() {
     second.data = {'{', '}'};
     if (!dispatcher.publish(std::move(second))) return 1;
     dispatcher.drain_for_test();
-    std::lock_guard lock(collector.mutex);
-    if (collector.events.size() != 2) return 1;
-    if (collector.events[0].sequence != 41 || collector.events[1].sequence != 42) return 1;
-    if (collector.events[0].data != std::vector<uint8_t>({0xf0, 0x9f, 0x92, 0xa1})) return 1;
-    if (collector.events[0].thread == test_thread || collector.events[1].thread != collector.events[0].thread)
-        return 1;
+    {
+        std::lock_guard lock(collector.mutex);
+        if (collector.events.size() != 2) return 1;
+        if (collector.events[0].sequence != 41 || collector.events[1].sequence != 42) return 1;
+        if (collector.events[0].data != std::vector<uint8_t>({0xf0, 0x9f, 0x92, 0xa1})) return 1;
+        if (collector.events[0].thread == test_thread ||
+            collector.events[1].thread != collector.events[0].thread) return 1;
+        collector.block = true;
+    }
+    OwnedEvent slow;
+    slow.type = LLW_EVENT_LOG;
+    slow.data_format = LLW_EVENT_DATA_UTF8;
+    slow.data = {'s', 'l', 'o', 'w'};
+    if (!dispatcher.publish(std::move(slow))) return 1;
+    {
+        std::unique_lock lock(collector.mutex);
+        if (!collector.changed.wait_for(lock, std::chrono::seconds(5),
+                                        [&collector] { return collector.entered; })) return 1;
+    }
+    std::atomic<bool> flushed{false};
+    std::thread flusher([&] { dispatcher.flush(); flushed.store(true); });
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const bool returned_early = flushed.load();
+    {
+        std::lock_guard lock(collector.mutex);
+        collector.release = true;
+    }
+    collector.changed.notify_all();
+    flusher.join();
+    if (returned_early || !flushed.load()) return 1;
     return 0;
 }
 ```
@@ -780,6 +819,8 @@ Create `native/llm-runtime/src/event_dispatcher.h`:
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -803,9 +844,14 @@ public:
     EventDispatcher(const EventDispatcher&) = delete;
     EventDispatcher& operator=(const EventDispatcher&) = delete;
     bool publish(OwnedEvent event);
+    void flush();
     void stop();
     void drain_for_test();
 private:
+    struct DispatchItem {
+        OwnedEvent event;
+        std::shared_ptr<std::promise<void>> barrier;
+    };
     void run();
     llw_callback_table_t callbacks_{};
     const size_t capacity_;
@@ -813,9 +859,10 @@ private:
     std::condition_variable readable_;
     std::condition_variable writable_;
     std::condition_variable drained_;
-    std::deque<OwnedEvent> queue_;
+    std::deque<DispatchItem> queue_;
     bool stopping_{};
     size_t in_callback_{};
+    std::thread::id callback_thread_{};
     std::thread thread_;
 };
 ```
@@ -850,9 +897,24 @@ bool EventDispatcher::publish(OwnedEvent event) {
     std::unique_lock lock(mutex_);
     writable_.wait(lock, [this] { return stopping_ || queue_.size() < capacity_; });
     if (stopping_) return false;
-    queue_.push_back(std::move(event));
+    queue_.push_back(DispatchItem{std::move(event), {}});
     readable_.notify_one();
     return true;
+}
+
+void EventDispatcher::flush() {
+    auto barrier = std::make_shared<std::promise<void>>();
+    std::future<void> completed = barrier->get_future();
+    {
+        std::unique_lock lock(mutex_);
+        if (std::this_thread::get_id() == callback_thread_)
+            throw std::logic_error("event dispatcher flush is not callback-reentrant");
+        writable_.wait(lock, [this] { return stopping_ || queue_.size() < capacity_; });
+        if (stopping_) throw std::runtime_error("event dispatcher is stopping");
+        queue_.push_back(DispatchItem{{}, std::move(barrier)});
+        readable_.notify_one();
+    }
+    completed.get();
 }
 
 void EventDispatcher::stop() {
@@ -874,17 +936,26 @@ void EventDispatcher::drain_for_test() {
 }
 
 void EventDispatcher::run() {
+    {
+        std::lock_guard lock(mutex_);
+        callback_thread_ = std::this_thread::get_id();
+    }
     for (;;) {
-        OwnedEvent owned;
+        DispatchItem item;
         {
             std::unique_lock lock(mutex_);
             readable_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
             if (queue_.empty() && stopping_) break;
-            owned = std::move(queue_.front());
+            item = std::move(queue_.front());
             queue_.pop_front();
-            ++in_callback_;
+            if (!item.barrier) ++in_callback_;
             writable_.notify_one();
         }
+        if (item.barrier) {
+            item.barrier->set_value();
+            continue;
+        }
+        OwnedEvent& owned = item.event;
         if (callbacks_.on_event) {
             llw_event_t event{};
             event.struct_size = sizeof(event);
@@ -910,6 +981,11 @@ void EventDispatcher::run() {
     if (queue_.empty() && in_callback_ == 0) drained_.notify_all();
 }
 ```
+
+`flush()` is a production FIFO barrier: completion means every event published before the barrier
+has returned from `on_event`. Runtime lifecycle code calls it only after scheduler and engine
+shutdown. Calling it from `on_event` violates the ABI callback non-reentrancy rule; the explicit
+callback-thread guard throws instead of deadlocking.
 
 - [ ] **Step 4: Run the focused test**
 
@@ -3352,6 +3428,7 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_unload(
         scheduler->cancel_all_and_wait();
         scheduler.reset();
         engine.reset();
+        runtime->dispatcher->flush();
         return LLW_OK;
     });
 }
@@ -3479,14 +3556,14 @@ fn loader_names_each_required_export_once() {
 Add these tests to `crates/llm-runtime/src/lib.rs`'s existing test module after Task 8 Step 3 adds `CallbackState`:
 
 ```rust
-fn callback_state(capacity: usize, max_outstanding: usize) -> (CallbackState, EventStream) {
+fn callback_state(capacity: usize, max_outstanding: usize)
+    -> (CallbackState, Receiver<RuntimeEvent>, Receiver<u64>) {
     let (regular_sender, regular) = crossbeam_channel::bounded(capacity);
-    let (terminal_sender, terminal) = crossbeam_channel::bounded(max_outstanding);
-    (CallbackState { regular_sender, terminal_sender,
-        registry: Mutex::new(RequestRegistry::default()), max_outstanding,
-        invariant_violations: AtomicUsize::new(0), test_hook: None },
-     EventStream { regular, terminal, deferred_terminal: Arc::new(Mutex::new(None)),
-         receive_lock: Arc::new(Mutex::new(())) })
+    let (cancel_sender, cancel_receiver) = crossbeam_channel::bounded(max_outstanding);
+    (CallbackState { regular_sender, registry: Mutex::new(RequestRegistry::default()),
+        cancel_sender: Mutex::new(Some(cancel_sender)), max_outstanding,
+        invariant_violations: Arc::new(AtomicUsize::new(0)), test_hook: None },
+     regular, cancel_receiver)
 }
 
 fn raw_event(event_type: i32, request: u64, sequence: u64, data: &[u8]) -> sys::Event {
@@ -3504,7 +3581,7 @@ fn invoke(state: &CallbackState, event: &sys::Event) {
 
 #[test]
 fn callback_copies_stack_backed_payload_before_return() {
-    let (state, events) = callback_state(4, 2);
+    let (state, events, _cancellations) = callback_state(4, 2);
     let mut payload = [0xf0, 0x9f, 0x92, 0xa1];
     let event = raw_event(sys::EVENT_TOKEN, 2, 2, &payload);
     invoke(&state, &event);
@@ -3515,7 +3592,7 @@ fn callback_copies_stack_backed_payload_before_return() {
 
 #[test]
 fn callback_contains_panics_from_test_consumer() {
-    let (mut state, _events) = callback_state(1, 1);
+    let (mut state, _events, _cancellations) = callback_state(1, 1);
     state.test_hook = Some(Arc::new(|_| panic!("test panic")));
     let event = raw_event(sys::EVENT_DONE, 2, 3, &[]);
     let escaped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
@@ -3526,65 +3603,95 @@ fn callback_contains_panics_from_test_consumer() {
 
 #[test]
 fn terminal_before_registration_is_atomic_and_removed() {
-    let (state, events) = callback_state(2, 2);
+    let (state, _events, _cancellations) = callback_state(2, 2);
     invoke(&state, &raw_event(sys::EVENT_DONE, 7, 2, &[]));
-    let terminal = Arc::new(AtomicBool::new(false));
-    state.register(7, &terminal);
-    assert!(terminal.load(Ordering::Acquire));
-    assert_eq!(events.recv_timeout(Duration::from_secs(1)).unwrap().request_handle, 7);
+    let request_state = Arc::new(RequestState::default());
+    let (terminal_sender, terminal) = crossbeam_channel::bounded(1);
+    state.register(7, terminal_sender, request_state.clone());
+    assert!(request_state.native_done.load(Ordering::Acquire));
+    assert_eq!(terminal.recv_timeout(Duration::from_secs(1)).unwrap().request_handle, 7);
     let registry = state.registry.lock().unwrap();
-    assert!(registry.requests.is_empty() && registry.terminal_before_registration.is_empty());
+    assert!(registry.entries.is_empty());
 }
 
 #[test]
-fn overflow_emits_one_error_and_bounds_all_storage() {
-    let (state, events) = callback_state(1, 2);
+fn overflow_worker_cancels_and_native_terminal_cleans_without_duplicate() {
+    let (state, events, cancellations) = callback_state(1, 2);
     assert_eq!(state.regular_sender.capacity(), Some(1));
-    assert_eq!(state.terminal_sender.capacity(), Some(2));
-    let terminal = Arc::new(AtomicBool::new(false));
-    state.register(9, &terminal);
+    assert_eq!(cancellations.capacity(), Some(2));
+    let request_state = Arc::new(RequestState::default());
+    let (terminal_sender, terminal) = crossbeam_channel::bounded(1);
+    state.register(9, terminal_sender, request_state.clone());
+    let (cancelled_sender, cancelled) = crossbeam_channel::bounded(1);
+    let worker = std::thread::spawn(move || run_cancellation_worker(cancellations,
+        move |handle| { let _ = cancelled_sender.try_send(handle); }));
     invoke(&state, &raw_event(sys::EVENT_QUEUED, 9, 1, &[]));
     invoke(&state, &raw_event(sys::EVENT_TOKEN, 9, 2, b"a"));
     invoke(&state, &raw_event(sys::EVENT_TOKEN, 9, 3, b"b"));
-    assert!(terminal.load(Ordering::Acquire));
+    assert!(request_state.delivery_failed.load(Ordering::Acquire));
+    assert!(!request_state.native_done.load(Ordering::Acquire));
+    assert!(request_state.native_cancel_requested.load(Ordering::Acquire));
     let first = events.recv_timeout(Duration::from_secs(1)).unwrap();
-    let overflow = events.recv_timeout(Duration::from_secs(1)).unwrap();
+    let overflow = terminal.recv_timeout(Duration::from_secs(1)).unwrap();
     assert_eq!(first.kind, EventKind::Queued);
     assert_eq!(overflow.kind, EventKind::Error);
     assert!(String::from_utf8_lossy(&overflow.payload).contains("rustEventOverflow"));
+    assert_eq!(cancelled.recv_timeout(Duration::from_secs(1)).unwrap(), 9);
     invoke(&state, &raw_event(sys::EVENT_DONE, 9, 4, &[]));
-    assert!(events.recv_timeout(Duration::from_millis(20)).is_err());
+    assert!(request_state.native_done.load(Ordering::Acquire));
+    assert!(terminal.recv_timeout(Duration::from_millis(20)).is_err());
     let registry = state.registry.lock().unwrap();
-    assert!(registry.requests.is_empty() && registry.terminal_before_registration.is_empty() &&
-            registry.overflowed.is_empty());
+    assert!(registry.entries.is_empty());
+    drop(registry);
+    state.close_cancel_queue();
+    worker.join().unwrap();
     assert_eq!(state.invariant_violations.load(Ordering::Relaxed), 0);
 }
 
 #[test]
-fn abandoned_receivers_never_block_callback_shutdown() {
-    let (state, events) = callback_state(1, 1);
-    drop(events);
-    invoke(&state, &raw_event(sys::EVENT_TOKEN, 1, 1, b"x"));
+fn abandoned_terminal_receiver_never_blocks_or_retains_registry() {
+    let (state, _events, _cancellations) = callback_state(1, 1);
+    let request_state = Arc::new(RequestState::default());
+    let (terminal_sender, terminal) = crossbeam_channel::bounded(1);
+    state.register(1, terminal_sender, request_state);
+    drop(terminal);
     invoke(&state, &raw_event(sys::EVENT_DONE, 1, 2, &[]));
-    let registry = state.registry.lock().unwrap();
-    assert!(registry.requests.len() <= 1);
-    assert!(registry.terminal_before_registration.len() <= 1);
-    assert!(registry.overflowed.len() <= 1);
+    assert!(state.registry.lock().unwrap().entries.is_empty());
 }
 
 #[test]
-fn high_volume_registry_state_returns_to_zero() {
-    let (state, events) = callback_state(2, 4);
-    for handle in 1..=1000 {
+fn abandoned_regular_receiver_reports_overflow_and_queues_cancel() {
+    let (state, events, cancellations) = callback_state(1, 1);
+    drop(events);
+    let request_state = Arc::new(RequestState::default());
+    let (terminal_sender, terminal) = crossbeam_channel::bounded(1);
+    state.register(4, terminal_sender, request_state.clone());
+    invoke(&state, &raw_event(sys::EVENT_TOKEN, 4, 2, b"lost"));
+    let overflow = terminal.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(overflow.kind, EventKind::Error);
+    assert!(request_state.delivery_failed.load(Ordering::Acquire));
+    assert!(!request_state.native_done.load(Ordering::Acquire));
+    assert_eq!(cancellations.recv_timeout(Duration::from_secs(1)).unwrap(), 4);
+    invoke(&state, &raw_event(sys::EVENT_CANCELLED, 4, 3, &[]));
+    assert!(request_state.native_done.load(Ordering::Acquire));
+    assert!(state.registry.lock().unwrap().entries.is_empty());
+}
+
+#[test]
+fn sequential_terminals_exceed_max_without_shared_queue_loss() {
+    let (state, _events, _cancellations) = callback_state(2, 4);
+    let mut terminals = Vec::new();
+    for handle in 1..=100 {
+        let request_state = Arc::new(RequestState::default());
+        let (terminal_sender, terminal) = crossbeam_channel::bounded(1);
+        state.register(handle, terminal_sender, request_state.clone());
         invoke(&state, &raw_event(sys::EVENT_DONE, handle, 1, &[]));
-        let terminal = Arc::new(AtomicBool::new(false));
-        state.register(handle, &terminal);
-        assert!(terminal.load(Ordering::Acquire));
-        assert_eq!(events.recv_timeout(Duration::from_secs(1)).unwrap().request_handle, handle);
-        let registry = state.registry.lock().unwrap();
-        assert!(registry.requests.is_empty());
-        assert!(registry.terminal_before_registration.is_empty());
-        assert!(registry.overflowed.len() <= state.max_outstanding);
+        assert!(request_state.native_done.load(Ordering::Acquire));
+        assert!(state.registry.lock().unwrap().entries.is_empty());
+        terminals.push((handle, terminal));
+    }
+    for (handle, terminal) in terminals {
+        assert_eq!(terminal.recv_timeout(Duration::from_secs(1)).unwrap().request_handle, handle);
     }
     assert_eq!(state.invariant_violations.load(Ordering::Relaxed), 0);
 }
@@ -3706,11 +3813,11 @@ thiserror.workspace = true
 Add these imports and complete owned type definitions to `crates/llm-runtime/src/lib.rs` after the existing probe types:
 
 ```rust
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, Weak};
-use std::time::{Duration, Instant};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 
@@ -3801,108 +3908,196 @@ impl RuntimeEvent {
     fn terminal(&self) -> bool {
         matches!(self.kind, EventKind::Done | EventKind::Cancelled | EventKind::Error)
     }
+    fn overflow_error(dropped: &Self) -> Self {
+        Self { kind: EventKind::Error, data_format: sys::EVENT_DATA_JSON_UTF8,
+            error_code: sys::ERR_INTERNAL, model_handle: dropped.model_handle,
+            request_handle: dropped.request_handle, slot_id: dropped.slot_id,
+            sequence_number: dropped.sequence_number,
+            request_user_data: dropped.request_user_data,
+            payload: br#"{"state":"error","reason":"rustEventOverflow"}"#.to_vec() }
+    }
+    fn invariant_error(handle: u64) -> Self {
+        Self { kind: EventKind::Error, data_format: sys::EVENT_DATA_JSON_UTF8,
+            error_code: sys::ERR_INTERNAL, model_handle: 0, request_handle: handle,
+            slot_id: u32::MAX, sequence_number: 0, request_user_data: 0,
+            payload: br#"{"state":"error","reason":"requestRegistryInvariant"}"#.to_vec() }
+    }
 }
 
 #[derive(Default)]
-struct RequestRegistry {
-    requests: HashMap<u64, Weak<AtomicBool>>,
-    terminal_before_registration: HashSet<u64>,
-    overflowed: HashSet<u64>,
+struct RequestState {
+    native_done: AtomicBool,
+    delivery_failed: AtomicBool,
+    native_cancel_requested: AtomicBool,
 }
+
+enum TerminalRoute {
+    Unregistered,
+    Sender(Sender<RuntimeEvent>),
+    Early(RuntimeEvent),
+    Delivered,
+}
+
+struct RegistryEntry {
+    route: TerminalRoute,
+    state: Option<Arc<RequestState>>,
+    native_done: bool,
+    delivery_failed: bool,
+    cancel_queued: bool,
+}
+impl Default for RegistryEntry {
+    fn default() -> Self {
+        Self { route: TerminalRoute::Unregistered, state: None, native_done: false,
+            delivery_failed: false, cancel_queued: false }
+    }
+}
+
+#[derive(Default)]
+struct RequestRegistry { entries: HashMap<u64, RegistryEntry> }
 
 struct CallbackState {
     regular_sender: Sender<RuntimeEvent>,
-    terminal_sender: Sender<RuntimeEvent>,
     registry: Mutex<RequestRegistry>,
+    cancel_sender: Mutex<Option<Sender<u64>>>,
     max_outstanding: usize,
-    invariant_violations: AtomicUsize,
+    invariant_violations: Arc<AtomicUsize>,
     test_hook: Option<Arc<dyn Fn(&RuntimeEvent) + Send + Sync>>,
 }
 
 impl CallbackState {
-    fn mark_terminal_locked(&self, registry: &mut RequestRegistry, handle: u64) {
-        if let Some(weak) = registry.requests.remove(&handle) {
-            if let Some(terminal) = weak.upgrade() {
-                terminal.store(true, Ordering::Release);
+    fn send_or_store(&self, route: &mut TerminalRoute, event: RuntimeEvent) -> bool {
+        match std::mem::replace(route, TerminalRoute::Delivered) {
+            TerminalRoute::Sender(sender) => {
+                if matches!(sender.try_send(event), Err(TrySendError::Full(_))) {
+                    self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+                }
+                true
             }
-            return;
-        }
-        if registry.terminal_before_registration.len() < self.max_outstanding {
-            registry.terminal_before_registration.insert(handle);
-        } else {
-            self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+            TerminalRoute::Unregistered => {
+                *route = TerminalRoute::Early(event);
+                false
+            }
+            TerminalRoute::Early(existing) => {
+                *route = TerminalRoute::Early(existing);
+                false
+            }
+            TerminalRoute::Delivered => true,
         }
     }
 
-    fn register(&self, handle: u64, terminal: &Arc<AtomicBool>) {
+    fn register(&self, handle: u64, sender: Sender<RuntimeEvent>, state: Arc<RequestState>) {
         let mut registry = self.registry.lock().expect("request registry poisoned");
-        if registry.terminal_before_registration.remove(&handle) {
-            terminal.store(true, Ordering::Release);
-            return;
-        }
-        if registry.requests.len() >= self.max_outstanding {
+        if !registry.entries.contains_key(&handle) && registry.entries.len() >= self.max_outstanding {
             self.invariant_violations.fetch_add(1, Ordering::Relaxed);
-            terminal.store(true, Ordering::Release);
+            state.native_done.store(true, Ordering::Release);
+            let _ = sender.try_send(RuntimeEvent::invariant_error(handle));
             return;
         }
-        registry.requests.insert(handle, Arc::downgrade(terminal));
+        let entry = registry.entries.entry(handle).or_default();
+        entry.state = Some(state.clone());
+        state.native_done.store(entry.native_done, Ordering::Release);
+        state.delivery_failed.store(entry.delivery_failed, Ordering::Release);
+        state.native_cancel_requested.store(entry.cancel_queued, Ordering::Release);
+        match std::mem::replace(&mut entry.route, TerminalRoute::Sender(sender)) {
+            TerminalRoute::Early(event) => {
+                if let TerminalRoute::Sender(sender) =
+                    std::mem::replace(&mut entry.route, TerminalRoute::Delivered) {
+                    let _ = sender.try_send(event);
+                }
+            }
+            TerminalRoute::Unregistered => {}
+            TerminalRoute::Sender(existing) => {
+                entry.route = TerminalRoute::Sender(existing);
+                self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+            }
+            TerminalRoute::Delivered => entry.route = TerminalRoute::Delivered,
+        }
+        if entry.native_done {
+            registry.entries.remove(&handle);
+        }
+    }
+
+    fn native_terminal(&self, event: RuntimeEvent) {
+        let handle = event.request_handle;
+        let mut registry = self.registry.lock().expect("request registry poisoned");
+        if !registry.entries.contains_key(&handle) && registry.entries.len() >= self.max_outstanding {
+            self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        let entry = registry.entries.entry(handle).or_default();
+        entry.native_done = true;
+        if let Some(state) = &entry.state {
+            state.native_done.store(true, Ordering::Release);
+        }
+        if !entry.delivery_failed {
+            self.send_or_store(&mut entry.route, event);
+        }
+        if entry.state.is_some() {
+            registry.entries.remove(&handle);
+        }
+    }
+
+    fn overflow(&self, dropped: RuntimeEvent) {
+        let handle = dropped.request_handle;
+        let mut queue_cancel = false;
+        {
+            let mut registry = self.registry.lock().expect("request registry poisoned");
+            if !registry.entries.contains_key(&handle) &&
+                registry.entries.len() >= self.max_outstanding {
+                self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            let entry = registry.entries.entry(handle).or_default();
+            if entry.delivery_failed { return; }
+            entry.delivery_failed = true;
+            if let Some(state) = &entry.state {
+                state.delivery_failed.store(true, Ordering::Release);
+            }
+            let overflow = RuntimeEvent::overflow_error(&dropped);
+            self.send_or_store(&mut entry.route, overflow);
+            if !entry.cancel_queued {
+                entry.cancel_queued = true;
+                queue_cancel = match &entry.state {
+                    Some(state) =>
+                        !state.native_cancel_requested.swap(true, Ordering::AcqRel),
+                    None => true,
+                };
+            }
+        }
+        if queue_cancel {
+            let sender = self.cancel_sender.lock().expect("cancel sender poisoned").clone();
+            match sender.map(|sender| sender.try_send(handle)) {
+                Some(Ok(())) => {}
+                Some(Err(TrySendError::Full(_))) | Some(Err(TrySendError::Disconnected(_))) |
+                None => {
+                    self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
     }
 
     fn deliver(&self, event: RuntimeEvent) {
-        let request = event.request_handle;
-        let terminal = event.terminal();
-        let mut suppress_native_terminal = false;
-        if request != 0 {
-            let mut registry = self.registry.lock().expect("request registry poisoned");
-            if terminal {
-                suppress_native_terminal = registry.overflowed.remove(&request);
-                if !suppress_native_terminal {
-                    self.mark_terminal_locked(&mut registry, request);
-                }
-            } else if registry.overflowed.contains(&request) {
-                return;
-            }
-        }
-        if suppress_native_terminal { return; }
-        if terminal {
-            if self.terminal_sender.try_send(event).is_err() {
-                self.invariant_violations.fetch_add(1, Ordering::Relaxed);
-            }
+        if event.terminal() && event.request_handle != 0 {
+            self.native_terminal(event);
             return;
         }
+        if event.request_handle != 0 {
+            let registry = self.registry.lock().expect("request registry poisoned");
+            if registry.entries.get(&event.request_handle)
+                .is_some_and(|entry| entry.delivery_failed) { return; }
+        }
         match self.regular_sender.try_send(event) {
-            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
-            Err(TrySendError::Full(dropped)) if dropped.request_handle != 0 => {
-                let mut registry = self.registry.lock().expect("request registry poisoned");
-                if !registry.overflowed.contains(&dropped.request_handle) &&
-                    registry.overflowed.len() >= self.max_outstanding {
-                    self.invariant_violations.fetch_add(1, Ordering::Relaxed);
-                    self.mark_terminal_locked(&mut registry, dropped.request_handle);
-                    return;
-                }
-                if registry.overflowed.insert(dropped.request_handle) {
-                    self.mark_terminal_locked(&mut registry, dropped.request_handle);
-                    drop(registry);
-                    let overflow = RuntimeEvent {
-                        kind: EventKind::Error,
-                        data_format: sys::EVENT_DATA_JSON_UTF8,
-                        error_code: sys::ERR_INTERNAL,
-                        model_handle: dropped.model_handle,
-                        request_handle: dropped.request_handle,
-                        slot_id: dropped.slot_id,
-                        sequence_number: dropped.sequence_number,
-                        request_user_data: dropped.request_user_data,
-                        payload: br#"{"state":"error","reason":"rustEventOverflow"}"#.to_vec(),
-                    };
-                    if self.terminal_sender.try_send(overflow).is_err() {
-                        self.invariant_violations.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
-            }
-            Err(TrySendError::Full(_)) => {
+            Ok(()) => {}
+            Err(TrySendError::Full(dropped) | TrySendError::Disconnected(dropped))
+                if dropped.request_handle != 0 => self.overflow(dropped),
+            Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {
                 self.invariant_violations.fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    fn close_cancel_queue(&self) {
+        self.cancel_sender.lock().expect("cancel sender poisoned").take();
     }
 }
 
@@ -3923,45 +4118,10 @@ unsafe extern "C" fn event_trampoline(event: *const sys::Event, user_data: *mut 
     }));
 }
 
-#[derive(Clone)]
-pub struct EventStream {
-    regular: Receiver<RuntimeEvent>,
-    terminal: Receiver<RuntimeEvent>,
-    deferred_terminal: Arc<Mutex<Option<RuntimeEvent>>>,
-    receive_lock: Arc<Mutex<()>>,
-}
-impl EventStream {
-    pub fn recv_timeout(&self, timeout: Duration) -> Result<RuntimeEvent, RecvTimeoutError> {
-        let deadline = Instant::now() + timeout;
-        self.recv_deadline(deadline)
-    }
-    pub fn recv_deadline(&self, deadline: Instant) -> Result<RuntimeEvent, RecvTimeoutError> {
-        let _receive = self.receive_lock.lock().expect("event receive lock poisoned");
-        loop {
-            match self.regular.try_recv() {
-                Ok(event) => return Ok(event),
-                Err(_) => {}
-            }
-            if let Some(event) = self.deferred_terminal.lock()
-                .expect("deferred terminal poisoned").take() { return Ok(event); }
-            if let Ok(terminal) = self.terminal.try_recv() {
-                if let Ok(regular) = self.regular.try_recv() {
-                    *self.deferred_terminal.lock().expect("deferred terminal poisoned") =
-                        Some(terminal);
-                    return Ok(regular);
-                }
-                return Ok(terminal);
-            }
-            let now = Instant::now();
-            if now >= deadline { return Err(RecvTimeoutError::Timeout); }
-            let slice = std::cmp::min(deadline - now, Duration::from_millis(1));
-            match self.regular.recv_timeout(slice) {
-                Ok(event) => return Ok(event),
-                Err(RecvTimeoutError::Disconnected) if self.terminal.is_empty() =>
-                    return Err(RecvTimeoutError::Disconnected),
-                Err(_) => {}
-            }
-        }
+fn run_cancellation_worker<F>(receiver: Receiver<u64>, mut cancel: F)
+where F: FnMut(u64) {
+    while let Ok(handle) = receiver.recv() {
+        cancel(handle);
     }
 }
 
@@ -3970,11 +4130,16 @@ struct RuntimeInner {
     runtime: *mut sys::Runtime,
     callback_state: Box<CallbackState>,
     call_lock: Mutex<()>,
+    cancel_worker: Option<std::thread::JoinHandle<()>>,
 }
 // RuntimeInner deliberately has no Send or Sync implementation. Arc ownership keeps the native
 // runtime alive through every Model and Request, and call_lock serializes calls on its owner thread.
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
+        self.callback_state.close_cancel_queue();
+        if let Some(worker) = self.cancel_worker.take() {
+            let _ = worker.join();
+        }
         let _guard = self.call_lock.lock().expect("runtime call lock poisoned");
         if !self.runtime.is_null() {
             unsafe { (self.api.runtime_destroy)(self.runtime) };
@@ -3983,7 +4148,7 @@ impl Drop for RuntimeInner {
     }
 }
 
-pub struct InferenceRuntime { inner: Arc<RuntimeInner>, events: EventStream }
+pub struct InferenceRuntime { inner: Arc<RuntimeInner>, events: Receiver<RuntimeEvent> }
 struct ModelState { runtime: Arc<RuntimeInner>, handle: u64 }
 impl Drop for ModelState {
     fn drop(&mut self) {
@@ -3993,31 +4158,53 @@ impl Drop for ModelState {
     }
 }
 pub struct Model { state: Arc<ModelState> }
-pub struct Request { model: Arc<ModelState>, handle: u64, terminal: Arc<AtomicBool> }
-impl Drop for Request {
-    fn drop(&mut self) {
-        if self.terminal.load(Ordering::Acquire) { return; }
+pub struct RequestStream {
+    model: Arc<ModelState>,
+    handle: u64,
+    state: Arc<RequestState>,
+    terminal: Receiver<RuntimeEvent>,
+}
+impl RequestStream {
+    fn request_native_cancel(&self) -> Result<(), Error> {
+        if self.state.native_done.load(Ordering::Acquire) ||
+            self.state.native_cancel_requested.swap(true, Ordering::AcqRel) { return Ok(()); }
         let _guard = self.model.runtime.call_lock.lock().expect("runtime call lock poisoned");
         let mut error = sys::Error::default();
-        unsafe { (self.model.runtime.api.request_cancel)(
-            self.model.runtime.runtime, self.handle, &mut error) };
+        check_result(unsafe { (self.model.runtime.api.request_cancel)(
+            self.model.runtime.runtime, self.handle, &mut error) }, &error)
+    }
+    pub fn handle(&self) -> u64 { self.handle }
+    pub fn terminal_receiver(&self) -> Receiver<RuntimeEvent> { self.terminal.clone() }
+    pub fn recv_terminal_timeout(&self, timeout: Duration)
+        -> Result<RuntimeEvent, RecvTimeoutError> { self.terminal.recv_timeout(timeout) }
+    pub fn delivery_failed(&self) -> bool {
+        self.state.delivery_failed.load(Ordering::Acquire)
+    }
+    pub fn cancel(&self) -> Result<(), Error> { self.request_native_cancel() }
+}
+impl Drop for RequestStream {
+    fn drop(&mut self) {
+        let _ = self.request_native_cancel();
     }
 }
 ```
 
-`RuntimeInner` declares `api` before `callback_state`, but its custom `Drop` destroys the native runtime before Rust drops callback state. `Request` holds `Arc<ModelState>`, so model unload occurs only after the `Model` and all its requests are dropped.
+`RuntimeInner` closes the cancellation queue, joins its worker, and only then destroys the native
+runtime. `RequestStream` holds `Arc<ModelState>`, so model unload occurs only after the `Model` and all
+request streams are dropped.
 
-The Rust callback queue is bounded to `event_queue_capacity`. A second reserved terminal queue is
-bounded to `slot_count + request_queue_capacity`, the maximum native outstanding requests. Regular
-events use `try_send` and never block the native dispatcher. If a request event encounters a full
-regular queue, Rust suppresses every later native event for that request, atomically marks its request
-state terminal, and enqueues exactly one synthetic `Error` with reason `rustEventOverflow` on the
-reserved path. `EventStream` serializes cloned receivers and drains already queued regular events
-before terminal events. Disconnected
-or abandoned receivers cannot hang callback or runtime shutdown because neither path performs a
-blocking send; its shared deferred-terminal slot is bounded to one event. The single
-`RequestRegistry` bounds registered, early-terminal, and overflow sets by
-the native outstanding-request limit and removes request state when terminal delivery is enqueued.
+The global Rust channel contains only nonterminal events and is bounded to `event_queue_capacity`.
+Every accepted request owns a private `bounded(1)` terminal one-shot. Under one registry mutex, a
+handle contains either its one-shot sender or one early terminal event until registration. Native
+terminal handling takes the sender, performs one nonblocking send, marks `native_done`, and removes
+the entry; an abandoned receiver cannot block or retain registry state. On regular-channel overflow,
+`delivery_failed` becomes true, exactly one synthetic `rustEventOverflow` error is sent through that
+request's one-shot, and the handle is queued once to a cancellation worker bounded by the maximum
+native outstanding request count. The callback never invokes native cancellation. The worker owns
+runtime lifetime, calls `llw_request_cancel` outside callback context, and is joined before destroy.
+The later native terminal marks `native_done` and removes internal state without a second user
+terminal. Explicit cancel and `Drop` consult `native_done` and `native_cancel_requested`, never the
+user-visible overflow terminal.
 
 - [ ] **Step 4: Implement safe load, submit, cancel, snapshot, and metrics methods**
 
@@ -4050,14 +4237,13 @@ impl InferenceRuntime {
             .expect("runtime bounds fit usize");
         let regular_capacity = usize::try_from(options.event_queue_capacity)
             .expect("runtime bounds fit usize");
-        let (regular_sender, regular) = crossbeam_channel::bounded(regular_capacity);
-        let (terminal_sender, terminal) = crossbeam_channel::bounded(max_outstanding);
-        let events = EventStream { regular, terminal,
-            deferred_terminal: Arc::new(Mutex::new(None)),
-            receive_lock: Arc::new(Mutex::new(())) };
+        let (regular_sender, events) = crossbeam_channel::bounded(regular_capacity);
+        let (cancel_sender, cancel_receiver) = crossbeam_channel::bounded(max_outstanding);
+        let invariant_violations = Arc::new(AtomicUsize::new(0));
         let mut callback_state = Box::new(CallbackState {
-            regular_sender, terminal_sender, registry: Mutex::new(RequestRegistry::default()),
-            max_outstanding, invariant_violations: AtomicUsize::new(0), test_hook: None });
+            regular_sender, registry: Mutex::new(RequestRegistry::default()),
+            cancel_sender: Mutex::new(Some(cancel_sender)), max_outstanding,
+            invariant_violations: invariant_violations.clone(), test_hook: None });
         let callbacks = sys::CallbackTable { struct_size: std::mem::size_of::<sys::CallbackTable>() as u32,
             flags: 0, on_event: Some(event_trampoline),
             user_data: (&mut *callback_state as *mut CallbackState).cast(), reserved: [0; 8] };
@@ -4073,11 +4259,24 @@ impl InferenceRuntime {
         let code = unsafe { (api.runtime_create)(&create, &mut runtime, &mut raw_error) };
         let runtime = finish_runtime_create(code, runtime, &raw_error,
             |value| unsafe { (api.runtime_destroy)(value) })?;
+        let runtime_address = runtime as usize;
+        let cancel = api.request_cancel;
+        let worker_violations = invariant_violations.clone();
+        let cancel_worker = std::thread::spawn(move || run_cancellation_worker(
+            cancel_receiver, move |handle| {
+                let runtime = runtime_address as *mut sys::Runtime;
+                let mut error = sys::Error::default();
+                let result = unsafe { cancel(runtime, handle, &mut error) };
+                if result != sys::OK && result != sys::ERR_NOT_FOUND &&
+                    result != sys::ERR_INVALID_STATE {
+                    worker_violations.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
         Ok(Self { inner: Arc::new(RuntimeInner { api, runtime, callback_state,
-            call_lock: Mutex::new(()) }), events })
+            call_lock: Mutex::new(()), cancel_worker: Some(cancel_worker) }), events })
     }
 
-    pub fn events(&self) -> EventStream { self.events.clone() }
+    pub fn events(&self) -> Receiver<RuntimeEvent> { self.events.clone() }
 
     pub fn load_model(&self, path: &Path, options: ModelOptions) -> Result<Model, Error> {
         let canonical = path.canonicalize().map_err(|error| Error::Runtime {
@@ -4123,7 +4322,7 @@ impl InferenceRuntime {
 impl Model {
     pub fn handle(&self) -> u64 { self.state.handle }
 
-    pub fn submit(&self, prompt: &[u8], options: GenerationOptions) -> Result<Request, Error> {
+    pub fn submit(&self, prompt: &[u8], options: GenerationOptions) -> Result<RequestStream, Error> {
         let stop_storage = options.stop_sequences;
         let stop_ffi: Vec<sys::Bytes> = stop_storage.iter().map(|stop| sys::Bytes {
             struct_size: std::mem::size_of::<sys::Bytes>() as u32, flags: 0,
@@ -4141,22 +4340,12 @@ impl Model {
         let _guard = self.state.runtime.call_lock.lock().expect("runtime call lock poisoned");
         let mut handle = 0;
         let mut error = sys::Error::default();
+        let state = Arc::new(RequestState::default());
+        let (terminal_sender, terminal) = crossbeam_channel::bounded(1);
         check_result(unsafe { (self.state.runtime.api.request_submit)(self.state.runtime.runtime,
             &params, &mut handle, &mut error) }, &error)?;
-        let terminal = Arc::new(AtomicBool::new(false));
-        self.state.runtime.callback_state.register(handle, &terminal);
-        Ok(Request { model: self.state.clone(), handle, terminal })
-    }
-}
-
-impl Request {
-    pub fn handle(&self) -> u64 { self.handle }
-    pub fn cancel(&self) -> Result<(), Error> {
-        if self.terminal.load(Ordering::Acquire) { return Ok(()); }
-        let _guard = self.model.runtime.call_lock.lock().expect("runtime call lock poisoned");
-        let mut error = sys::Error::default();
-        check_result(unsafe { (self.model.runtime.api.request_cancel)(self.model.runtime.runtime,
-            self.handle, &mut error) }, &error)
+        self.state.runtime.callback_state.register(handle, terminal_sender, state.clone());
+        Ok(RequestStream { model: self.state.clone(), handle, state, terminal })
     }
 }
 ```
@@ -4260,6 +4449,7 @@ Create `native/llm-runtime/tests/runtime_backend_test.cpp`:
 ```cpp
 #include "llw_runtime.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -4280,19 +4470,29 @@ struct Events {
     std::mutex mutex;
     std::condition_variable changed;
     std::map<llw_handle_t, RequestResult> requests;
+    bool block_callbacks{};
+    bool callback_entered{};
+    bool release_callbacks{};
 };
 
 void LLW_CALL collect_backend_event(const llw_event_t* event, void* user_data) {
-    if (!event || event->request_handle == 0) return;
+    if (!event) return;
     auto& events = *static_cast<Events*>(user_data);
     {
-        std::lock_guard lock(events.mutex);
-        RequestResult& result = events.requests[event->request_handle];
-        if (event->event_type == LLW_EVENT_TOKEN && event->data)
-            result.bytes.insert(result.bytes.end(), event->data, event->data + event->data_len);
-        if (event->event_type == LLW_EVENT_DONE || event->event_type == LLW_EVENT_CANCELLED ||
-            event->event_type == LLW_EVENT_ERROR) ++result.terminals;
-        if (event->event_type == LLW_EVENT_ERROR) result.error = true;
+        std::unique_lock lock(events.mutex);
+        if (event->request_handle != 0) {
+            RequestResult& result = events.requests[event->request_handle];
+            if (event->event_type == LLW_EVENT_TOKEN && event->data)
+                result.bytes.insert(result.bytes.end(), event->data, event->data + event->data_len);
+            if (event->event_type == LLW_EVENT_DONE || event->event_type == LLW_EVENT_CANCELLED ||
+                event->event_type == LLW_EVENT_ERROR) ++result.terminals;
+            if (event->event_type == LLW_EVENT_ERROR) result.error = true;
+        }
+        if (events.block_callbacks && event->event_type == LLW_EVENT_MODEL_PROGRESS) {
+            events.callback_entered = true;
+            events.changed.notify_all();
+            events.changed.wait(lock, [&events] { return events.release_callbacks; });
+        }
     }
     events.changed.notify_all();
 }
@@ -4369,13 +4569,8 @@ int main(int argc, char** argv) {
     CHECK(llw_request_submit(runtime, &first_params, &first, &error) == LLW_OK);
     CHECK(llw_request_submit(runtime, &second_params, &second, &error) == LLW_OK);
 
-    bool saw_two_active = false;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
     for (;;) {
-        llw_scheduler_snapshot_t snapshot{};
-        snapshot.struct_size = sizeof(snapshot);
-        CHECK(llw_get_scheduler_snapshot(runtime, &snapshot, &error) == LLW_OK);
-        saw_two_active = saw_two_active || snapshot.active_count == 2;
         {
             std::unique_lock lock(events.mutex);
             if (events.requests[first].terminals == 1 && events.requests[second].terminals == 1) break;
@@ -4395,7 +4590,6 @@ int main(int argc, char** argv) {
         CHECK(events.requests[second].terminals == 1);
         CHECK(!events.requests[first].error && !events.requests[second].error);
     }
-    CHECK(saw_two_active);
 
     std::string oversized_prompt;
     oversized_prompt.reserve(32768);
@@ -4426,8 +4620,20 @@ int main(int argc, char** argv) {
     CHECK(metrics.decode_calls > 0);
     CHECK(llw_model_unload(runtime, model, &error) == LLW_OK);
 
+    {
+        std::lock_guard lock(events.mutex);
+        events.block_callbacks = true;
+        events.callback_entered = false;
+        events.release_callbacks = false;
+    }
     llw_handle_t lifecycle_model{};
     CHECK(llw_model_load(runtime, &model_params, &lifecycle_model, &error) == LLW_OK);
+    {
+        std::unique_lock lock(events.mutex);
+        CHECK(events.changed.wait_for(lock, std::chrono::seconds(10), [&] {
+            return events.callback_entered;
+        }));
+    }
     llw_request_params_t long_params = generation(lifecycle_model, first_prompt);
     long_params.max_new_tokens = 1024;
     llw_handle_t active_one{}, active_two{}, queued{};
@@ -4445,14 +4651,26 @@ int main(int argc, char** argv) {
         CHECK(std::chrono::steady_clock::now() < lifecycle_deadline);
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
-    llw_result_t cancel_result{LLW_ERR_INTERNAL};
-    std::thread cancel_thread([&] {
-        llw_error_t cancel_error{};
-        cancel_error.struct_size = sizeof(cancel_error);
-        cancel_result = llw_request_cancel(runtime, active_one, &cancel_error);
+    std::atomic<bool> unload_done{false};
+    llw_result_t unload_result{LLW_ERR_INTERNAL};
+    std::thread unload_thread([&] {
+        llw_error_t unload_error{};
+        unload_error.struct_size = sizeof(unload_error);
+        unload_result = llw_model_unload(runtime, lifecycle_model, &unload_error);
+        unload_done.store(true, std::memory_order_release);
     });
-    const llw_result_t unload_result = llw_model_unload(runtime, lifecycle_model, &error);
-    cancel_thread.join();
+    llw_error_t cancel_error{};
+    cancel_error.struct_size = sizeof(cancel_error);
+    const llw_result_t cancel_result = llw_request_cancel(runtime, active_one, &cancel_error);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    const bool unload_returned_before_callback = unload_done.load(std::memory_order_acquire);
+    {
+        std::lock_guard lock(events.mutex);
+        events.release_callbacks = true;
+    }
+    events.changed.notify_all();
+    unload_thread.join();
+    CHECK(!unload_returned_before_callback);
     CHECK(unload_result == LLW_OK);
     CHECK(cancel_result == LLW_OK || cancel_result == LLW_ERR_INVALID_STATE ||
           cancel_result == LLW_ERR_NOT_FOUND);
@@ -4471,6 +4689,10 @@ int main(int argc, char** argv) {
 }
 ```
 
+The lifecycle section deliberately blocks a model-progress callback, starts unload, verifies unload
+has not returned, releases the callback, and then requires unload plus all three request terminals to
+complete. No callback can remain in flight when `llw_model_unload` returns.
+
 Add the target and checksum-fixture registration:
 
 ```cmake
@@ -4488,7 +4710,7 @@ Create `crates/llm-runtime/tests/native_runtime.rs` with the complete Rust-to-DL
 
 ```rust
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use llm_runtime::{
     Backend, EventKind, GenerationOptions, InferenceRuntime, ModelOptions, RuntimeOptions,
@@ -4511,7 +4733,6 @@ fn dropping_a_queued_request_cancels_it_once() {
     };
     // SAFETY: both paths are supplied by this repository's explicit, checksum-verified test flow.
     let runtime = unsafe { InferenceRuntime::load(&dll, options) }.expect("load runtime");
-    let events = runtime.events();
     let model = runtime
         .load_model(
             &gguf,
@@ -4542,30 +4763,19 @@ fn dropping_a_queued_request_cancels_it_once() {
         )
         .expect("submit queued request");
     let queued_handle = queued.handle();
+    let queued_terminal = queued.terminal_receiver();
     drop(queued);
-
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut queued_terminals = Vec::new();
-    while Instant::now() < deadline && queued_terminals.is_empty() {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        let event = events.recv_timeout(remaining).expect("terminal event before timeout");
-        if event.request_handle == queued_handle
-            && matches!(event.kind, EventKind::Done | EventKind::Cancelled | EventKind::Error)
-        {
-            queued_terminals.push(event.kind);
-        }
-    }
+    let event = queued_terminal
+        .recv_timeout(Duration::from_secs(30))
+        .expect("queued terminal before timeout");
+    assert_eq!(event.request_handle, queued_handle);
+    assert_eq!(event.kind, EventKind::Cancelled);
+    assert!(queued_terminal.recv_timeout(Duration::from_millis(250)).is_err());
     blocker.cancel().expect("cancel active request");
-    assert_eq!(queued_terminals, vec![EventKind::Cancelled]);
-
-    let duplicate_deadline = Instant::now() + Duration::from_millis(250);
-    while let Ok(event) = events.recv_deadline(duplicate_deadline) {
-        assert!(
-            event.request_handle != queued_handle
-                || !matches!(event.kind, EventKind::Done | EventKind::Cancelled | EventKind::Error),
-            "queued request emitted a duplicate terminal event"
-        );
-    }
+    let blocker_event = blocker
+        .recv_terminal_timeout(Duration::from_secs(30))
+        .expect("active cancellation terminal before timeout");
+    assert!(matches!(blocker_event.kind, EventKind::Cancelled | EventKind::Done));
 }
 ```
 
@@ -4592,6 +4802,12 @@ Expected: native and Rust suites pass; CPU E2E proves two concurrent requests, s
 terminal uniqueness, context/lifecycle isolation, and unload. The normal PR CI job always acquires the
 checksum-pinned fixture before CMake configure, so this CTest is required there. Local runs register it
 whenever `LLW_TEST_GGUF` is explicitly set by the acquisition command above.
+
+The real-model test requires both submitted requests to complete correctly but does not infer overlap
+from a timing-sensitive snapshot. Deterministic two-slot concurrency is proven in
+`llw_scheduler_test`: `FakeEngine::wait_for_batch_size(2)` is a test barrier that does not release
+decode until both handles share one batch, after which the test asserts distinct slots, independent
+terminal sequences, cleanup, and exactly one terminal per request. No production ABI test gate is added.
 
 - [ ] **Step 5: Commit the required CPU fixture strategy**
 
