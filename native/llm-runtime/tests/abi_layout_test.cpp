@@ -115,6 +115,7 @@ int main() {
 
     llw_abi_info_t info{};
     info.struct_size = sizeof(info);
+    CHECK(info.struct_size >= sizeof(std::uint32_t));
     llw_abi_query_t query{};
     query.struct_size = sizeof(query);
     query.requested_major = LLW_ABI_MAJOR;
