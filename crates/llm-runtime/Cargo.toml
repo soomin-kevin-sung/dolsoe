@@ -1,0 +1,10 @@
+[package]
+name = "llm-runtime"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+llm-runtime-sys = { path = "../llm-runtime-sys" }
+thiserror.workspace = true
