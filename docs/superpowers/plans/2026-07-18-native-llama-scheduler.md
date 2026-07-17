@@ -170,6 +170,7 @@ git commit -m "build: pin llama cpp backend packs"
 - Modify: `native/llm-runtime/src/fake_runtime.cpp`
 - Modify: `native/llm-runtime/tests/abi_layout_test.cpp`
 - Modify: `crates/llm-runtime-sys/src/lib.rs`
+- Modify: `crates/llm-runtime/src/lib.rs`
 
 - [ ] **Step 1: Add failing C and Rust assertions for ABI 1.1**
 
@@ -260,7 +261,17 @@ assert_offset!(Metrics, decode_ns, 56);
 assert_offset!(Metrics, reserved, 64);
 ```
 
-Add a C++ behavior case that sets `create.struct_size = 160u`, calls `llw_runtime_create`, expects `LLW_OK`, and destroys the returned runtime. This proves an ABI 1.0 caller prefix remains accepted after the append-only extension.
+Add this C++ behavior case immediately after the existing successful create/destroy case. It proves an ABI 1.0 caller prefix remains accepted after the append-only extension:
+
+```cpp
+llw_runtime_create_params_t legacy_create{};
+legacy_create.struct_size = offsetof(llw_runtime_create_params_t, scheduler);
+llw_runtime_t* legacy_runtime = nullptr;
+reset_error();
+CHECK(llw_runtime_create(&legacy_create, &legacy_runtime, &error) == LLW_OK);
+CHECK(legacy_runtime != nullptr);
+llw_runtime_destroy(legacy_runtime);
+```
 
 Run:
 
@@ -298,11 +309,12 @@ Keep the existing platform/export macro preamble, opaque `llw_runtime_t`, all AB
 #define LLW_MAX_SLOTS 4u
 #define LLW_MAX_QUEUE_CAPACITY 1024u
 #define LLW_MAX_EVENT_QUEUE_CAPACITY 65536u
+#define LLW_MAX_MODEL_PATH_BYTES 32768u
+#define LLW_MAX_DEVICE_INDEX 255u
 #define LLW_MAX_PROMPT_BYTES (16u * 1024u * 1024u)
 #define LLW_MAX_STOP_SEQUENCES 8u
 #define LLW_MAX_STOP_BYTES 256u
-
-#pragma pack(push, 8)
+#define LLW_MAX_STOP_TOTAL_BYTES 2048u
 
 typedef struct llw_bytes_t {
     uint32_t struct_size;
@@ -403,8 +415,6 @@ typedef struct llw_metrics_t {
     uint64_t reserved[8];
 } llw_metrics_t;
 
-#pragma pack(pop)
-
 LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_get_option_schema(
     llw_runtime_t* runtime, llw_buffer_t* out_json, llw_error_t* out_error);
 LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
@@ -446,7 +456,18 @@ if (!params || !out_runtime || params->struct_size < LLW_RUNTIME_CREATE_V1_0_SIZ
 }
 ```
 
-Add `#include <cstddef>` for `offsetof`. The fake runtime ignores the appended scheduler fields; the real runtime in Task 7 reads them only when `struct_size >= sizeof(llw_runtime_create_params_t)` and otherwise uses 1 slot, request queue 16, and event queue 1024.
+The complete `fake_runtime.cpp` include block after this edit is:
+
+```cpp
+#include "llw_runtime.h"
+
+#include <algorithm>
+#include <cstddef>
+#include <cstring>
+#include <new>
+```
+
+The fake runtime ignores the appended scheduler fields. The real runtime in Task 7 reads them only when `struct_size >= sizeof(llw_runtime_create_params_t)` and otherwise uses 1 slot, request queue 16, and event queue 1024.
 
 ABI rules to retain in the header comments:
 
@@ -460,25 +481,183 @@ and must not block indefinitely. Each accepted request emits increasing sequence
 exactly one of DONE, CANCELLED, or ERROR.
 ```
 
-Bounds to document beside fields: slots `1..4`; request queue `1..1024`; event queue `16..65536`; context per slot `512..262144`; logical batch `1..8192`; physical batch `1..logical_batch`; threads `1..256`; GPU layers `-1..65535`; prompt `1..LLW_MAX_PROMPT_BYTES`; new tokens `1..1048576`; top-k `0..100000`; probabilities `0.0..1.0`; temperature `0.0..10.0`; repeat-last-n `0..262144`; penalties finite with repeat penalty `0.0..10.0`; stop count `0..8`; each stop `1..256` bytes.
+Bounds to document beside fields: slots `1..4`; request queue `1..1024`; event queue `16..65536`; model path `1..32768` UTF-8 bytes with no NUL; backend AUTO/CPU/CUDA/VULKAN; device index `0..255`; context per slot `512..262144`; logical batch `1..8192`; physical batch `1..logical_batch`; threads and batch threads `1..256`; GPU layers `-1..65535`; prompt `1..LLW_MAX_PROMPT_BYTES`; new tokens `1..1048576`; top-k `0..100000`; probabilities `0.0..1.0`; temperature `0.0..10.0`; repeat-last-n `0..262144`; repeat penalty `0.0..10.0`; frequency/presence penalties `-2.0..2.0`; stop count `0..8`; each stop `1..256` bytes; all stops combined `0..2048` bytes.
 
 - [ ] **Step 3: Add exact Rust mirrors and function pointer types**
 
-In `crates/llm-runtime-sys/src/lib.rs`, change `ABI_MINOR` to `1`, append the same integer constants, append `scheduler: SchedulerConfig` and `reserved_v1: [u64; 8]` to `RuntimeCreateParams`, and add `#[repr(C)]` Rust structures with fields in precisely the C order and these pointer translations:
+In `crates/llm-runtime-sys/src/lib.rs`, change `ABI_MINOR` and insert this complete ABI 1.1 constant/type block after the existing ABI 1.0 constants and `DeviceList`. Every pointer translation and default is explicit:
 
 ```rust
-pub struct Bytes { pub struct_size: u32, pub flags: u32, pub data: *const u8, pub len: u64, pub reserved: [u64; 8] }
-pub struct Buffer { pub struct_size: u32, pub flags: u32, pub data: *mut u8, pub capacity: u64, pub len: u64, pub reserved: [u64; 8] }
-pub struct SchedulerConfig { pub struct_size: u32, pub flags: u32, pub slot_count: u32, pub request_queue_capacity: u32, pub event_queue_capacity: u32, pub reserved0: u32, pub reserved: [u64; 8] }
-pub struct ModelLoadParams { pub struct_size: u32, pub flags: u32, pub path_utf8: *const u8, pub path_len: u64, pub backend: i32, pub device_index: u32, pub context_tokens_per_slot: u32, pub logical_batch_tokens: u32, pub physical_batch_tokens: u32, pub n_threads: i32, pub n_threads_batch: i32, pub n_gpu_layers: i32, pub use_mmap: u32, pub use_mlock: u32, pub check_tensors: u32, pub reserved0: u32, pub reserved: [u64; 12] }
-pub struct RequestParams { pub struct_size: u32, pub flags: u32, pub model_handle: Handle, pub prompt: *const u8, pub prompt_len: u64, pub max_new_tokens: u32, pub seed: u32, pub temperature: f32, pub top_k: i32, pub top_p: f32, pub min_p: f32, pub repeat_last_n: i32, pub repeat_penalty: f32, pub frequency_penalty: f32, pub presence_penalty: f32, pub stop_count: u32, pub reserved0: u32, pub stop_sequences: *const Bytes, pub request_user_data: *mut c_void, pub reserved: [u64; 12] }
-pub struct SchedulerSnapshot { pub struct_size: u32, pub flags: u32, pub slot_count: u32, pub active_count: u32, pub queued_count: u32, pub queue_capacity: u32, pub accepted_requests: u64, pub terminal_requests: u64, pub reserved: [u64; 8] }
-pub struct Metrics { pub struct_size: u32, pub flags: u32, pub prompt_tokens: u64, pub generated_tokens: u64, pub decode_calls: u64, pub cancelled_requests: u64, pub failed_requests: u64, pub queue_wait_ns: u64, pub decode_ns: u64, pub reserved: [u64; 8] }
+pub const ABI_MINOR: u32 = 1;
+pub const ERR_BUSY: i32 = 4;
+pub const ERR_QUEUE_FULL: i32 = 5;
+pub const ERR_NOT_FOUND: i32 = 6;
+pub const ERR_INVALID_STATE: i32 = 7;
+pub const ERR_CANCELLED: i32 = 8;
+pub const ERR_UNSUPPORTED: i32 = 9;
+pub const EVENT_DATA_NONE: u32 = 0;
+pub const EVENT_DATA_BYTES: u32 = 1;
+pub const EVENT_DATA_UTF8: u32 = 2;
+pub const EVENT_DATA_JSON_UTF8: u32 = 3;
+pub const EVENT_MODEL_PROGRESS: i32 = 1;
+pub const EVENT_QUEUED: i32 = 2;
+pub const EVENT_TOKEN: i32 = 3;
+pub const EVENT_METRICS: i32 = 4;
+pub const EVENT_DONE: i32 = 5;
+pub const EVENT_CANCELLED: i32 = 6;
+pub const EVENT_ERROR: i32 = 7;
+pub const EVENT_LOG: i32 = 8;
+pub const REQUEST_STATE_QUEUED: i32 = 1;
+pub const REQUEST_STATE_PREPROCESSING: i32 = 2;
+pub const REQUEST_STATE_RUNNING: i32 = 3;
+pub const REQUEST_STATE_DONE: i32 = 4;
+pub const REQUEST_STATE_CANCELLED: i32 = 5;
+pub const REQUEST_STATE_ERROR: i32 = 6;
+pub const MAX_SLOTS: u32 = 4;
+pub const MAX_QUEUE_CAPACITY: u32 = 1024;
+pub const MAX_EVENT_QUEUE_CAPACITY: u32 = 65_536;
+pub const MAX_MODEL_PATH_BYTES: u32 = 32_768;
+pub const MAX_DEVICE_INDEX: u32 = 255;
+pub const MAX_PROMPT_BYTES: u32 = 16 * 1024 * 1024;
+pub const MAX_STOP_SEQUENCES: u32 = 8;
+pub const MAX_STOP_BYTES: u32 = 256;
+pub const MAX_STOP_TOTAL_BYTES: u32 = 2048;
+
+#[repr(C)]
+pub struct Bytes {
+    pub struct_size: u32, pub flags: u32, pub data: *const u8, pub len: u64,
+    pub reserved: [u64; 8],
+}
+#[repr(C)]
+pub struct Buffer {
+    pub struct_size: u32, pub flags: u32, pub data: *mut u8, pub capacity: u64,
+    pub len: u64, pub reserved: [u64; 8],
+}
+#[repr(C)]
+pub struct SchedulerConfig {
+    pub struct_size: u32, pub flags: u32, pub slot_count: u32,
+    pub request_queue_capacity: u32, pub event_queue_capacity: u32,
+    pub reserved0: u32, pub reserved: [u64; 8],
+}
+#[repr(C)]
+pub struct ModelLoadParams {
+    pub struct_size: u32, pub flags: u32, pub path_utf8: *const u8, pub path_len: u64,
+    pub backend: i32, pub device_index: u32, pub context_tokens_per_slot: u32,
+    pub logical_batch_tokens: u32, pub physical_batch_tokens: u32, pub n_threads: i32,
+    pub n_threads_batch: i32, pub n_gpu_layers: i32, pub use_mmap: u32,
+    pub use_mlock: u32, pub check_tensors: u32, pub reserved0: u32,
+    pub reserved: [u64; 12],
+}
+#[repr(C)]
+pub struct RequestParams {
+    pub struct_size: u32, pub flags: u32, pub model_handle: Handle,
+    pub prompt: *const u8, pub prompt_len: u64, pub max_new_tokens: u32, pub seed: u32,
+    pub temperature: f32, pub top_k: i32, pub top_p: f32, pub min_p: f32,
+    pub repeat_last_n: i32, pub repeat_penalty: f32, pub frequency_penalty: f32,
+    pub presence_penalty: f32, pub stop_count: u32, pub reserved0: u32,
+    pub stop_sequences: *const Bytes, pub request_user_data: *mut c_void,
+    pub reserved: [u64; 12],
+}
+#[repr(C)]
+pub struct SchedulerSnapshot {
+    pub struct_size: u32, pub flags: u32, pub slot_count: u32, pub active_count: u32,
+    pub queued_count: u32, pub queue_capacity: u32, pub accepted_requests: u64,
+    pub terminal_requests: u64, pub reserved: [u64; 8],
+}
+#[repr(C)]
+pub struct Metrics {
+    pub struct_size: u32, pub flags: u32, pub prompt_tokens: u64,
+    pub generated_tokens: u64, pub decode_calls: u64, pub cancelled_requests: u64,
+    pub failed_requests: u64, pub queue_wait_ns: u64, pub decode_ns: u64,
+    pub reserved: [u64; 8],
+}
+
+macro_rules! zero_default {
+    ($type:ty, $value:expr) => {
+        impl Default for $type {
+            fn default() -> Self { $value }
+        }
+    };
+}
+zero_default!(Bytes, Self { struct_size: std::mem::size_of::<Self>() as u32,
+    flags: 0, data: std::ptr::null(), len: 0, reserved: [0; 8] });
+zero_default!(Buffer, Self { struct_size: std::mem::size_of::<Self>() as u32,
+    flags: 0, data: std::ptr::null_mut(), capacity: 0, len: 0, reserved: [0; 8] });
+zero_default!(SchedulerConfig, Self { struct_size: std::mem::size_of::<Self>() as u32,
+    flags: 0, slot_count: 1, request_queue_capacity: 16, event_queue_capacity: 1024,
+    reserved0: 0, reserved: [0; 8] });
+zero_default!(ModelLoadParams, Self { struct_size: std::mem::size_of::<Self>() as u32,
+    flags: 0, path_utf8: std::ptr::null(), path_len: 0, backend: BACKEND_AUTO,
+    device_index: 0, context_tokens_per_slot: 4096, logical_batch_tokens: 512,
+    physical_batch_tokens: 128, n_threads: 8, n_threads_batch: 8, n_gpu_layers: 0,
+    use_mmap: 1, use_mlock: 0, check_tensors: 0, reserved0: 0, reserved: [0; 12] });
+zero_default!(RequestParams, Self { struct_size: std::mem::size_of::<Self>() as u32,
+    flags: 0, model_handle: 0, prompt: std::ptr::null(), prompt_len: 0,
+    max_new_tokens: 256, seed: u32::MAX, temperature: 0.8, top_k: 40, top_p: 0.95,
+    min_p: 0.05, repeat_last_n: 64, repeat_penalty: 1.1, frequency_penalty: 0.0,
+    presence_penalty: 0.0, stop_count: 0, reserved0: 0,
+    stop_sequences: std::ptr::null(), request_user_data: std::ptr::null_mut(),
+    reserved: [0; 12] });
+zero_default!(SchedulerSnapshot, Self { struct_size: std::mem::size_of::<Self>() as u32,
+    flags: 0, slot_count: 0, active_count: 0, queued_count: 0, queue_capacity: 0,
+    accepted_requests: 0, terminal_requests: 0, reserved: [0; 8] });
+zero_default!(Metrics, Self { struct_size: std::mem::size_of::<Self>() as u32,
+    flags: 0, prompt_tokens: 0, generated_tokens: 0, decode_calls: 0,
+    cancelled_requests: 0, failed_requests: 0, queue_wait_ns: 0, decode_ns: 0,
+    reserved: [0; 8] });
+
+pub type RuntimeGetOptionSchemaFn =
+    unsafe extern "C" fn(*mut Runtime, *mut Buffer, *mut Error) -> i32;
+pub type ModelLoadFn = unsafe extern "C" fn(
+    *mut Runtime, *const ModelLoadParams, *mut Handle, *mut Error) -> i32;
+pub type ModelUnloadFn =
+    unsafe extern "C" fn(*mut Runtime, Handle, *mut Error) -> i32;
+pub type RequestSubmitFn = unsafe extern "C" fn(
+    *mut Runtime, *const RequestParams, *mut Handle, *mut Error) -> i32;
+pub type RequestCancelFn =
+    unsafe extern "C" fn(*mut Runtime, Handle, *mut Error) -> i32;
+pub type GetSchedulerSnapshotFn =
+    unsafe extern "C" fn(*mut Runtime, *mut SchedulerSnapshot, *mut Error) -> i32;
+pub type GetMetricsFn =
+    unsafe extern "C" fn(*mut Runtime, *mut Metrics, *mut Error) -> i32;
 ```
 
-Give each output/config structure a manual `Default` that sets its own `struct_size`, zeroes all fields, and defaults scheduler values to `slot_count=1`, `request_queue_capacity=16`, and `event_queue_capacity=1024`. Do not derive `Default` for pointer-containing structures.
+Replace `RuntimeCreateParams` and its `Default` with this append-only mirror:
 
-Add exact function pointer aliases for all seven new signatures but do not load them yet; Task 9 performs the loader change after the DLL exports exist.
+```rust
+#[repr(C)]
+pub struct RuntimeCreateParams {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub callbacks: CallbackTable,
+    pub reserved: [u64; 8],
+    pub scheduler: SchedulerConfig,
+    pub reserved_v1: [u64; 8],
+}
+
+impl Default for RuntimeCreateParams {
+    fn default() -> Self {
+        Self { struct_size: std::mem::size_of::<Self>() as u32, flags: 0,
+            callbacks: CallbackTable::default(), reserved: [0; 8],
+            scheduler: SchedulerConfig::default(), reserved_v1: [0; 8] }
+    }
+}
+```
+
+Do not add these seven aliases to `Api` in this task; Task 8 performs the loader change after the DLL exports exist.
+
+In the existing `RuntimeLibrary::load` initializer in `crates/llm-runtime/src/lib.rs`, add the append-only fields so Task 2 remains compilable before the new safe API is introduced:
+
+```rust
+let create = sys::RuntimeCreateParams {
+    struct_size: std::mem::size_of::<sys::RuntimeCreateParams>() as u32,
+    flags: 0,
+    callbacks: sys::CallbackTable::default(),
+    reserved: [0; 8],
+    scheduler: sys::SchedulerConfig::default(),
+    reserved_v1: [0; 8],
+};
+```
 
 - [ ] **Step 4: Run layout tests**
 
@@ -493,7 +672,7 @@ Expected: Rust and C++ layout tests pass. Existing ABI 1.0 offsets remain unchan
 - [ ] **Step 5: Commit the ABI contract**
 
 ```powershell
-git add native/llm-runtime/include/llw_runtime.h native/llm-runtime/src/fake_runtime.cpp native/llm-runtime/tests/abi_layout_test.cpp crates/llm-runtime-sys/src/lib.rs
+git add native/llm-runtime/include/llw_runtime.h native/llm-runtime/src/fake_runtime.cpp native/llm-runtime/tests/abi_layout_test.cpp crates/llm-runtime-sys/src/lib.rs crates/llm-runtime/src/lib.rs
 git commit -m "feat: define scheduler ABI contract"
 ```
 
@@ -507,7 +686,67 @@ git commit -m "feat: define scheduler ABI contract"
 
 - [ ] **Step 1: Write a failing dispatcher ownership test**
 
-Create `native/llm-runtime/tests/scheduler_test.cpp` with a callback that copies `event->data` into a mutex-protected vector. Construct `EventDispatcher` with capacity 16, enqueue a TOKEN from a temporary `std::vector<uint8_t>{0xf0,0x9f,0x92,0xa1}`, mutate and destroy the source, call `drain_for_test()`, and assert the callback received the original four bytes on one non-test thread. Also assert two enqueue calls receive sequence numbers 1 and 2.
+Create `native/llm-runtime/tests/scheduler_test.cpp`:
+
+```cpp
+#include "event_dispatcher.h"
+#include <cstdint>
+#include <cstdio>
+#include <mutex>
+#include <thread>
+#include <utility>
+#include <vector>
+
+struct Received {
+    uint64_t sequence{};
+    std::vector<uint8_t> data;
+    std::thread::id thread;
+};
+struct Collector { std::mutex mutex; std::vector<Received> events; };
+
+void LLW_CALL collect(const llw_event_t* event, void* user_data) {
+    auto& collector = *static_cast<Collector*>(user_data);
+    Received received;
+    received.sequence = event->sequence_number;
+    received.thread = std::this_thread::get_id();
+    if (event->data && event->data_len)
+        received.data.assign(event->data, event->data + event->data_len);
+    std::lock_guard lock(collector.mutex);
+    collector.events.push_back(std::move(received));
+}
+
+int main() {
+    const std::thread::id test_thread = std::this_thread::get_id();
+    Collector collector;
+    llw_callback_table_t callbacks{};
+    callbacks.struct_size = sizeof(callbacks);
+    callbacks.on_event = collect;
+    callbacks.user_data = &collector;
+    EventDispatcher dispatcher(callbacks, 16);
+    std::vector<uint8_t> source = {0xf0, 0x9f, 0x92, 0xa1};
+    OwnedEvent first;
+    first.type = LLW_EVENT_TOKEN;
+    first.data_format = LLW_EVENT_DATA_BYTES;
+    first.sequence = 41;
+    first.data = source;
+    if (!dispatcher.publish(std::move(first))) return 1;
+    source.assign(4, 0);
+    OwnedEvent second;
+    second.type = LLW_EVENT_DONE;
+    second.data_format = LLW_EVENT_DATA_JSON_UTF8;
+    second.sequence = 42;
+    second.data = {'{', '}'};
+    if (!dispatcher.publish(std::move(second))) return 1;
+    dispatcher.drain_for_test();
+    std::lock_guard lock(collector.mutex);
+    if (collector.events.size() != 2) return 1;
+    if (collector.events[0].sequence != 41 || collector.events[1].sequence != 42) return 1;
+    if (collector.events[0].data != std::vector<uint8_t>({0xf0, 0x9f, 0x92, 0xa1})) return 1;
+    if (collector.events[0].thread == test_thread || collector.events[1].thread != collector.events[0].thread)
+        return 1;
+    return 0;
+}
+```
 
 Run:
 
@@ -525,6 +764,7 @@ Create `native/llm-runtime/src/event_dispatcher.h`:
 #pragma once
 #include "llw_runtime.h"
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <mutex>
@@ -538,7 +778,7 @@ struct OwnedEvent {
     llw_handle_t model{};
     llw_handle_t request{};
     uint32_t slot{UINT32_MAX};
-    uint64_t sequence{};
+    uint64_t sequence{}; // Assigned by Scheduler::publish_locked for request events.
     void* request_user_data{};
     std::vector<uint8_t> data;
 };
@@ -681,7 +921,174 @@ git commit -m "feat: dispatch owned runtime events"
 
 - [ ] **Step 1: Write failing lifecycle tests**
 
-Add five tests to `scheduler_test.cpp`: two requests accepted together produce interleaved TOKEN events and distinct slot IDs; with one slot and queue capacity one, the third submit returns `LLW_ERR_QUEUE_FULL` without a handle; queued cancellation emits CANCELLED without engine decode; active cancellation becomes CANCELLED before the next batch and clears its sequence; repeated cancellation returns the same result and every accepted request has exactly one terminal event. Use a fake engine barrier so tests observe both requests active before releasing decode.
+Replace `native/llm-runtime/tests/scheduler_test.cpp` with this complete test file:
+
+```cpp
+#include "event_dispatcher.h"
+#include "fake_engine.h"
+#include "scheduler.h"
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <map>
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <thread>
+#include <vector>
+
+struct SeenEvent { int32_t type{}; llw_handle_t request{}; uint32_t slot{}; uint64_t sequence{}; };
+struct Collector {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::vector<SeenEvent> events;
+};
+
+void LLW_CALL collect_scheduler_event(const llw_event_t* event, void* user_data) {
+    auto& collector = *static_cast<Collector*>(user_data);
+    {
+        std::lock_guard lock(collector.mutex);
+        collector.events.push_back(SeenEvent{event->event_type, event->request_handle,
+                                              event->slot_id, event->sequence_number});
+    }
+    collector.changed.notify_all();
+}
+
+llw_callback_table_t callbacks(Collector& collector) {
+    llw_callback_table_t result{};
+    result.struct_size = sizeof(result);
+    result.on_event = collect_scheduler_event;
+    result.user_data = &collector;
+    return result;
+}
+
+llw_request_params_t request_params(const std::string& prompt) {
+    llw_request_params_t result{};
+    result.struct_size = sizeof(result);
+    result.model_handle = 1;
+    result.prompt = reinterpret_cast<const uint8_t*>(prompt.data());
+    result.prompt_len = prompt.size();
+    result.max_new_tokens = 3;
+    result.seed = 7;
+    result.temperature = 0;
+    result.top_k = 40;
+    result.top_p = 0.95f;
+    result.min_p = 0.05f;
+    result.repeat_last_n = 64;
+    result.repeat_penalty = 1.1f;
+    return result;
+}
+
+void wait_for_terminals(Collector& collector, size_t count) {
+    std::unique_lock lock(collector.mutex);
+    const bool ready = collector.changed.wait_for(lock, std::chrono::seconds(5), [&] {
+        return std::count_if(collector.events.begin(), collector.events.end(), [](const SeenEvent& event) {
+            return event.type == LLW_EVENT_DONE || event.type == LLW_EVENT_CANCELLED ||
+                   event.type == LLW_EVENT_ERROR;
+        }) >= static_cast<std::ptrdiff_t>(count);
+    });
+    if (!ready) throw std::runtime_error("terminal event timeout");
+}
+
+void assert_sequences(const Collector& collector, llw_handle_t request) {
+    uint64_t expected = 1;
+    size_t terminals = 0;
+    for (const SeenEvent& event : collector.events) {
+        if (event.request != request) continue;
+        if (event.sequence != expected++) throw std::runtime_error("non-monotonic request sequence");
+        if (event.type == LLW_EVENT_DONE || event.type == LLW_EVENT_CANCELLED ||
+            event.type == LLW_EVENT_ERROR) ++terminals;
+    }
+    if (terminals != 1) throw std::runtime_error("request did not have exactly one terminal");
+}
+
+void concurrent_requests_test() {
+    Collector collector;
+    EventDispatcher dispatcher(callbacks(collector), 64);
+    FakeEngine engine;
+    Scheduler scheduler(2, 4, engine, dispatcher);
+    const std::string first_prompt = "first";
+    const std::string second_prompt = "second";
+    llw_handle_t first{};
+    llw_handle_t second{};
+    std::string error;
+    if (scheduler.submit(request_params(first_prompt), first, error) != LLW_OK) throw std::runtime_error(error);
+    if (scheduler.submit(request_params(second_prompt), second, error) != LLW_OK) throw std::runtime_error(error);
+    engine.wait_for_batch_size(2);
+    engine.release();
+    wait_for_terminals(collector, 2);
+    dispatcher.drain_for_test();
+    std::lock_guard lock(collector.mutex);
+    assert_sequences(collector, first);
+    assert_sequences(collector, second);
+    std::map<llw_handle_t, uint32_t> slots;
+    for (const SeenEvent& event : collector.events)
+        if (event.request != 0 && event.slot != UINT32_MAX) slots[event.request] = event.slot;
+    if (slots[first] == slots[second]) throw std::runtime_error("requests shared a slot");
+}
+
+void queue_full_test() {
+    Collector collector;
+    EventDispatcher dispatcher(callbacks(collector), 64);
+    FakeEngine engine;
+    Scheduler scheduler(1, 1, engine, dispatcher);
+    const std::string first_prompt = "first";
+    const std::string second_prompt = "second";
+    const std::string third_prompt = "third";
+    llw_handle_t first{}, second{}, third{};
+    std::string error;
+    if (scheduler.submit(request_params(first_prompt), first, error) != LLW_OK) throw std::runtime_error(error);
+    engine.wait_for_started(1);
+    if (scheduler.submit(request_params(second_prompt), second, error) != LLW_OK) throw std::runtime_error(error);
+    if (scheduler.submit(request_params(third_prompt), third, error) != LLW_ERR_QUEUE_FULL || third != 0)
+        throw std::runtime_error("queue-full contract failed");
+    engine.release();
+    wait_for_terminals(collector, 2);
+}
+
+void cancellation_test() {
+    Collector collector;
+    EventDispatcher dispatcher(callbacks(collector), 64);
+    FakeEngine engine;
+    Scheduler scheduler(1, 2, engine, dispatcher);
+    const std::string active_prompt = "active";
+    const std::string queued_prompt = "queued";
+    llw_handle_t active{}, queued{};
+    std::string error;
+    if (scheduler.submit(request_params(active_prompt), active, error) != LLW_OK) throw std::runtime_error(error);
+    engine.wait_for_started(1);
+    if (scheduler.submit(request_params(queued_prompt), queued, error) != LLW_OK) throw std::runtime_error(error);
+    if (scheduler.cancel(queued, error) != LLW_OK) throw std::runtime_error(error);
+    if (scheduler.cancel(active, error) != LLW_OK) throw std::runtime_error(error);
+    engine.release();
+    wait_for_terminals(collector, 2);
+    if (scheduler.cancel(active, error) != LLW_OK || scheduler.cancel(queued, error) != LLW_OK)
+        throw std::runtime_error("terminal cancellation was not idempotent");
+    dispatcher.drain_for_test();
+    std::lock_guard lock(collector.mutex);
+    assert_sequences(collector, active);
+    assert_sequences(collector, queued);
+    const auto cancelled = engine.cancelled();
+    if (std::any_of(cancelled.begin(), cancelled.end(), [queued](const auto& value) {
+            return value.first == queued;
+        })) throw std::runtime_error("queued request reached engine cancel");
+}
+
+int main() {
+    try {
+        concurrent_requests_test();
+        queue_full_test();
+        cancellation_test();
+        return 0;
+    } catch (const std::exception& exception) {
+        std::fprintf(stderr, "%s\n", exception.what());
+        return 1;
+    }
+}
+```
 
 Run:
 
@@ -738,9 +1145,24 @@ add_test(NAME llw_scheduler_test COMMAND llw_scheduler_test)
 
 - [ ] **Step 3: Define scheduler ownership and states**
 
-Create `native/llm-runtime/src/scheduler.h` with `RequestState {Queued, Preprocessing, Running, Done, Cancelled, Error}`, an owned `Request` containing copied prompt/stops/user-data and atomic cancellation, fixed `Slot` records with `seq_id == slot index`, and this public API:
+Create `native/llm-runtime/src/scheduler.h` with `RequestState {Queued, Preprocessing, Running, Done, Cancelled, Error}`, an owned `Request` containing copied prompt/stops/user-data, cancellation state, and `uint64_t next_sequence{1}` as the only per-request event sequence owner. Fixed `Slot` records use `seq_id == slot index`. Use this complete header:
 
 ```cpp
+#pragma once
+#include "event_dispatcher.h"
+#include "inference_engine.h"
+#include "llw_runtime.h"
+#include <condition_variable>
+#include <cstdint>
+#include <deque>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+enum class RequestState { Queued, Preprocessing, Running, Done, Cancelled, Error };
+
 class Scheduler {
 public:
     Scheduler(uint32_t slots, uint32_t queue_capacity, InferenceEngine& engine, EventDispatcher& events);
@@ -751,40 +1173,448 @@ public:
     llw_metrics_t metrics() const;
     void cancel_all_and_wait();
 private:
+    struct Request {
+        llw_handle_t handle{};
+        llw_handle_t model{};
+        RequestState state{RequestState::Queued};
+        std::vector<uint8_t> prompt;
+        std::vector<std::vector<uint8_t>> stops;
+        SamplingConfig sampling{};
+        uint32_t max_new_tokens{};
+        uint32_t generated_tokens{};
+        uint32_t slot_id{UINT32_MAX};
+        void* user_data{};
+        bool cancel_requested{};
+        bool terminal_emitted{};
+        uint64_t next_sequence{1};
+    };
+    struct Slot { uint32_t id{}; llw_handle_t request{}; };
     void run();
     void promote_locked();
     void finish_locked(llw_handle_t, RequestState, int32_t, std::string);
-    void publish_locked(const Request&, int32_t, uint32_t, int32_t, std::vector<uint8_t>);
+    void publish_locked(Request&, int32_t, uint32_t, int32_t, std::vector<uint8_t>, uint32_t);
+    bool has_work_locked() const;
+    uint32_t slots_count_{};
+    uint32_t queue_capacity_{};
+    InferenceEngine& engine_;
+    EventDispatcher& events_;
+    mutable std::mutex mutex_;
+    std::condition_variable wake_;
+    std::condition_variable idle_;
+    std::deque<llw_handle_t> queued_;
+    std::map<llw_handle_t, Request> requests_;
+    std::vector<Slot> slots_;
+    llw_handle_t next_handle_{1};
+    bool stopping_{};
+    std::thread worker_;
+    llw_metrics_t metrics_{};
+    uint64_t accepted_{};
+    uint64_t terminal_{};
 };
 ```
 
-The private members must include one mutex/condition variable, a FIFO deque of handles, a map of owned requests, `1..4` slots, one worker thread, monotonic nonzero handle generation, and counters matching `llw_metrics_t`. No request may be erased until its terminal event is queued.
+- [ ] **Step 4: Implement deterministic queueing, sequence ownership, and cancellation**
 
-- [ ] **Step 4: Implement deterministic queueing and cancellation**
+Create `native/llm-runtime/src/scheduler.cpp` with this complete implementation. `Request::next_sequence` is initialized to 1 in the header and incremented only in `publish_locked`; the dispatcher receives the assigned value unchanged.
 
-In `scheduler.cpp`, implement these exact state rules:
+```cpp
+#include "scheduler.h"
+#include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <sstream>
+#include <stdexcept>
+#include <utility>
 
-```text
-submit validates/copies before locking; accepted -> QUEUED and one QUEUED JSON event.
-If queued.size == capacity and no slot can accept immediately -> LLW_ERR_QUEUE_FULL, out=0, no event.
-promote takes FIFO requests into free slots, assigns seq_id=slot index, calls engine.start, then RUNNING.
-queued cancel removes from FIFO and finishes CANCELLED without calling engine.cancel.
-active cancel marks cancellation; worker calls engine.cancel before constructing its next decode handle list.
-decode receives all non-cancelled active handles in one call; each EngineStep emits TOKEN BYTES, then
-DONE on finished, ERROR on failed, or remains RUNNING. Cancellation wins over a simultaneous normal step.
-After each decode call, publish one METRICS JSON_UTF8 event with promptTokens, generatedTokens,
-decodeCalls, and decodeNanoseconds. The event uses request_handle 0 because it is runtime-wide.
-finish_locked uses a terminal_emitted boolean; a second finish attempt is a no-op; it releases the slot,
-increments terminal counters, and queues exactly one terminal JSON payload.
-cancel of a known terminal request returns LLW_OK; unknown handle returns LLW_ERR_NOT_FOUND.
-cancel_all_and_wait cancels queued and active requests and waits until active_count=queued_count=0.
+namespace {
+std::vector<uint8_t> bytes(std::string value) {
+    return {value.begin(), value.end()};
+}
+
+std::string json_escape(const std::string& value) {
+    std::ostringstream out;
+    for (const unsigned char ch : value) {
+        switch (ch) {
+        case '"': out << "\\\""; break;
+        case '\\': out << "\\\\"; break;
+        case '\b': out << "\\b"; break;
+        case '\f': out << "\\f"; break;
+        case '\n': out << "\\n"; break;
+        case '\r': out << "\\r"; break;
+        case '\t': out << "\\t"; break;
+        default:
+            if (ch < 0x20) {
+                char escaped[7]{};
+                std::snprintf(escaped, sizeof(escaped), "\\u%04x", ch);
+                out << escaped;
+            } else {
+                out << static_cast<char>(ch);
+            }
+        }
+    }
+    return out.str();
+}
+
+bool terminal(RequestState state) {
+    return state == RequestState::Done || state == RequestState::Cancelled ||
+           state == RequestState::Error;
+}
+} // namespace
+
+Scheduler::Scheduler(uint32_t slots, uint32_t queue_capacity, InferenceEngine& engine,
+                     EventDispatcher& events)
+    : slots_count_(slots), queue_capacity_(queue_capacity), engine_(engine), events_(events) {
+    if (slots < 1 || slots > LLW_MAX_SLOTS || queue_capacity < 1 ||
+        queue_capacity > LLW_MAX_QUEUE_CAPACITY) {
+        throw std::invalid_argument("invalid scheduler bounds");
+    }
+    metrics_ = {};
+    metrics_.struct_size = sizeof(metrics_);
+    for (uint32_t index = 0; index < slots; ++index) slots_.push_back(Slot{index, 0});
+    worker_ = std::thread([this] { run(); });
+}
+
+Scheduler::~Scheduler() {
+    cancel_all_and_wait();
+    {
+        std::lock_guard lock(mutex_);
+        stopping_ = true;
+    }
+    wake_.notify_all();
+    if (worker_.joinable()) worker_.join();
+}
+
+llw_result_t Scheduler::submit(const llw_request_params_t& params, llw_handle_t& out,
+                               std::string& error) {
+    out = 0;
+    Request request;
+    request.model = params.model_handle;
+    request.prompt.assign(params.prompt, params.prompt + params.prompt_len);
+    request.max_new_tokens = params.max_new_tokens;
+    request.sampling = SamplingConfig{params.seed, params.temperature, params.top_k, params.top_p,
+        params.min_p, params.repeat_last_n, params.repeat_penalty, params.frequency_penalty,
+        params.presence_penalty};
+    request.user_data = params.request_user_data;
+    request.stops.reserve(params.stop_count);
+    for (uint32_t index = 0; index < params.stop_count; ++index) {
+        const llw_bytes_t& stop = params.stop_sequences[index];
+        request.stops.emplace_back(stop.data, stop.data + stop.len);
+    }
+
+    std::lock_guard lock(mutex_);
+    if (queued_.size() >= queue_capacity_) {
+        error = "request queue is full";
+        return LLW_ERR_QUEUE_FULL;
+    }
+    request.handle = next_handle_++;
+    if (request.handle == 0) request.handle = next_handle_++;
+    const llw_handle_t handle = request.handle;
+    auto [it, inserted] = requests_.emplace(handle, std::move(request));
+    if (!inserted) throw std::runtime_error("request handle collision");
+    queued_.push_back(handle);
+    ++accepted_;
+    out = handle;
+    const auto payload = bytes("{\"state\":\"queued\",\"queuePosition\":" +
+                               std::to_string(queued_.size()) + "}");
+    publish_locked(it->second, LLW_EVENT_QUEUED, UINT32_MAX, 0, payload,
+                   LLW_EVENT_DATA_JSON_UTF8);
+    wake_.notify_one();
+    return LLW_OK;
+}
+
+llw_result_t Scheduler::cancel(llw_handle_t handle, std::string& error) {
+    std::lock_guard lock(mutex_);
+    const auto found = requests_.find(handle);
+    if (found == requests_.end()) {
+        error = "request handle was not found";
+        return LLW_ERR_NOT_FOUND;
+    }
+    Request& request = found->second;
+    if (terminal(request.state) || request.cancel_requested) return LLW_OK;
+    request.cancel_requested = true;
+    if (request.state == RequestState::Queued) {
+        queued_.erase(std::remove(queued_.begin(), queued_.end(), handle), queued_.end());
+        finish_locked(handle, RequestState::Cancelled, 0, "");
+    }
+    wake_.notify_one();
+    return LLW_OK;
+}
+
+llw_scheduler_snapshot_t Scheduler::snapshot() const {
+    std::lock_guard lock(mutex_);
+    llw_scheduler_snapshot_t result{};
+    result.struct_size = sizeof(result);
+    result.slot_count = slots_count_;
+    result.queue_capacity = queue_capacity_;
+    result.queued_count = static_cast<uint32_t>(queued_.size());
+    result.active_count = static_cast<uint32_t>(std::count_if(
+        slots_.begin(), slots_.end(), [](const Slot& slot) { return slot.request != 0; }));
+    result.accepted_requests = accepted_;
+    result.terminal_requests = terminal_;
+    return result;
+}
+
+llw_metrics_t Scheduler::metrics() const {
+    std::lock_guard lock(mutex_);
+    return metrics_;
+}
+
+void Scheduler::cancel_all_and_wait() {
+    std::unique_lock lock(mutex_);
+    for (auto& [handle, request] : requests_) {
+        (void)handle;
+        if (!terminal(request.state)) request.cancel_requested = true;
+    }
+    while (!queued_.empty()) {
+        const llw_handle_t handle = queued_.front();
+        queued_.pop_front();
+        finish_locked(handle, RequestState::Cancelled, 0, "");
+    }
+    wake_.notify_one();
+    idle_.wait(lock, [this] { return terminal_ == accepted_; });
+}
+
+bool Scheduler::has_work_locked() const {
+    if (!queued_.empty()) return true;
+    return std::any_of(slots_.begin(), slots_.end(), [this](const Slot& slot) {
+        if (slot.request == 0) return false;
+        const auto found = requests_.find(slot.request);
+        return found != requests_.end() && !terminal(found->second.state);
+    });
+}
+
+void Scheduler::promote_locked() {
+    for (Slot& slot : slots_) {
+        if (slot.request != 0 || queued_.empty()) continue;
+        const llw_handle_t handle = queued_.front();
+        queued_.pop_front();
+        Request& request = requests_.at(handle);
+        if (request.cancel_requested) {
+            finish_locked(handle, RequestState::Cancelled, 0, "");
+            continue;
+        }
+        request.slot_id = slot.id;
+        request.state = RequestState::Preprocessing;
+        slot.request = handle;
+        try {
+            engine_.start(EngineRequest{request.handle, slot.id, request.prompt,
+                request.max_new_tokens, request.sampling, request.stops});
+            request.state = RequestState::Running;
+        } catch (const std::exception& exception) {
+            finish_locked(handle, RequestState::Error, LLW_ERR_INTERNAL, exception.what());
+        } catch (...) {
+            finish_locked(handle, RequestState::Error, LLW_ERR_INTERNAL,
+                          "unknown preprocessing failure");
+        }
+    }
+}
+
+void Scheduler::publish_locked(Request& request, int32_t type, uint32_t slot,
+                               int32_t error_code, std::vector<uint8_t> payload,
+                               uint32_t data_format) {
+    OwnedEvent event;
+    event.type = type;
+    event.data_format = data_format;
+    event.error_code = error_code;
+    event.model = request.model;
+    event.request = request.handle;
+    event.slot = slot;
+    event.sequence = request.next_sequence++;
+    event.request_user_data = request.user_data;
+    event.data = std::move(payload);
+    if (!events_.publish(std::move(event))) throw std::runtime_error("event dispatcher stopped");
+}
+
+void Scheduler::finish_locked(llw_handle_t handle, RequestState state, int32_t error_code,
+                              std::string message) {
+    Request& request = requests_.at(handle);
+    if (request.terminal_emitted) return;
+    request.terminal_emitted = true;
+    request.state = state;
+    for (Slot& slot : slots_) {
+        if (slot.request == handle) slot.request = 0;
+    }
+    int32_t event_type = LLW_EVENT_DONE;
+    std::string payload = "{\"state\":\"done\",\"generatedTokens\":" +
+                          std::to_string(request.generated_tokens) + "}";
+    if (state == RequestState::Cancelled) {
+        event_type = LLW_EVENT_CANCELLED;
+        payload = "{\"state\":\"cancelled\"}";
+        ++metrics_.cancelled_requests;
+    } else if (state == RequestState::Error) {
+        event_type = LLW_EVENT_ERROR;
+        payload = "{\"state\":\"error\",\"message\":\"" + json_escape(message) + "\"}";
+        ++metrics_.failed_requests;
+    }
+    publish_locked(request, event_type, request.slot_id, error_code, bytes(payload),
+                   LLW_EVENT_DATA_JSON_UTF8);
+    ++terminal_;
+    if (terminal_ == accepted_) idle_.notify_all();
+}
+
+void Scheduler::run() {
+    std::unique_lock lock(mutex_);
+    for (;;) {
+        wake_.wait(lock, [this] { return stopping_ || has_work_locked(); });
+        if (stopping_ && !has_work_locked()) break;
+
+        for (Slot& slot : slots_) {
+            if (slot.request == 0) continue;
+            Request& request = requests_.at(slot.request);
+            if (!request.cancel_requested || terminal(request.state)) continue;
+            try { engine_.cancel(request.handle, slot.id); } catch (...) {}
+            finish_locked(request.handle, RequestState::Cancelled, 0, "");
+        }
+        promote_locked();
+
+        std::vector<llw_handle_t> active;
+        for (const Slot& slot : slots_) if (slot.request != 0) active.push_back(slot.request);
+        if (active.empty()) continue;
+
+        lock.unlock();
+        std::vector<EngineStep> steps;
+        std::string decode_error;
+        const auto started = std::chrono::steady_clock::now();
+        try { steps = engine_.decode(active); }
+        catch (const std::exception& exception) { decode_error = exception.what(); }
+        catch (...) { decode_error = "unknown decode failure"; }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        lock.lock();
+
+        ++metrics_.decode_calls;
+        metrics_.decode_ns += static_cast<uint64_t>(elapsed);
+        if (!decode_error.empty()) {
+            for (const llw_handle_t handle : active) {
+                if (!requests_.at(handle).terminal_emitted)
+                    finish_locked(handle, RequestState::Error, LLW_ERR_INTERNAL, decode_error);
+            }
+            continue;
+        }
+        for (EngineStep& step : steps) {
+            auto found = requests_.find(step.handle);
+            if (found == requests_.end() || found->second.terminal_emitted) continue;
+            Request& request = found->second;
+            if (request.cancel_requested) {
+                try { engine_.cancel(request.handle, request.slot_id); } catch (...) {}
+                finish_locked(request.handle, RequestState::Cancelled, 0, "");
+                continue;
+            }
+            if (!step.token_bytes.empty()) {
+                ++request.generated_tokens;
+                ++metrics_.generated_tokens;
+                publish_locked(request, LLW_EVENT_TOKEN, request.slot_id, 0,
+                               std::move(step.token_bytes), LLW_EVENT_DATA_BYTES);
+            }
+            if (step.failed) finish_locked(request.handle, RequestState::Error,
+                                           LLW_ERR_INTERNAL, step.error);
+            else if (step.finished) finish_locked(request.handle, RequestState::Done, 0, "");
+        }
+
+        OwnedEvent metrics_event;
+        metrics_event.type = LLW_EVENT_METRICS;
+        metrics_event.data_format = LLW_EVENT_DATA_JSON_UTF8;
+        metrics_event.sequence = 0;
+        metrics_event.data = bytes("{\"promptTokens\":" + std::to_string(metrics_.prompt_tokens) +
+            ",\"generatedTokens\":" + std::to_string(metrics_.generated_tokens) +
+            ",\"decodeCalls\":" + std::to_string(metrics_.decode_calls) +
+            ",\"decodeNanoseconds\":" + std::to_string(metrics_.decode_ns) + "}");
+        if (!events_.publish(std::move(metrics_event))) stopping_ = true;
+    }
+}
 ```
-
-Use JSON payloads with fixed keys and integer values, for example `{"state":"queued","queuePosition":1}`, `{"state":"cancelled"}`, and `{"state":"done","generatedTokens":3}`. Build JSON from internal numeric/string values with a small `json_escape` function that escapes quote, backslash, control bytes as `\u00XX`, and never inserts prompt/token bytes.
 
 - [ ] **Step 5: Create the deterministic fake engine**
 
-Create `tests/fake_engine.h`. `start` stores the request by handle. Each `decode(active)` call returns one token byte equal to `'A' + seq_id` for every handle, sets `finished` after three calls for that handle, records each active vector for shared-batch assertions, and honors a condition-variable barrier. `cancel` records `(handle, seq_id)` and erases the request. Protect all fake state with one mutex.
+Create `native/llm-runtime/tests/fake_engine.h`:
+
+```cpp
+#pragma once
+#include "inference_engine.h"
+#include <condition_variable>
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <mutex>
+#include <utility>
+#include <vector>
+
+class FakeEngine final : public InferenceEngine {
+public:
+    void start(EngineRequest request) override {
+        std::lock_guard lock(mutex_);
+        requests_.emplace(request.handle, Stored{std::move(request), 0});
+        changed_.notify_all();
+    }
+
+    std::vector<EngineStep> decode(const std::vector<llw_handle_t>& active) override {
+        std::unique_lock lock(mutex_);
+        batches_.push_back(active);
+        changed_.notify_all();
+        gate_.wait(lock, [this] { return released_; });
+        std::vector<EngineStep> result;
+        for (const llw_handle_t handle : active) {
+            auto found = requests_.find(handle);
+            if (found == requests_.end()) continue;
+            Stored& stored = found->second;
+            ++stored.steps;
+            EngineStep step;
+            step.handle = handle;
+            step.token_bytes = {static_cast<uint8_t>('A' + stored.request.seq_id)};
+            step.finished = stored.steps == 3;
+            result.push_back(std::move(step));
+            if (stored.steps == 3) requests_.erase(found);
+        }
+        return result;
+    }
+
+    void cancel(llw_handle_t handle, uint32_t seq_id) override {
+        std::lock_guard lock(mutex_);
+        cancelled_.emplace_back(handle, seq_id);
+        requests_.erase(handle);
+        changed_.notify_all();
+    }
+
+    void release() {
+        std::lock_guard lock(mutex_);
+        released_ = true;
+        gate_.notify_all();
+    }
+
+    void wait_for_started(size_t count) {
+        std::unique_lock lock(mutex_);
+        changed_.wait(lock, [this, count] { return requests_.size() >= count; });
+    }
+
+    void wait_for_batch_size(size_t count) {
+        std::unique_lock lock(mutex_);
+        changed_.wait(lock, [this, count] {
+            for (const auto& batch : batches_) if (batch.size() >= count) return true;
+            return false;
+        });
+    }
+
+    std::vector<std::vector<llw_handle_t>> batches() const {
+        std::lock_guard lock(mutex_);
+        return batches_;
+    }
+
+    std::vector<std::pair<llw_handle_t, uint32_t>> cancelled() const {
+        std::lock_guard lock(mutex_);
+        return cancelled_;
+    }
+
+private:
+    struct Stored { EngineRequest request; uint32_t steps{}; };
+    mutable std::mutex mutex_;
+    std::condition_variable gate_;
+    std::condition_variable changed_;
+    std::map<llw_handle_t, Stored> requests_;
+    std::vector<std::vector<llw_handle_t>> batches_;
+    std::vector<std::pair<llw_handle_t, uint32_t>> cancelled_;
+    bool released_{};
+};
+```
 
 - [ ] **Step 6: Run scheduler tests repeatedly**
 
@@ -812,7 +1642,67 @@ git commit -m "feat: schedule bounded concurrent requests"
 
 - [ ] **Step 1: Write failing parameter and device-selection tests**
 
-Create `native/llm-runtime/tests/llama_engine_test.cpp`. Test the pure helpers without a model: reject backend values outside AUTO/CPU/CUDA/VULKAN; reject slots outside `1..4`; reject every model bound documented in Task 2; choose the Nth matching device by backend type and return `LLW_ERR_NOT_FOUND` when the index is absent; reject CUDA when only CPU/Vulkan records exist and Vulkan when only CPU/CUDA records exist. Pass a synthetic vector of `{backend,index,name}` records into the selector so these tests do not require GPU hardware.
+Create `native/llm-runtime/tests/llama_engine_test.cpp`:
+
+```cpp
+#include "llama_engine.h"
+#include <cstdio>
+#include <string>
+#include <vector>
+
+#define CHECK(condition) do { if (!(condition)) { \
+    std::fprintf(stderr, "%s:%d failed: %s\n", __FILE__, __LINE__, #condition); return 1; \
+} } while (false)
+
+ModelConfig valid_config() {
+    ModelConfig config;
+    config.path = "model.gguf";
+    config.backend_directory = ".";
+    config.backend = LLW_BACKEND_CPU;
+    config.device_index = 0;
+    config.slots = 2;
+    config.context_tokens_per_slot = 4096;
+    config.logical_batch_tokens = 512;
+    config.physical_batch_tokens = 128;
+    config.n_threads = 4;
+    config.n_threads_batch = 4;
+    config.n_gpu_layers = 0;
+    config.use_mmap = true;
+    return config;
+}
+
+int main() {
+    std::string error;
+    ModelConfig config = valid_config();
+    CHECK(validate_model_config(config, error) == LLW_OK);
+    config.backend = 99;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+    config = valid_config(); config.slots = 0;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+    config = valid_config(); config.slots = 5;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+    config = valid_config(); config.context_tokens_per_slot = 511;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+    config = valid_config(); config.physical_batch_tokens = 513;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+    config = valid_config(); config.n_threads_batch = 257;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+    config = valid_config(); config.device_index = LLW_MAX_DEVICE_INDEX + 1;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+
+    const std::vector<DeviceRecord> devices = {
+        {LLW_BACKEND_CPU, 0, nullptr, "cpu:0", "CPU", "ggml-cpu"},
+        {LLW_BACKEND_CUDA, 0, nullptr, "cuda:0", "CUDA 0", "ggml-cuda"},
+        {LLW_BACKEND_CUDA, 1, nullptr, "cuda:1", "CUDA 1", "ggml-cuda"},
+    };
+    const auto cuda_one = select_device(devices, LLW_BACKEND_CUDA, 1);
+    CHECK(cuda_one.has_value());
+    CHECK(cuda_one->id == "cuda:1");
+    CHECK(!select_device(devices, LLW_BACKEND_VULKAN, 0).has_value());
+    CHECK(!select_device(devices, LLW_BACKEND_CUDA, 2).has_value());
+    return 0;
+}
+```
 
 Run:
 
@@ -830,10 +1720,14 @@ Create `native/llm-runtime/src/llama_engine.h`:
 #pragma once
 #include "inference_engine.h"
 #include "llama.h"
+#include <cstddef>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 struct DeviceRecord {
     int32_t backend{};
@@ -846,6 +1740,7 @@ struct DeviceRecord {
 
 struct ModelConfig {
     std::string path;
+    std::string backend_directory;
     int32_t backend{};
     uint32_t device_index{};
     uint32_t slots{};
@@ -860,9 +1755,28 @@ struct ModelConfig {
     bool check_tensors{};
 };
 
+struct SequenceView {
+    llw_handle_t handle{};
+    uint32_t seq_id{};
+    const std::vector<llama_token>* prompt_tokens{};
+    size_t prompt_cursor{};
+    uint32_t next_position{};
+    bool has_pending_token{};
+    llama_token pending_token{};
+};
+struct BatchItem {
+    llw_handle_t handle{};
+    uint32_t seq_id{};
+    llama_token token{};
+    llama_pos position{};
+    bool logits{};
+};
+using BatchPlan = std::vector<BatchItem>;
+
 llw_result_t validate_model_config(const ModelConfig&, std::string&);
 std::optional<DeviceRecord> select_device(const std::vector<DeviceRecord>&, int32_t, uint32_t);
 std::vector<DeviceRecord> enumerate_pack_devices(const std::string& backend_directory);
+BatchPlan plan_batch(const std::vector<SequenceView>& sequences, size_t capacity);
 
 class LlamaEngine final : public InferenceEngine {
 public:
@@ -880,47 +1794,394 @@ private:
     llama_batch batch_{};
     std::unordered_map<llw_handle_t, std::unique_ptr<Sequence>> sequences_;
     std::mutex mutex_;
+    bool backend_acquired_{};
 };
 ```
 
-- [ ] **Step 3: Implement pack device discovery and model construction**
+- [ ] **Step 3: Implement pack discovery, model ownership, shared decode, and samplers**
 
-In `llama_engine.cpp`, call `llama_backend_init()` once through a process-static reference-counted guard. Before enumeration, call `ggml_backend_load_all_from_path(backend_directory.c_str())`. Enumerate with `ggml_backend_dev_count/get`, map `GGML_BACKEND_DEVICE_TYPE_CPU` to CPU, and map GPU/IGPU devices to the compile-time pack backend. Set `id` to the pinned header's `ggml_backend_dev_props.device_id` when non-null and otherwise to `"<backend>:<index>"`; use `ggml_backend_dev_name`, `ggml_backend_dev_description`, and backend registry name as stable display/vendor data.
-
-Construct model parameters from `llama_model_default_params()`:
+Create `native/llm-runtime/src/llama_engine.cpp` with this complete implementation:
 
 ```cpp
-llama_model_params mp = llama_model_default_params();
-ggml_backend_dev_t selected_devices[2] = {selected.device, nullptr};
-mp.devices = selected_devices;
-mp.n_gpu_layers = config.n_gpu_layers;
-mp.main_gpu = 0;
-mp.use_mmap = config.use_mmap;
-mp.use_mlock = config.use_mlock;
-mp.check_tensors = config.check_tensors;
-mp.progress_callback = progress_bridge;
-mp.progress_callback_user_data = &progress_state;
-model_ = llama_model_load_from_file(config.path.c_str(), mp);
-if (!model_) throw std::runtime_error("llama_model_load_from_file failed");
+#include "llama_engine.h"
+#include "ggml-backend.h"
+#include <algorithm>
+#include <cstdint>
+#include <cstring>
+#include <limits>
+#include <new>
+#include <stdexcept>
+#include <string>
+#include <utility>
 
-llama_context_params cp = llama_context_default_params();
-const uint64_t total_context = uint64_t(config.context_tokens_per_slot) * config.slots;
-if (total_context > UINT32_MAX) throw std::invalid_argument("total context exceeds uint32_t");
-cp.n_ctx = static_cast<uint32_t>(total_context);
-cp.n_batch = config.logical_batch_tokens;
-cp.n_ubatch = config.physical_batch_tokens;
-cp.n_seq_max = config.slots;
-cp.n_threads = config.n_threads;
-cp.n_threads_batch = config.n_threads_batch;
-cp.embeddings = false;
-cp.no_perf = false;
-context_ = llama_init_from_model(model_, cp);
-if (!context_) throw std::runtime_error("llama_init_from_model failed");
-vocab_ = llama_model_get_vocab(model_);
-batch_ = llama_batch_init(static_cast<int32_t>(config.logical_batch_tokens), 0, 1);
+namespace {
+std::mutex backend_mutex;
+uint32_t backend_users{};
+
+void acquire_backend() {
+    std::lock_guard lock(backend_mutex);
+    if (backend_users++ == 0) llama_backend_init();
+}
+
+void release_backend() {
+    std::lock_guard lock(backend_mutex);
+    if (backend_users != 0 && --backend_users == 0) llama_backend_free();
+}
+
+int32_t compiled_gpu_backend() {
+    const std::string pack = LLW_BACKEND_PACK_NAME;
+    if (pack == "CUDA") return LLW_BACKEND_CUDA;
+    if (pack == "VULKAN") return LLW_BACKEND_VULKAN;
+    return LLW_BACKEND_CPU;
+}
+
+llama_sampler* make_sampler(const SamplingConfig& config) {
+    llama_sampler* chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    if (!chain) throw std::bad_alloc();
+    const auto add = [chain](llama_sampler* sampler) {
+        if (!sampler) { llama_sampler_free(chain); throw std::bad_alloc(); }
+        llama_sampler_chain_add(chain, sampler);
+    };
+    add(llama_sampler_init_penalties(config.repeat_last_n, config.repeat_penalty,
+                                     config.frequency_penalty, config.presence_penalty));
+    if (config.top_k > 0) add(llama_sampler_init_top_k(config.top_k));
+    if (config.top_p < 1.0f) add(llama_sampler_init_top_p(config.top_p, 1));
+    if (config.min_p > 0.0f) add(llama_sampler_init_min_p(config.min_p, 1));
+    add(llama_sampler_init_temp(config.temperature));
+    add(config.temperature == 0.0f ? llama_sampler_init_greedy()
+                                   : llama_sampler_init_dist(config.seed));
+    return chain;
+}
+
+std::vector<uint8_t> token_piece(const llama_vocab* vocab, llama_token token) {
+    char local[256];
+    int32_t count = llama_token_to_piece(vocab, token, local, sizeof(local), 0, true);
+    if (count >= 0) return {reinterpret_cast<uint8_t*>(local),
+                            reinterpret_cast<uint8_t*>(local) + count};
+    if (count == std::numeric_limits<int32_t>::min())
+        throw std::runtime_error("token piece length overflow");
+    std::vector<char> storage(static_cast<size_t>(-count));
+    count = llama_token_to_piece(vocab, token, storage.data(),
+                                 static_cast<int32_t>(storage.size()), 0, true);
+    if (count < 0) throw std::runtime_error("llama_token_to_piece failed");
+    return {reinterpret_cast<uint8_t*>(storage.data()),
+            reinterpret_cast<uint8_t*>(storage.data()) + count};
+}
+
+size_t longest_stop(const std::vector<std::vector<uint8_t>>& stops) {
+    size_t result = 0;
+    for (const auto& stop : stops) result = std::max(result, stop.size());
+    return result;
+}
+} // namespace
+
+struct LlamaEngine::Sequence {
+    llw_handle_t handle{};
+    uint32_t seq_id{};
+    std::vector<llama_token> prompt_tokens;
+    size_t prompt_cursor{};
+    uint32_t next_position{};
+    uint32_t generated{};
+    uint32_t max_new_tokens{};
+    std::optional<llama_token> pending_token;
+    std::vector<std::vector<uint8_t>> stops;
+    std::vector<uint8_t> pending_output;
+    llama_sampler* sampler{};
+    ~Sequence() { if (sampler) llama_sampler_free(sampler); }
+};
+
+llw_result_t validate_model_config(const ModelConfig& config, std::string& error) {
+    if (config.path.empty() || config.path.size() > LLW_MAX_MODEL_PATH_BYTES ||
+        config.backend < LLW_BACKEND_AUTO || config.backend > LLW_BACKEND_VULKAN ||
+        config.device_index > LLW_MAX_DEVICE_INDEX || config.slots < 1 ||
+        config.slots > LLW_MAX_SLOTS || config.context_tokens_per_slot < 512 ||
+        config.context_tokens_per_slot > 262144 || config.logical_batch_tokens < 1 ||
+        config.logical_batch_tokens > 8192 || config.physical_batch_tokens < 1 ||
+        config.physical_batch_tokens > config.logical_batch_tokens || config.n_threads < 1 ||
+        config.n_threads > 256 || config.n_threads_batch < 1 ||
+        config.n_threads_batch > 256 || config.n_gpu_layers < -1 ||
+        config.n_gpu_layers > 65535) {
+        error = "model configuration is outside declared bounds";
+        return LLW_ERR_INVALID_ARGUMENT;
+    }
+    return LLW_OK;
+}
+
+std::optional<DeviceRecord> select_device(const std::vector<DeviceRecord>& devices,
+                                          int32_t backend, uint32_t index) {
+    int32_t selected_backend = backend;
+    if (backend == LLW_BACKEND_AUTO) {
+        selected_backend = compiled_gpu_backend();
+        if (std::none_of(devices.begin(), devices.end(), [selected_backend](const DeviceRecord& d) {
+                return d.backend == selected_backend;
+            })) selected_backend = LLW_BACKEND_CPU;
+    }
+    for (const DeviceRecord& device : devices) {
+        if (device.backend == selected_backend && device.backend_index == index) return device;
+    }
+    return std::nullopt;
+}
+
+std::vector<DeviceRecord> enumerate_pack_devices(const std::string& directory) {
+    ggml_backend_load_all_from_path(directory.c_str());
+    uint32_t cpu_index = 0;
+    uint32_t gpu_index = 0;
+    std::vector<DeviceRecord> result;
+    for (size_t index = 0; index < ggml_backend_dev_count(); ++index) {
+        ggml_backend_dev_t device = ggml_backend_dev_get(index);
+        if (!device) continue;
+        const auto type = ggml_backend_dev_type(device);
+        int32_t backend = LLW_BACKEND_CPU;
+        uint32_t backend_index = cpu_index++;
+        if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            backend = compiled_gpu_backend();
+            backend_index = gpu_index++;
+        } else if (type != GGML_BACKEND_DEVICE_TYPE_CPU) {
+            continue;
+        }
+        ggml_backend_dev_props properties{};
+        ggml_backend_dev_get_props(device, &properties);
+        const char* registry = ggml_backend_reg_name(ggml_backend_dev_backend_reg(device));
+        DeviceRecord record;
+        record.backend = backend;
+        record.backend_index = backend_index;
+        record.device = device;
+        record.id = properties.device_id ? properties.device_id
+                                         : std::to_string(backend) + ":" + std::to_string(backend_index);
+        record.name = ggml_backend_dev_name(device) ? ggml_backend_dev_name(device) : "unknown";
+        record.vendor = registry ? registry : "ggml";
+        result.push_back(std::move(record));
+    }
+    return result;
+}
+
+BatchPlan plan_batch(const std::vector<SequenceView>& sequences, size_t capacity) {
+    BatchPlan plan;
+    for (size_t sequence_index = 0;
+         sequence_index < sequences.size() && plan.size() < capacity; ++sequence_index) {
+        const SequenceView& sequence = sequences[sequence_index];
+        const size_t remaining_sequences = sequences.size() - sequence_index;
+        const size_t quota = std::max<size_t>(1, (capacity - plan.size()) / remaining_sequences);
+        if (sequence.prompt_tokens && sequence.prompt_cursor < sequence.prompt_tokens->size()) {
+            const size_t remaining = sequence.prompt_tokens->size() - sequence.prompt_cursor;
+            const size_t count = std::min(quota, remaining);
+            for (size_t offset = 0; offset < count && plan.size() < capacity; ++offset) {
+                const size_t token_index = sequence.prompt_cursor + offset;
+                plan.push_back(BatchItem{sequence.handle, sequence.seq_id,
+                    (*sequence.prompt_tokens)[token_index],
+                    static_cast<llama_pos>(sequence.next_position + offset),
+                    token_index + 1 == sequence.prompt_tokens->size()});
+            }
+        } else if (sequence.has_pending_token) {
+            plan.push_back(BatchItem{sequence.handle, sequence.seq_id, sequence.pending_token,
+                static_cast<llama_pos>(sequence.next_position), true});
+        }
+    }
+    return plan;
+}
+
+LlamaEngine::LlamaEngine(ModelConfig config, std::function<void(float)> progress)
+    : config_(std::move(config)) {
+    std::string error;
+    if (validate_model_config(config_, error) != LLW_OK) throw std::invalid_argument(error);
+    acquire_backend();
+    backend_acquired_ = true;
+    try {
+        const std::vector<DeviceRecord> devices = enumerate_pack_devices(config_.backend_directory);
+        const auto selected = select_device(devices, config_.backend, config_.device_index);
+        if (!selected) throw std::invalid_argument("selected backend device was not found");
+        struct ProgressState { std::function<void(float)>* callback; } state{&progress};
+        const auto progress_bridge = [](float value, void* user_data) -> bool {
+            auto& context = *static_cast<ProgressState*>(user_data);
+            (*context.callback)(value);
+            return true;
+        };
+        ggml_backend_dev_t selected_devices[2] = {selected->device, nullptr};
+        llama_model_params model_params = llama_model_default_params();
+        model_params.devices = selected_devices;
+        model_params.n_gpu_layers = config_.n_gpu_layers;
+        model_params.main_gpu = 0;
+        model_params.use_mmap = config_.use_mmap;
+        model_params.use_mlock = config_.use_mlock;
+        model_params.check_tensors = config_.check_tensors;
+        model_params.progress_callback = progress_bridge;
+        model_params.progress_callback_user_data = &state;
+        model_ = llama_model_load_from_file(config_.path.c_str(), model_params);
+        if (!model_) throw std::runtime_error("llama_model_load_from_file failed");
+
+        llama_context_params context_params = llama_context_default_params();
+        context_params.n_ctx = config_.context_tokens_per_slot * config_.slots;
+        context_params.n_batch = config_.logical_batch_tokens;
+        context_params.n_ubatch = config_.physical_batch_tokens;
+        context_params.n_seq_max = config_.slots;
+        context_params.n_threads = config_.n_threads;
+        context_params.n_threads_batch = config_.n_threads_batch;
+        context_params.embeddings = false;
+        context_params.no_perf = false;
+        context_ = llama_init_from_model(model_, context_params);
+        if (!context_) throw std::runtime_error("llama_init_from_model failed");
+        vocab_ = llama_model_get_vocab(model_);
+        if (!vocab_) throw std::runtime_error("llama_model_get_vocab failed");
+        batch_ = llama_batch_init(static_cast<int32_t>(config_.logical_batch_tokens), 0, 1);
+        if (!batch_.token || !batch_.pos || !batch_.n_seq_id || !batch_.seq_id || !batch_.logits)
+            throw std::bad_alloc();
+    } catch (...) {
+        if (batch_.token || batch_.embd) llama_batch_free(batch_);
+        if (context_) llama_free(context_);
+        if (model_) llama_model_free(model_);
+        context_ = nullptr;
+        model_ = nullptr;
+        release_backend();
+        backend_acquired_ = false;
+        throw;
+    }
+}
+
+LlamaEngine::~LlamaEngine() {
+    std::lock_guard lock(mutex_);
+    for (const auto& [handle, sequence] : sequences_) {
+        (void)handle;
+        llama_memory_seq_rm(llama_get_memory(context_),
+                            static_cast<llama_seq_id>(sequence->seq_id), -1, -1);
+    }
+    sequences_.clear();
+    if (batch_.token || batch_.embd) llama_batch_free(batch_);
+    if (context_) llama_free(context_);
+    if (model_) llama_model_free(model_);
+    if (backend_acquired_) release_backend();
+}
+
+void LlamaEngine::start(EngineRequest request) {
+    std::lock_guard lock(mutex_);
+    if (sequences_.count(request.handle) != 0) throw std::invalid_argument("duplicate request handle");
+    if (request.prompt.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max()))
+        throw std::invalid_argument("prompt is too large for llama_tokenize");
+    int32_t count = llama_tokenize(vocab_, reinterpret_cast<const char*>(request.prompt.data()),
+        static_cast<int32_t>(request.prompt.size()), nullptr, 0, true, true);
+    if (count == std::numeric_limits<int32_t>::min() || count >= 0)
+        throw std::runtime_error("token count query failed");
+    auto sequence = std::make_unique<Sequence>();
+    sequence->prompt_tokens.resize(static_cast<size_t>(-count));
+    count = llama_tokenize(vocab_, reinterpret_cast<const char*>(request.prompt.data()),
+        static_cast<int32_t>(request.prompt.size()), sequence->prompt_tokens.data(),
+        static_cast<int32_t>(sequence->prompt_tokens.size()), true, true);
+    if (count < 0) throw std::runtime_error("prompt tokenization failed");
+    sequence->prompt_tokens.resize(static_cast<size_t>(count));
+    sequence->handle = request.handle;
+    sequence->seq_id = request.seq_id;
+    sequence->max_new_tokens = request.max_new_tokens;
+    sequence->stops = std::move(request.stops);
+    sequence->sampler = make_sampler(request.sampling);
+    sequences_.emplace(request.handle, std::move(sequence));
+}
+
+std::vector<EngineStep> LlamaEngine::decode(const std::vector<llw_handle_t>& active) {
+    std::lock_guard lock(mutex_);
+    std::vector<SequenceView> views;
+    for (const llw_handle_t handle : active) {
+        const auto found = sequences_.find(handle);
+        if (found == sequences_.end()) continue;
+        const Sequence& sequence = *found->second;
+        views.push_back(SequenceView{handle, sequence.seq_id, &sequence.prompt_tokens,
+            sequence.prompt_cursor, sequence.next_position, sequence.pending_token.has_value(),
+            sequence.pending_token.value_or(0)});
+    }
+    const BatchPlan plan = plan_batch(views, config_.logical_batch_tokens);
+    if (plan.empty()) return {};
+    batch_.n_tokens = static_cast<int32_t>(plan.size());
+    std::vector<llw_handle_t> logit_owners;
+    for (size_t index = 0; index < plan.size(); ++index) {
+        const BatchItem& item = plan[index];
+        batch_.token[index] = item.token;
+        batch_.pos[index] = item.position;
+        batch_.n_seq_id[index] = 1;
+        batch_.seq_id[index][0] = static_cast<llama_seq_id>(item.seq_id);
+        batch_.logits[index] = item.logits ? 1 : 0;
+        Sequence& sequence = *sequences_.at(item.handle);
+        if (sequence.prompt_cursor < sequence.prompt_tokens.size()) ++sequence.prompt_cursor;
+        else sequence.pending_token.reset();
+        ++sequence.next_position;
+        if (item.logits) logit_owners.push_back(item.handle);
+    }
+    const int32_t decode_result = llama_decode(context_, batch_);
+    if (decode_result != 0) {
+        std::vector<EngineStep> failed;
+        for (const llw_handle_t handle : active)
+            failed.push_back(EngineStep{handle, {}, false, true,
+                "llama_decode returned " + std::to_string(decode_result)});
+        return failed;
+    }
+
+    std::vector<EngineStep> result;
+    std::vector<llw_handle_t> finished;
+    for (size_t output = 0; output < logit_owners.size(); ++output) {
+        const llw_handle_t handle = logit_owners[output];
+        Sequence& sequence = *sequences_.at(handle);
+        const llama_token token = llama_sampler_sample(sequence.sampler, context_,
+                                                       static_cast<int32_t>(output));
+        llama_sampler_accept(sequence.sampler, token);
+        ++sequence.generated;
+        EngineStep step;
+        step.handle = handle;
+        bool done = llama_vocab_is_eog(vocab_, token) ||
+                    sequence.generated >= sequence.max_new_tokens;
+        if (!llama_vocab_is_eog(vocab_, token)) {
+            const std::vector<uint8_t> piece = token_piece(vocab_, token);
+            sequence.pending_output.insert(sequence.pending_output.end(), piece.begin(), piece.end());
+            for (const auto& stop : sequence.stops) {
+                const auto match = std::search(sequence.pending_output.begin(), sequence.pending_output.end(),
+                                               stop.begin(), stop.end());
+                if (match != sequence.pending_output.end()) {
+                    step.token_bytes.assign(sequence.pending_output.begin(), match);
+                    sequence.pending_output.clear();
+                    done = true;
+                    break;
+                }
+            }
+            if (!done) {
+                const size_t keep = longest_stop(sequence.stops);
+                const size_t retain = keep == 0 ? 0 : keep - 1;
+                if (sequence.pending_output.size() > retain) {
+                    const size_t emit = sequence.pending_output.size() - retain;
+                    step.token_bytes.assign(sequence.pending_output.begin(),
+                                            sequence.pending_output.begin() + emit);
+                    sequence.pending_output.erase(sequence.pending_output.begin(),
+                                                  sequence.pending_output.begin() + emit);
+                }
+            }
+        }
+        if (done) {
+            step.token_bytes.insert(step.token_bytes.end(), sequence.pending_output.begin(),
+                                    sequence.pending_output.end());
+            sequence.pending_output.clear();
+            step.finished = true;
+            finished.push_back(handle);
+        } else {
+            sequence.pending_token = token;
+        }
+        result.push_back(std::move(step));
+    }
+    for (const llw_handle_t handle : finished) {
+        Sequence& sequence = *sequences_.at(handle);
+        if (!llama_memory_seq_rm(llama_get_memory(context_),
+                                 static_cast<llama_seq_id>(sequence.seq_id), -1, -1)) {
+            throw std::runtime_error("failed to clear completed sequence memory");
+        }
+        sequences_.erase(handle);
+    }
+    return result;
+}
+
+void LlamaEngine::cancel(llw_handle_t handle, uint32_t seq_id) {
+    std::lock_guard lock(mutex_);
+    const auto found = sequences_.find(handle);
+    if (found == sequences_.end()) return;
+    if (found->second->seq_id != seq_id) throw std::invalid_argument("sequence ID mismatch");
+    if (!llama_memory_seq_rm(llama_get_memory(context_), static_cast<llama_seq_id>(seq_id), -1, -1))
+        throw std::runtime_error("failed to clear cancelled sequence memory");
+    sequences_.erase(found);
+}
 ```
-
-The progress bridge returns `true` and sends progress into the bounded dispatcher through the supplied function; it must not invoke the Rust callback directly. The destructor frees `batch_`, then context, then model, and finally releases the backend guard. On partial construction, use local `unique_ptr` guards so each acquired object is freed exactly once.
 
 - [ ] **Step 4: Add the engine test target**
 
@@ -929,6 +2190,9 @@ Append to CMake:
 ```cmake
 add_executable(llw_llama_engine_test tests/llama_engine_test.cpp src/llama_engine.cpp)
 target_include_directories(llw_llama_engine_test PRIVATE include src)
+target_compile_definitions(llw_llama_engine_test PRIVATE
+  LLW_BACKEND_PACK_NAME="${LLW_BACKEND_PACK}"
+)
 target_link_libraries(llw_llama_engine_test PRIVATE llama ggml Threads::Threads)
 add_test(NAME llw_llama_engine_test COMMAND llw_llama_engine_test)
 ```
@@ -950,109 +2214,117 @@ git add native/llm-runtime/CMakeLists.txt native/llm-runtime/src/llama_engine.* 
 git commit -m "feat: load llama model on selected device"
 ```
 
-### Task 6: Implement Shared llama_batch Decode And Independent Samplers
+### Task 6: Verify Shared Batch Planning And Independent Sequence State
 
 **Files:**
-- Modify: `native/llm-runtime/src/llama_engine.cpp`
 - Modify: `native/llm-runtime/tests/llama_engine_test.cpp`
 
-- [ ] **Step 1: Write failing batch-construction tests**
+- [ ] **Step 1: Replace the helper test with complete batch-plan coverage**
 
-Extract a pure `BatchPlan plan_batch(vector<SequenceView>, capacity)` helper. Test that two active sequences produce one plan containing both sequence IDs, positions are monotonic per sequence, only the last prompt token requests logits, generation contributes one pending token per sequence, and capacity truncation resumes at the correct cursor. Test cancellation removes only the cancelled sequence and leaves the other sequence plan unchanged.
-
-Run:
-
-```powershell
-cmake --build .cmake-build/llm-cpu --config Debug --target llw_llama_engine_test
-```
-
-Expected: FAIL because `plan_batch` is absent.
-
-- [ ] **Step 2: Implement sequence preprocessing and sampler chains**
-
-Define `LlamaEngine::Sequence` with handle, seq ID, token vector, prompt cursor, next position, generated count, max tokens, pending sampled token, emitted byte buffer used for stop matching, stop byte vectors, and owning `llama_sampler*`.
-
-In `start`, tokenize with the pinned API's negative-size retry convention:
+Replace `native/llm-runtime/tests/llama_engine_test.cpp` with the complete file below. It retains Task 5's bounds/device cases and adds two-sequence, capacity, logits, position, and pending-token assertions.
 
 ```cpp
-int32_t count = llama_tokenize(vocab_, reinterpret_cast<const char*>(request.prompt.data()),
-    static_cast<int32_t>(request.prompt.size()), nullptr, 0, true, true);
-if (count >= 0) throw std::runtime_error("token count query unexpectedly succeeded");
-std::vector<llama_token> tokens(static_cast<size_t>(-count));
-count = llama_tokenize(vocab_, reinterpret_cast<const char*>(request.prompt.data()),
-    static_cast<int32_t>(request.prompt.size()), tokens.data(), static_cast<int32_t>(tokens.size()), true, true);
-if (count < 0) throw std::runtime_error("prompt tokenization failed");
-tokens.resize(static_cast<size_t>(count));
-```
+#include "llama_engine.h"
+#include <cstdio>
+#include <string>
+#include <vector>
 
-Create one sampler chain per request:
+#define CHECK(condition) do { if (!(condition)) { \
+    std::fprintf(stderr, "%s:%d failed: %s\n", __FILE__, __LINE__, #condition); return 1; \
+} } while (false)
 
-```cpp
-llama_sampler_chain_params scp = llama_sampler_chain_default_params();
-llama_sampler* chain = llama_sampler_chain_init(scp);
-llama_sampler_chain_add(chain, llama_sampler_init_penalties(
-    sampling.repeat_last_n, sampling.repeat_penalty,
-    sampling.frequency_penalty, sampling.presence_penalty));
-if (sampling.top_k > 0) llama_sampler_chain_add(chain, llama_sampler_init_top_k(sampling.top_k));
-if (sampling.top_p < 1.0f) llama_sampler_chain_add(chain, llama_sampler_init_top_p(sampling.top_p, 1));
-if (sampling.min_p > 0.0f) llama_sampler_chain_add(chain, llama_sampler_init_min_p(sampling.min_p, 1));
-llama_sampler_chain_add(chain, llama_sampler_init_temp(sampling.temperature));
-if (sampling.temperature == 0.0f) {
-    llama_sampler_chain_add(chain, llama_sampler_init_greedy());
-} else {
-    llama_sampler_chain_add(chain, llama_sampler_init_dist(sampling.seed));
+ModelConfig valid_config() {
+    ModelConfig config;
+    config.path = "model.gguf";
+    config.backend_directory = ".";
+    config.backend = LLW_BACKEND_CPU;
+    config.device_index = 0;
+    config.slots = 2;
+    config.context_tokens_per_slot = 4096;
+    config.logical_batch_tokens = 512;
+    config.physical_batch_tokens = 128;
+    config.n_threads = 4;
+    config.n_threads_batch = 4;
+    config.n_gpu_layers = 0;
+    config.use_mmap = true;
+    return config;
+}
+
+int main() {
+    std::string error;
+    ModelConfig config = valid_config();
+    CHECK(validate_model_config(config, error) == LLW_OK);
+    config.backend = 99;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+    config = valid_config(); config.slots = 0;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+    config = valid_config(); config.slots = 5;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+    config = valid_config(); config.context_tokens_per_slot = 511;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+    config = valid_config(); config.physical_batch_tokens = 513;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+    config = valid_config(); config.n_threads_batch = 257;
+    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
+
+    const std::vector<DeviceRecord> devices = {
+        {LLW_BACKEND_CPU, 0, nullptr, "cpu:0", "CPU", "ggml-cpu"},
+        {LLW_BACKEND_CUDA, 0, nullptr, "cuda:0", "CUDA 0", "ggml-cuda"},
+        {LLW_BACKEND_CUDA, 1, nullptr, "cuda:1", "CUDA 1", "ggml-cuda"},
+    };
+    CHECK(select_device(devices, LLW_BACKEND_CUDA, 1)->id == "cuda:1");
+    CHECK(!select_device(devices, LLW_BACKEND_VULKAN, 0).has_value());
+
+    const std::vector<llama_token> first_tokens = {10, 11, 12};
+    const std::vector<llama_token> second_tokens = {20, 21};
+    const std::vector<SequenceView> prompt_views = {
+        {101, 0, &first_tokens, 0, 0, false, 0},
+        {202, 1, &second_tokens, 0, 0, false, 0},
+    };
+    const BatchPlan prompt_plan = plan_batch(prompt_views, 5);
+    CHECK(prompt_plan.size() == 5);
+    CHECK(prompt_plan[0].handle == 101 && prompt_plan[0].position == 0);
+    CHECK(prompt_plan[2].handle == 101 && prompt_plan[2].position == 2);
+    CHECK(prompt_plan[2].logits);
+    CHECK(prompt_plan[3].handle == 202 && prompt_plan[3].position == 0);
+    CHECK(prompt_plan[4].logits);
+
+    const std::vector<SequenceView> capacity_views = {
+        {101, 0, &first_tokens, 1, 8, false, 0},
+        {202, 1, &second_tokens, 1, 4, false, 0},
+    };
+    const BatchPlan capacity_plan = plan_batch(capacity_views, 2);
+    CHECK(capacity_plan.size() == 2);
+    CHECK(capacity_plan[0].handle == 101 && capacity_plan[0].token == 11);
+    CHECK(capacity_plan[1].handle == 202 && capacity_plan[1].token == 21);
+
+    const std::vector<SequenceView> generation_views = {
+        {101, 0, &first_tokens, first_tokens.size(), 3, true, 31},
+        {202, 1, &second_tokens, second_tokens.size(), 2, true, 41},
+    };
+    const BatchPlan generation_plan = plan_batch(generation_views, 2);
+    CHECK(generation_plan.size() == 2);
+    CHECK(generation_plan[0].token == 31 && generation_plan[0].logits);
+    CHECK(generation_plan[1].token == 41 && generation_plan[1].logits);
+    CHECK(generation_plan[0].seq_id != generation_plan[1].seq_id);
+    return 0;
 }
 ```
 
-If any sampler allocation returns null, free the chain and fail the request. The chain owns all samplers added to it.
-
-- [ ] **Step 3: Build and decode one shared batch per scheduler tick**
-
-For all active handles under the engine mutex, clear `batch_.n_tokens`, append prompt chunks first and one pending generation token for every other sequence while respecting `logical_batch_tokens`, and set for each entry:
-
-```cpp
-batch_.token[i] = token;
-batch_.pos[i] = sequence.next_position;
-batch_.n_seq_id[i] = 1;
-batch_.seq_id[i][0] = static_cast<llama_seq_id>(sequence.seq_id);
-batch_.logits[i] = requests_logits ? 1 : 0;
-```
-
-Record an ordered `logit_owners` vector whenever `requests_logits` is true. Call `llama_decode(context_, batch_)` exactly once. Return ERROR steps for `-1` or values below `-1`; treat `1` as a context-capacity error; treat `2` as cooperative abort/cancellation; count positive warnings explicitly rather than silently succeeding.
-
-For each logit owner at output index `i`, call:
-
-```cpp
-llama_token token = llama_sampler_sample(sequence.sampler, context_, static_cast<int32_t>(i));
-llama_sampler_accept(sequence.sampler, token);
-if (llama_vocab_is_eog(vocab_, token)) { step.finished = true; }
-```
-
-Convert non-EOG tokens with a stack buffer and negative-size retry using `llama_token_to_piece(vocab_, token, buffer, length, 0, true)`. Return the exact bytes as TOKEN data even when they are not independently valid UTF-8. Detect stop sequences against the cumulative emitted bytes before publishing: remove the matched stop suffix from the current token bytes when entirely contained there; otherwise retain at most `max_stop_length - 1` pending bytes per request so a stop spanning token boundaries is never emitted. Finish after `max_new_tokens` or EOG.
-
-On cancellation and terminal completion call:
-
-```cpp
-llama_memory_seq_rm(llama_get_memory(context_), static_cast<llama_seq_id>(seq_id), -1, -1);
-llama_sampler_free(sequence.sampler);
-```
-
-Require `llama_memory_seq_rm` to return true for whole-sequence removal; otherwise emit ERROR and do not reuse the slot until model teardown.
-
-- [ ] **Step 4: Run engine and fake scheduler tests**
+- [ ] **Step 2: Run engine and fake scheduler tests**
 
 ```powershell
 cmake --build .cmake-build/llm-cpu --config Debug --target llw_llama_engine_test llw_scheduler_test
 ctest --test-dir .cmake-build/llm-cpu -C Debug -R "llw_(llama_engine|scheduler)_test" --output-on-failure
 ```
 
-Expected: batch-plan, sampler configuration, stop-boundary, cancellation, and scheduler tests pass.
+Expected: batch-plan fairness/capacity/logits/sequence assertions and fake scheduler cancellation/concurrency tests pass.
 
-- [ ] **Step 5: Commit shared decode**
+- [ ] **Step 3: Commit shared decode verification**
 
 ```powershell
-git add native/llm-runtime/src/llama_engine.cpp native/llm-runtime/tests/llama_engine_test.cpp
-git commit -m "feat: decode active slots in shared batches"
+git add native/llm-runtime/tests/llama_engine_test.cpp
+git commit -m "test: verify shared llama batch planning"
 ```
 
 ### Task 7: Implement The Complete C ABI Facade
@@ -1065,7 +2337,71 @@ git commit -m "feat: decode active slots in shared batches"
 
 - [ ] **Step 1: Add failing export and lifecycle tests**
 
-Extend `abi_layout_test.cpp` to create a runtime with 2 slots/queue 2/event queue 32, query option schema first with null storage and then an exact buffer, verify malformed/undersized structures return `LLW_ERR_INVALID_ARGUMENT`, verify model unload with handle 0 returns NOT_FOUND, request submit without a model returns INVALID_STATE, and destroy accepts null. Add a Windows export-table command:
+Add this complete function above `main` in `native/llm-runtime/tests/abi_layout_test.cpp`, then call `CHECK(test_v11_exports() == 0);` immediately before the existing `return 0;`:
+
+```cpp
+int test_v11_exports() {
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 2;
+    create.scheduler.request_queue_capacity = 2;
+    create.scheduler.event_queue_capacity = 32;
+    llw_runtime_t* runtime{};
+    CHECK(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
+    CHECK(runtime != nullptr);
+
+    llw_buffer_t schema{};
+    schema.struct_size = sizeof(schema);
+    CHECK(llw_runtime_get_option_schema(runtime, &schema, &error) == LLW_ERR_BUFFER_TOO_SMALL);
+    CHECK(schema.len > 0);
+    std::vector<uint8_t> schema_bytes(static_cast<size_t>(schema.len));
+    schema.data = schema_bytes.data();
+    schema.capacity = schema_bytes.size();
+    CHECK(llw_runtime_get_option_schema(runtime, &schema, &error) == LLW_OK);
+    const std::string schema_text(schema_bytes.begin(), schema_bytes.end());
+    CHECK(schema_text.find("\"eventQueueCapacity\"") != std::string::npos);
+    CHECK(schema_text.find("\"nThreadsBatch\"") != std::string::npos);
+    CHECK(schema_text.find("\"maxTotalBytes\":2048") != std::string::npos);
+
+    llw_request_params_t request{};
+    request.struct_size = sizeof(request);
+    request.model_handle = 1;
+    const uint8_t prompt[] = {'x'};
+    request.prompt = prompt;
+    request.prompt_len = sizeof(prompt);
+    request.max_new_tokens = 1;
+    request.temperature = 0;
+    request.top_p = 1;
+    request.repeat_penalty = 1;
+    llw_handle_t request_handle{99};
+    CHECK(llw_request_submit(runtime, &request, &request_handle, &error) == LLW_ERR_INVALID_STATE);
+    CHECK(request_handle == 0);
+    CHECK(llw_model_unload(runtime, 1, &error) == LLW_ERR_NOT_FOUND);
+
+    llw_scheduler_config_t undersized{};
+    undersized.struct_size = sizeof(undersized) - 1;
+    create.scheduler = undersized;
+    llw_runtime_t* rejected{};
+    CHECK(llw_runtime_create(&create, &rejected, &error) == LLW_ERR_INVALID_ARGUMENT);
+    CHECK(rejected == nullptr);
+    llw_runtime_destroy(runtime);
+    llw_runtime_destroy(nullptr);
+    return 0;
+}
+```
+
+Add these includes to the existing test include list:
+
+```cpp
+#include <string>
+#include <vector>
+```
+
+Run the Windows export-table command:
 
 ```powershell
 dumpbin /exports .cmake-build/llm-cpu/Debug/local_llm_runtime.dll | Select-String ' llw_'
@@ -1093,54 +2429,513 @@ target_include_directories(local_llm_runtime PUBLIC include PRIVATE src)
 target_link_libraries(local_llm_runtime PRIVATE llama ggml Threads::Threads)
 ```
 
-Delete `native/llm-runtime/src/fake_runtime.cpp` after the new target builds.
+Delete the superseded fake facade after the new target builds:
 
-- [ ] **Step 3: Implement runtime ownership and validation**
+```powershell
+Remove-Item -LiteralPath native/llm-runtime/src/fake_runtime.cpp
+```
 
-In `runtime.cpp`, define `llw_runtime_t` with copied callback table, owned dispatcher, scheduler configuration, optional `unique_ptr<LlamaEngine>`, optional `unique_ptr<Scheduler>`, nonzero monotonic model handle, mutex, and canonical backend-directory path derived from the loaded DLL directory on Windows with `GetModuleHandleExW`/`GetModuleFileNameW`. Never accept a backend DLL directory or runtime DLL path through the C ABI.
+- [ ] **Step 3: Implement runtime ownership, validation, the exact schema, and all fourteen exports**
 
-Use one exception barrier for every result-returning export:
+Create `native/llm-runtime/src/runtime.cpp` with the complete code below. The option schema concatenates the compile-time pack name directly into the JSON. Lifecycle fields (`modelHandle`), correlation pointers (`requestUserData`), ABI mechanics (`structSize`, `flags`, `reserved*`), and borrowed byte pointers are contracts rather than configurable options; their user inputs (`modelPath`, `promptBytes`, and stop bounds) are represented explicitly.
 
 ```cpp
-template<class F>
-llw_result_t guarded(llw_error_t* error, F&& body) noexcept {
+#include "event_dispatcher.h"
+#include "llama_engine.h"
+#include "llw_runtime.h"
+#include "scheduler.h"
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <iterator>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <new>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <Windows.h>
+#endif
+
+struct llw_runtime_t {
+    llw_callback_table_t callbacks{};
+    llw_scheduler_config_t config{};
+    std::unique_ptr<EventDispatcher> dispatcher;
+    std::unique_ptr<LlamaEngine> engine;
+    std::unique_ptr<Scheduler> scheduler;
+    llw_handle_t model_handle{};
+    llw_handle_t next_model_handle{1};
+    bool model_loading{};
+    std::string backend_directory;
+    std::mutex mutex;
+};
+
+namespace {
+constexpr size_t RUNTIME_CREATE_V1_0_SIZE = offsetof(llw_runtime_create_params_t, scheduler);
+int module_anchor{};
+
+template <size_t N> bool zeroed(const uint64_t (&values)[N]) {
+    return std::all_of(values, values + N, [](uint64_t value) { return value == 0; });
+}
+
+void clear_error(llw_error_t* error) {
+    if (!error || error->struct_size < sizeof(uint32_t) + sizeof(int32_t)) return;
+    error->code = LLW_OK;
+    if (error->struct_size >= sizeof(llw_error_t)) {
+        error->flags = 0;
+        error->message[0] = '\0';
+        std::fill(std::begin(error->reserved), std::end(error->reserved), uint64_t{0});
+    }
+}
+
+llw_result_t fail(llw_error_t* error, llw_result_t code, const std::string& message) {
+    if (error && error->struct_size >= sizeof(uint32_t) + sizeof(int32_t)) {
+        error->code = code;
+        if (error->struct_size >= sizeof(llw_error_t)) {
+            error->flags = 0;
+            std::strncpy(error->message, message.c_str(), sizeof(error->message) - 1);
+            error->message[sizeof(error->message) - 1] = '\0';
+        }
+    }
+    return code;
+}
+
+template <class F> llw_result_t guarded(llw_error_t* error, F&& body) noexcept {
     try { clear_error(error); return body(); }
-    catch (const std::invalid_argument& e) { return fail(error, LLW_ERR_INVALID_ARGUMENT, e.what()); }
-    catch (const std::bad_alloc&) { return fail(error, LLW_ERR_INTERNAL, "allocation failed"); }
-    catch (const std::exception& e) { return fail(error, LLW_ERR_INTERNAL, e.what()); }
-    catch (...) { return fail(error, LLW_ERR_INTERNAL, "unknown native exception"); }
+    catch (const std::invalid_argument& exception) {
+        return fail(error, LLW_ERR_INVALID_ARGUMENT, exception.what());
+    } catch (const std::bad_alloc&) {
+        return fail(error, LLW_ERR_INTERNAL, "allocation failed");
+    } catch (const std::exception& exception) {
+        return fail(error, LLW_ERR_INTERNAL, exception.what());
+    } catch (...) {
+        return fail(error, LLW_ERR_INTERNAL, "unknown native exception");
+    }
+}
+
+bool valid_utf8(const uint8_t* data, size_t size) {
+    size_t index = 0;
+    while (index < size) {
+        const uint8_t first = data[index++];
+        if (first < 0x80) continue;
+        uint32_t codepoint = 0;
+        size_t continuation = 0;
+        if ((first & 0xe0) == 0xc0) { codepoint = first & 0x1f; continuation = 1; }
+        else if ((first & 0xf0) == 0xe0) { codepoint = first & 0x0f; continuation = 2; }
+        else if ((first & 0xf8) == 0xf0) { codepoint = first & 0x07; continuation = 3; }
+        else return false;
+        if (index + continuation > size) return false;
+        for (size_t offset = 0; offset < continuation; ++offset) {
+            const uint8_t next = data[index++];
+            if ((next & 0xc0) != 0x80) return false;
+            codepoint = (codepoint << 6) | (next & 0x3f);
+        }
+        if ((continuation == 1 && codepoint < 0x80) ||
+            (continuation == 2 && codepoint < 0x800) ||
+            (continuation == 3 && codepoint < 0x10000) ||
+            codepoint > 0x10ffff || (codepoint >= 0xd800 && codepoint <= 0xdfff)) return false;
+    }
+    return true;
+}
+
+std::string backend_directory() {
+#ifdef _WIN32
+    HMODULE module{};
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&module_anchor), &module)) {
+        throw std::runtime_error("GetModuleHandleExW failed");
+    }
+    std::vector<wchar_t> buffer(32768);
+    const DWORD length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size()) throw std::runtime_error("GetModuleFileNameW failed");
+    return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path().u8string();
+#else
+    return std::filesystem::current_path().u8string();
+#endif
+}
+
+std::string pack_name() { return LLW_BACKEND_PACK_NAME; }
+
+int32_t pack_backend() {
+    const std::string pack = pack_name();
+    if (pack == "CUDA") return LLW_BACKEND_CUDA;
+    if (pack == "VULKAN") return LLW_BACKEND_VULKAN;
+    return LLW_BACKEND_CPU;
+}
+
+void copy_text(char* destination, size_t capacity, const std::string& source) {
+    if (capacity == 0) return;
+    const size_t count = std::min(capacity - 1, source.size());
+    std::memcpy(destination, source.data(), count);
+    destination[count] = '\0';
+}
+
+void publish_runtime_event(llw_runtime_t& runtime, int32_t type, uint32_t format,
+                           llw_handle_t model, std::string payload) {
+    OwnedEvent event;
+    event.type = type;
+    event.data_format = format;
+    event.model = model;
+    event.sequence = 0;
+    event.data.assign(payload.begin(), payload.end());
+    if (!runtime.dispatcher->publish(std::move(event)))
+        throw std::runtime_error("event dispatcher stopped");
+}
+
+llw_scheduler_config_t scheduler_config(const llw_runtime_create_params_t& params) {
+    llw_scheduler_config_t config{};
+    config.struct_size = sizeof(config);
+    config.slot_count = 1;
+    config.request_queue_capacity = 16;
+    config.event_queue_capacity = 1024;
+    if (params.struct_size >= sizeof(llw_runtime_create_params_t)) config = params.scheduler;
+    if (config.struct_size < sizeof(config) || config.flags != 0 || config.reserved0 != 0 ||
+        !zeroed(config.reserved) || config.slot_count < 1 || config.slot_count > LLW_MAX_SLOTS ||
+        config.request_queue_capacity < 1 ||
+        config.request_queue_capacity > LLW_MAX_QUEUE_CAPACITY ||
+        config.event_queue_capacity < 16 ||
+        config.event_queue_capacity > LLW_MAX_EVENT_QUEUE_CAPACITY) {
+        throw std::invalid_argument("invalid scheduler configuration");
+    }
+    return config;
+}
+
+void validate_model(const llw_model_load_params_t& params) {
+    if (params.struct_size < sizeof(params) || params.flags != 0 || params.reserved0 != 0 ||
+        !zeroed(params.reserved)) throw std::invalid_argument("invalid model structure");
+    if (!params.path_utf8 || params.path_len < 1 || params.path_len > LLW_MAX_MODEL_PATH_BYTES ||
+        std::find(params.path_utf8, params.path_utf8 + params.path_len, uint8_t{0}) !=
+            params.path_utf8 + params.path_len || !valid_utf8(params.path_utf8, params.path_len))
+        throw std::invalid_argument("invalid UTF-8 model path");
+    if (params.backend < LLW_BACKEND_AUTO || params.backend > LLW_BACKEND_VULKAN ||
+        params.device_index > LLW_MAX_DEVICE_INDEX || params.context_tokens_per_slot < 512 ||
+        params.context_tokens_per_slot > 262144 || params.logical_batch_tokens < 1 ||
+        params.logical_batch_tokens > 8192 || params.physical_batch_tokens < 1 ||
+        params.physical_batch_tokens > params.logical_batch_tokens || params.n_threads < 1 ||
+        params.n_threads > 256 || params.n_threads_batch < 1 || params.n_threads_batch > 256 ||
+        params.n_gpu_layers < -1 || params.n_gpu_layers > 65535 || params.use_mmap > 1 ||
+        params.use_mlock > 1 || params.check_tensors > 1)
+        throw std::invalid_argument("model option is outside its declared bounds");
+}
+
+void validate_request(const llw_request_params_t& params) {
+    if (params.struct_size < sizeof(params) || params.flags != 0 || params.reserved0 != 0 ||
+        !zeroed(params.reserved)) throw std::invalid_argument("invalid request structure");
+    if (!params.prompt || params.prompt_len < 1 || params.prompt_len > LLW_MAX_PROMPT_BYTES ||
+        params.max_new_tokens < 1 || params.max_new_tokens > 1048576 ||
+        !std::isfinite(params.temperature) || params.temperature < 0 || params.temperature > 10 ||
+        params.top_k < 0 || params.top_k > 100000 || !std::isfinite(params.top_p) ||
+        params.top_p < 0 || params.top_p > 1 || !std::isfinite(params.min_p) ||
+        params.min_p < 0 || params.min_p > 1 || params.repeat_last_n < 0 ||
+        params.repeat_last_n > 262144 || !std::isfinite(params.repeat_penalty) ||
+        params.repeat_penalty < 0 || params.repeat_penalty > 10 ||
+        !std::isfinite(params.frequency_penalty) || params.frequency_penalty < -2 ||
+        params.frequency_penalty > 2 || !std::isfinite(params.presence_penalty) ||
+        params.presence_penalty < -2 || params.presence_penalty > 2 ||
+        params.stop_count > LLW_MAX_STOP_SEQUENCES ||
+        (params.stop_count != 0 && !params.stop_sequences))
+        throw std::invalid_argument("request option is outside its declared bounds");
+    uint64_t total = 0;
+    for (uint32_t index = 0; index < params.stop_count; ++index) {
+        const llw_bytes_t& stop = params.stop_sequences[index];
+        if (stop.struct_size < sizeof(stop) || stop.flags != 0 || !zeroed(stop.reserved) ||
+            !stop.data || stop.len < 1 || stop.len > LLW_MAX_STOP_BYTES)
+            throw std::invalid_argument("invalid stop sequence");
+        total += stop.len;
+        if (total > LLW_MAX_STOP_TOTAL_BYTES)
+            throw std::invalid_argument("stop sequence bytes exceed total bound");
+    }
+}
+
+std::string option_schema() {
+    std::string schema = std::string(R"json({"abiMinor":1,"backendPack":")json") + pack_name() +
+        R"json(","model":{"modelPath":{"type":"utf8Bytes","minBytes":1,"maxBytes":32768,"default":null,"apply":"modelReload"},"backend":{"type":"enum","values":{"auto":0,"cpu":1,"cuda":2,"vulkan":3},"default":0,"apply":"modelReload"},"deviceIndex":{"type":"uint32","min":0,"max":255,"default":0,"apply":"modelReload"},"contextTokensPerSlot":{"type":"uint32","min":512,"max":262144,"default":4096,"apply":"modelReload"},"logicalBatchTokens":{"type":"uint32","min":1,"max":8192,"default":512,"apply":"modelReload"},"physicalBatchTokens":{"type":"uint32","min":1,"maxField":"logicalBatchTokens","default":128,"apply":"modelReload"},"nThreads":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nThreadsBatch":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nGpuLayers":{"type":"int32","min":-1,"max":65535,"default":0,"apply":"modelReload"},"useMmap":{"type":"boolean","default":true,"apply":"modelReload"},"useMlock":{"type":"boolean","default":false,"apply":"modelReload"},"checkTensors":{"type":"boolean","default":false,"apply":"modelReload"}},"scheduler":{"slotCount":{"type":"uint32","min":1,"max":4,"default":1,"apply":"runtimeRestart"},"requestQueueCapacity":{"type":"uint32","min":1,"max":1024,"default":16,"apply":"runtimeRestart"},"eventQueueCapacity":{"type":"uint32","min":16,"max":65536,"default":1024,"apply":"runtimeRestart"}},"request":{"promptBytes":{"type":"bytes","minBytes":1,"maxBytes":16777216,"default":null,"apply":"nextRequest"},"maxNewTokens":{"type":"uint32","min":1,"max":1048576,"default":256,"apply":"nextRequest"},"seed":{"type":"uint32","min":0,"max":4294967295,"default":4294967295,"apply":"nextRequest"},"temperature":{"type":"float32","min":0.0,"max":10.0,"default":0.8,"apply":"nextRequest"},"topK":{"type":"int32","min":0,"max":100000,"default":40,"apply":"nextRequest"},"topP":{"type":"float32","min":0.0,"max":1.0,"default":0.95,"apply":"nextRequest"},"minP":{"type":"float32","min":0.0,"max":1.0,"default":0.05,"apply":"nextRequest"},"repeatLastN":{"type":"int32","min":0,"max":262144,"default":64,"apply":"nextRequest"},"repeatPenalty":{"type":"float32","min":0.0,"max":10.0,"default":1.1,"apply":"nextRequest"},"frequencyPenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"presencePenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"stopSequences":{"type":"bytesArray","minCount":0,"maxCount":8,"minBytesEach":1,"maxBytesEach":256,"maxTotalBytes":2048,"default":[],"apply":"nextRequest"}}})json";
+    return schema;
+}
+} // namespace
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_abi_info(
+    const llw_abi_query_t* query, llw_abi_info_t* out_info, llw_error_t* out_error) {
+    return guarded(out_error, [&] {
+        if (!query || !out_info || query->struct_size < sizeof(*query) ||
+            out_info->struct_size < sizeof(*out_info))
+            throw std::invalid_argument("invalid ABI query");
+        if (query->requested_major != LLW_ABI_MAJOR)
+            return fail(out_error, LLW_ERR_ABI_MISMATCH, "unsupported ABI major");
+        *out_info = {};
+        out_info->struct_size = sizeof(*out_info);
+        out_info->abi_major = LLW_ABI_MAJOR;
+        out_info->abi_minor = LLW_ABI_MINOR;
+        out_info->min_supported_major = LLW_ABI_MAJOR;
+        return LLW_OK;
+    });
+}
+
+LLW_EXTERN_C LLW_EXPORT const char* LLW_CALL llw_runtime_version(void) { return "0.2.0"; }
+LLW_EXTERN_C LLW_EXPORT const char* LLW_CALL llw_llama_cpp_commit(void) {
+    return LLW_LLAMA_CPP_COMMIT;
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_create(
+    const llw_runtime_create_params_t* params, llw_runtime_t** out_runtime,
+    llw_error_t* out_error) {
+    if (out_runtime) *out_runtime = nullptr;
+    return guarded(out_error, [&] {
+        if (!params || !out_runtime || params->struct_size < RUNTIME_CREATE_V1_0_SIZE ||
+            params->flags != 0 || !zeroed(params->reserved) ||
+            params->callbacks.struct_size < sizeof(llw_callback_table_t) ||
+            params->callbacks.flags != 0 || !zeroed(params->callbacks.reserved))
+            throw std::invalid_argument("invalid runtime create parameters");
+        if (params->struct_size >= sizeof(*params) && !zeroed(params->reserved_v1))
+            throw std::invalid_argument("runtime reserved fields must be zero");
+        auto runtime = std::make_unique<llw_runtime_t>();
+        runtime->callbacks = params->callbacks;
+        runtime->config = scheduler_config(*params);
+        runtime->backend_directory = backend_directory();
+        runtime->dispatcher = std::make_unique<EventDispatcher>(runtime->callbacks,
+            runtime->config.event_queue_capacity);
+        publish_runtime_event(*runtime, LLW_EVENT_LOG, LLW_EVENT_DATA_UTF8, 0,
+                              "runtime pack initialized: " + pack_name());
+        *out_runtime = runtime.release();
+        return LLW_OK;
+    });
+}
+
+LLW_EXTERN_C LLW_EXPORT void LLW_CALL llw_runtime_destroy(llw_runtime_t* runtime) {
+    if (!runtime) return;
+    try {
+        std::unique_ptr<Scheduler> scheduler;
+        std::unique_ptr<LlamaEngine> engine;
+        {
+            std::lock_guard lock(runtime->mutex);
+            scheduler = std::move(runtime->scheduler);
+            engine = std::move(runtime->engine);
+            runtime->model_handle = 0;
+        }
+        if (scheduler) scheduler->cancel_all_and_wait();
+        scheduler.reset();
+        engine.reset();
+        runtime->dispatcher->stop();
+    } catch (...) {}
+    delete runtime;
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_get_capabilities(
+    llw_runtime_t* runtime, llw_capabilities_t* out, llw_error_t* error) {
+    return guarded(error, [&] {
+        if (!runtime || !out || out->struct_size < sizeof(*out))
+            throw std::invalid_argument("invalid capabilities output");
+        *out = {};
+        out->struct_size = sizeof(*out);
+        out->supports_cpu = 1;
+        out->supports_cuda = pack_backend() == LLW_BACKEND_CUDA;
+        out->supports_vulkan = pack_backend() == LLW_BACKEND_VULKAN;
+        out->supports_streaming = 1;
+        out->supports_cancellation = 1;
+        out->max_parallel_slots = LLW_MAX_SLOTS;
+        return LLW_OK;
+    });
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_list_devices(
+    llw_runtime_t* runtime, int32_t backend, llw_device_list_t* out, llw_error_t* error) {
+    return guarded(error, [&] {
+        if (!runtime || !out || out->struct_size < sizeof(*out) ||
+            backend < LLW_BACKEND_AUTO || backend > LLW_BACKEND_VULKAN)
+            throw std::invalid_argument("invalid device list output");
+        std::vector<DeviceRecord> devices = enumerate_pack_devices(runtime->backend_directory);
+        devices.erase(std::remove_if(devices.begin(), devices.end(), [backend](const DeviceRecord& d) {
+            return backend != LLW_BACKEND_AUTO && d.backend != backend;
+        }), devices.end());
+        out->count = 0;
+        out->required_count = devices.size();
+        if (devices.empty()) return LLW_OK;
+        if (!out->devices || out->capacity < devices.size() ||
+            out->element_size < sizeof(llw_device_info_t))
+            return fail(error, LLW_ERR_BUFFER_TOO_SMALL, "device buffer is too small");
+        for (size_t index = 0; index < devices.size(); ++index) {
+            if (out->devices[index].struct_size < sizeof(llw_device_info_t))
+                throw std::invalid_argument("device element is undersized");
+            llw_device_info_t value{};
+            value.struct_size = sizeof(value);
+            value.backend = devices[index].backend;
+            value.device_index = devices[index].backend_index;
+            copy_text(value.id, sizeof(value.id), devices[index].id);
+            copy_text(value.name, sizeof(value.name), devices[index].name);
+            copy_text(value.vendor, sizeof(value.vendor), devices[index].vendor);
+            out->devices[index] = value;
+        }
+        out->count = static_cast<uint32_t>(devices.size());
+        return LLW_OK;
+    });
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_get_option_schema(
+    llw_runtime_t* runtime, llw_buffer_t* out, llw_error_t* error) {
+    return guarded(error, [&] {
+        if (!runtime || !out || out->struct_size < sizeof(*out) || out->flags != 0 ||
+            !zeroed(out->reserved)) throw std::invalid_argument("invalid schema output");
+        const std::string schema = option_schema();
+        out->len = schema.size();
+        if (!out->data || out->capacity < schema.size())
+            return fail(error, LLW_ERR_BUFFER_TOO_SMALL, "schema buffer is too small");
+        std::memcpy(out->data, schema.data(), schema.size());
+        return LLW_OK;
+    });
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
+    llw_runtime_t* runtime, const llw_model_load_params_t* params, llw_handle_t* out_model,
+    llw_error_t* error) {
+    if (out_model) *out_model = 0;
+    return guarded(error, [&] {
+        if (!runtime || !params || !out_model) throw std::invalid_argument("invalid model load call");
+        validate_model(*params);
+        std::unique_lock lock(runtime->mutex);
+        if (runtime->model_handle != 0 || runtime->model_loading)
+            return fail(error, LLW_ERR_BUSY, "a model is already loaded or loading");
+        runtime->model_loading = true;
+        llw_handle_t handle = runtime->next_model_handle++;
+        if (handle == 0) handle = runtime->next_model_handle++;
+        const std::string path(reinterpret_cast<const char*>(params->path_utf8), params->path_len);
+        ModelConfig config;
+        config.path = path;
+        config.backend_directory = runtime->backend_directory;
+        config.backend = params->backend;
+        config.device_index = params->device_index;
+        config.slots = runtime->config.slot_count;
+        config.context_tokens_per_slot = params->context_tokens_per_slot;
+        config.logical_batch_tokens = params->logical_batch_tokens;
+        config.physical_batch_tokens = params->physical_batch_tokens;
+        config.n_threads = params->n_threads;
+        config.n_threads_batch = params->n_threads_batch;
+        config.n_gpu_layers = params->n_gpu_layers;
+        config.use_mmap = params->use_mmap != 0;
+        config.use_mlock = params->use_mlock != 0;
+        config.check_tensors = params->check_tensors != 0;
+        lock.unlock();
+        std::unique_ptr<LlamaEngine> engine;
+        std::unique_ptr<Scheduler> scheduler;
+        try {
+            engine = std::make_unique<LlamaEngine>(config, [runtime, handle](float progress) {
+                publish_runtime_event(*runtime, LLW_EVENT_MODEL_PROGRESS,
+                    LLW_EVENT_DATA_JSON_UTF8, handle,
+                    "{\"progress\":" + std::to_string(progress) + "}");
+            });
+            scheduler = std::make_unique<Scheduler>(runtime->config.slot_count,
+                runtime->config.request_queue_capacity, *engine, *runtime->dispatcher);
+        } catch (...) {
+            lock.lock();
+            runtime->model_loading = false;
+            throw;
+        }
+        lock.lock();
+        runtime->engine = std::move(engine);
+        runtime->scheduler = std::move(scheduler);
+        runtime->model_handle = handle;
+        runtime->model_loading = false;
+        *out_model = handle;
+        publish_runtime_event(*runtime, LLW_EVENT_LOG, LLW_EVENT_DATA_UTF8, handle,
+                              "model loaded on backend " + std::to_string(config.backend) +
+                                  " device " + std::to_string(config.device_index));
+        return LLW_OK;
+    });
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_unload(
+    llw_runtime_t* runtime, llw_handle_t model, llw_error_t* error) {
+    return guarded(error, [&] {
+        if (!runtime || model == 0) throw std::invalid_argument("invalid model unload call");
+        std::unique_ptr<Scheduler> scheduler;
+        std::unique_ptr<LlamaEngine> engine;
+        {
+            std::lock_guard lock(runtime->mutex);
+            if (runtime->model_handle != model)
+                return fail(error, LLW_ERR_NOT_FOUND, "model handle was not found");
+            scheduler = std::move(runtime->scheduler);
+            engine = std::move(runtime->engine);
+            runtime->model_handle = 0;
+        }
+        scheduler->cancel_all_and_wait();
+        scheduler.reset();
+        engine.reset();
+        return LLW_OK;
+    });
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_request_submit(
+    llw_runtime_t* runtime, const llw_request_params_t* params, llw_handle_t* out_request,
+    llw_error_t* error) {
+    if (out_request) *out_request = 0;
+    return guarded(error, [&] {
+        if (!runtime || !params || !out_request)
+            throw std::invalid_argument("invalid request submit call");
+        validate_request(*params);
+        std::lock_guard lock(runtime->mutex);
+        if (!runtime->scheduler || runtime->model_handle != params->model_handle)
+            return fail(error, LLW_ERR_INVALID_STATE, "requested model is not loaded");
+        std::string message;
+        const llw_result_t result = runtime->scheduler->submit(*params, *out_request, message);
+        return result == LLW_OK ? LLW_OK : fail(error, result, message);
+    });
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_request_cancel(
+    llw_runtime_t* runtime, llw_handle_t request, llw_error_t* error) {
+    return guarded(error, [&] {
+        if (!runtime || request == 0) throw std::invalid_argument("invalid request cancel call");
+        std::lock_guard lock(runtime->mutex);
+        if (!runtime->scheduler)
+            return fail(error, LLW_ERR_INVALID_STATE, "no model is loaded");
+        std::string message;
+        const llw_result_t result = runtime->scheduler->cancel(request, message);
+        return result == LLW_OK ? LLW_OK : fail(error, result, message);
+    });
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_scheduler_snapshot(
+    llw_runtime_t* runtime, llw_scheduler_snapshot_t* out, llw_error_t* error) {
+    return guarded(error, [&] {
+        if (!runtime || !out || out->struct_size < sizeof(*out))
+            throw std::invalid_argument("invalid scheduler snapshot output");
+        std::lock_guard lock(runtime->mutex);
+        if (!runtime->scheduler)
+            return fail(error, LLW_ERR_INVALID_STATE, "no model is loaded");
+        *out = runtime->scheduler->snapshot();
+        return LLW_OK;
+    });
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_metrics(
+    llw_runtime_t* runtime, llw_metrics_t* out, llw_error_t* error) {
+    return guarded(error, [&] {
+        if (!runtime || !out || out->struct_size < sizeof(*out))
+            throw std::invalid_argument("invalid metrics output");
+        std::lock_guard lock(runtime->mutex);
+        if (!runtime->scheduler)
+            return fail(error, LLW_ERR_INVALID_STATE, "no model is loaded");
+        *out = runtime->scheduler->metrics();
+        return LLW_OK;
+    });
 }
 ```
 
-Validation must check non-null pointers, minimum known prefixes with `offsetof(type, first_v1_field)` for old 1.0 create callers, `struct_size`, flags/reserved zero, numeric bounds, finite floats via `std::isfinite`, UTF-8 model path without embedded NUL, and prompt/stop lengths before dereference. Copy request bytes and pointer values before `Scheduler::submit` returns.
-
-- [ ] **Step 4: Implement all fourteen exports**
-
-Retain the seven existing functions. `llw_runtime_version` returns `"0.2.0"`; `llw_llama_cpp_commit` returns `LLW_LLAMA_CPP_COMMIT`; capabilities reflect the compile-time pack and max slots 4. Device listing comes from `enumerate_pack_devices` and retains the existing two-call buffer contract. Runtime creation publishes one LOG UTF8 event naming the pack, and model load publishes another LOG UTF8 event naming only the selected backend/device, never the model path or prompt.
-
-Implement the seven new functions with these exact effects:
-
-```text
-get_option_schema: two-call UTF-8 JSON buffer contract; schema includes every bound and apply phase.
-model_load: reject when a model exists; reserve a nonzero handle; publish MODEL_PROGRESS JSON through
-dispatcher; create LlamaEngine and Scheduler; publish progress 1.0; set out_model only on success.
-model_unload: require matching handle; scheduler.cancel_all_and_wait(); destroy scheduler then engine;
-clear handle. It blocks until terminal events have entered the event queue, not until callbacks return.
-request_submit: require current matching model; validate/copy; scheduler.submit; out_request is zero on failure.
-request_cancel: delegate to scheduler with idempotent known-terminal semantics.
-get_scheduler_snapshot/get_metrics: copy a zero-reserved snapshot under scheduler synchronization.
-runtime_destroy: cancel/wait, destroy scheduler/engine, stop dispatcher after queued terminals drain, delete runtime.
-```
-
-The option schema is this exact minified JSON string so Rust and C++ can assert it:
+The following schema key reference uses `CPU|CUDA|VULKAN` only as compact documentation notation for the three concrete strings emitted by the complete `option_schema()` code above; it is not copied into source:
 
 ```json
-{"abiMinor":1,"backendPack":"CPU|CUDA|VULKAN","model":{"contextTokensPerSlot":{"min":512,"max":262144,"apply":"modelReload"},"logicalBatchTokens":{"min":1,"max":8192,"apply":"modelReload"},"physicalBatchTokens":{"min":1,"maxField":"logicalBatchTokens","apply":"modelReload"},"threads":{"min":1,"max":256,"apply":"modelReload"},"gpuLayers":{"min":-1,"max":65535,"apply":"modelReload"}},"scheduler":{"slots":{"min":1,"max":4,"apply":"runtimeRestart"},"queueCapacity":{"min":1,"max":1024,"apply":"runtimeRestart"}},"request":{"maxNewTokens":{"min":1,"max":1048576},"temperature":{"min":0.0,"max":10.0},"topK":{"min":0,"max":100000},"topP":{"min":0.0,"max":1.0},"minP":{"min":0.0,"max":1.0}}}
+{"abiMinor":1,"backendPack":"CPU|CUDA|VULKAN","model":{"modelPath":{"type":"utf8Bytes","minBytes":1,"maxBytes":32768,"default":null,"apply":"modelReload"},"backend":{"type":"enum","values":{"auto":0,"cpu":1,"cuda":2,"vulkan":3},"default":0,"apply":"modelReload"},"deviceIndex":{"type":"uint32","min":0,"max":255,"default":0,"apply":"modelReload"},"contextTokensPerSlot":{"type":"uint32","min":512,"max":262144,"default":4096,"apply":"modelReload"},"logicalBatchTokens":{"type":"uint32","min":1,"max":8192,"default":512,"apply":"modelReload"},"physicalBatchTokens":{"type":"uint32","min":1,"maxField":"logicalBatchTokens","default":128,"apply":"modelReload"},"nThreads":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nThreadsBatch":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nGpuLayers":{"type":"int32","min":-1,"max":65535,"default":0,"apply":"modelReload"},"useMmap":{"type":"boolean","default":true,"apply":"modelReload"},"useMlock":{"type":"boolean","default":false,"apply":"modelReload"},"checkTensors":{"type":"boolean","default":false,"apply":"modelReload"}},"scheduler":{"slotCount":{"type":"uint32","min":1,"max":4,"default":1,"apply":"runtimeRestart"},"requestQueueCapacity":{"type":"uint32","min":1,"max":1024,"default":16,"apply":"runtimeRestart"},"eventQueueCapacity":{"type":"uint32","min":16,"max":65536,"default":1024,"apply":"runtimeRestart"}},"request":{"promptBytes":{"type":"bytes","minBytes":1,"maxBytes":16777216,"default":null,"apply":"nextRequest"},"maxNewTokens":{"type":"uint32","min":1,"max":1048576,"default":256,"apply":"nextRequest"},"seed":{"type":"uint32","min":0,"max":4294967295,"default":4294967295,"apply":"nextRequest"},"temperature":{"type":"float32","min":0.0,"max":10.0,"default":0.8,"apply":"nextRequest"},"topK":{"type":"int32","min":0,"max":100000,"default":40,"apply":"nextRequest"},"topP":{"type":"float32","min":0.0,"max":1.0,"default":0.95,"apply":"nextRequest"},"minP":{"type":"float32","min":0.0,"max":1.0,"default":0.05,"apply":"nextRequest"},"repeatLastN":{"type":"int32","min":0,"max":262144,"default":64,"apply":"nextRequest"},"repeatPenalty":{"type":"float32","min":0.0,"max":10.0,"default":1.1,"apply":"nextRequest"},"frequencyPenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"presencePenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"stopSequences":{"type":"bytesArray","minCount":0,"maxCount":8,"minBytesEach":1,"maxBytesEach":256,"maxTotalBytes":2048,"default":[],"apply":"nextRequest"}}}
 ```
 
-Replace `CPU|CUDA|VULKAN` at compile time with `LLW_BACKEND_PACK_NAME` before returning the bytes.
-
-- [ ] **Step 5: Verify exports and native tests**
+- [ ] **Step 4: Verify exports and native tests**
 
 ```powershell
 cmake -S native/llm-runtime -B .cmake-build/llm-cpu -A x64 -DLLW_BACKEND_PACK=CPU
@@ -1153,7 +2948,7 @@ $exports
 
 Expected: all non-model native tests pass and export count is exactly 14, one occurrence for each declared function.
 
-- [ ] **Step 6: Commit the ABI facade**
+- [ ] **Step 5: Commit the ABI facade**
 
 ```powershell
 git add native/llm-runtime
@@ -1166,11 +2961,65 @@ git commit -m "feat: expose native model and request lifecycle"
 - Modify: `crates/llm-runtime-sys/src/lib.rs`
 - Modify: `crates/llm-runtime/Cargo.toml`
 - Modify: `crates/llm-runtime/src/lib.rs`
-- Modify: `crates/llm-runtime/tests/native_runtime.rs`
 
 - [ ] **Step 1: Write failing raw-loader and callback-copy tests**
 
-Add a `sys::Api` test helper assertion that its struct has fourteen function-pointer fields. Add safe-wrapper tests that invoke the callback trampoline with stack-backed TOKEN bytes, mutate the source after return, and assert the receiver retained the original bytes; invoke the consumer closure with a panic and assert `catch_unwind` prevents unwind across FFI; drop an active request and assert the injected cancel function is called once.
+Add this test to `crates/llm-runtime-sys/src/lib.rs`'s existing test module:
+
+```rust
+#[test]
+fn loader_names_each_required_export_once() {
+    let source = include_str!("lib.rs");
+    let loader = source.split("#[cfg(test)]").next().expect("loader source");
+    for symbol in [
+        "llw_get_abi_info\\0", "llw_runtime_version\\0", "llw_llama_cpp_commit\\0",
+        "llw_runtime_create\\0", "llw_runtime_destroy\\0",
+        "llw_runtime_get_capabilities\\0", "llw_runtime_list_devices\\0",
+        "llw_runtime_get_option_schema\\0", "llw_model_load\\0", "llw_model_unload\\0",
+        "llw_request_submit\\0", "llw_request_cancel\\0",
+        "llw_get_scheduler_snapshot\\0", "llw_get_metrics\\0",
+    ] {
+        assert_eq!(loader.matches(symbol).count(), 1, "symbol count for {symbol}");
+    }
+}
+```
+
+Add these tests to `crates/llm-runtime/src/lib.rs`'s existing test module after Task 8 Step 3 adds `CallbackState`:
+
+```rust
+#[test]
+fn callback_copies_stack_backed_payload_before_return() {
+    let (sender, receiver) = crossbeam_channel::bounded(4);
+    let state = CallbackState { sender, requests: Mutex::new(HashMap::new()),
+        terminal_before_registration: Mutex::new(HashSet::new()), test_hook: None };
+    let mut payload = [0xf0, 0x9f, 0x92, 0xa1];
+    let event = sys::Event { struct_size: std::mem::size_of::<sys::Event>() as u32,
+        flags: sys::EVENT_DATA_BYTES, event_type: sys::EVENT_TOKEN, error_code: 0,
+        model_handle: 1, request_handle: 2, slot_id: 0, reserved0: 0,
+        sequence_number: 2, data: payload.as_ptr(), data_len: payload.len() as u64,
+        request_user_data: std::ptr::null_mut(), reserved: [0; 8] };
+    unsafe { event_trampoline(&event, (&state as *const CallbackState).cast_mut().cast()) };
+    payload.fill(0);
+    assert_eq!(receiver.recv().unwrap().payload, vec![0xf0, 0x9f, 0x92, 0xa1]);
+}
+
+#[test]
+fn callback_contains_panics_from_test_consumer() {
+    let (sender, _receiver) = crossbeam_channel::bounded(1);
+    let state = CallbackState { sender, requests: Mutex::new(HashMap::new()),
+        terminal_before_registration: Mutex::new(HashSet::new()),
+        test_hook: Some(Arc::new(|_| panic!("test panic"))) };
+    let event = sys::Event { struct_size: std::mem::size_of::<sys::Event>() as u32,
+        flags: sys::EVENT_DATA_JSON_UTF8, event_type: sys::EVENT_DONE, error_code: 0,
+        model_handle: 1, request_handle: 2, slot_id: 0, reserved0: 0,
+        sequence_number: 3, data: std::ptr::null(), data_len: 0,
+        request_user_data: std::ptr::null_mut(), reserved: [0; 8] };
+    let escaped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        event_trampoline(&event, (&state as *const CallbackState).cast_mut().cast())
+    }));
+    assert!(escaped.is_ok());
+}
+```
 
 Run:
 
@@ -1182,30 +3031,218 @@ Expected: FAIL because model/request/event APIs do not exist.
 
 - [ ] **Step 2: Load each new export exactly once**
 
-Add seven fields to `sys::Api` and seven `library.get` calls:
+Replace `Api` and its loader with this complete fourteen-export implementation. All aliases are defined in Task 2 before this block is used:
 
 ```rust
-let runtime_get_option_schema = unsafe { *library.get::<RuntimeGetOptionSchemaFn>(b"llw_runtime_get_option_schema\0")? };
-let model_load = unsafe { *library.get::<ModelLoadFn>(b"llw_model_load\0")? };
-let model_unload = unsafe { *library.get::<ModelUnloadFn>(b"llw_model_unload\0")? };
-let request_submit = unsafe { *library.get::<RequestSubmitFn>(b"llw_request_submit\0")? };
-let request_cancel = unsafe { *library.get::<RequestCancelFn>(b"llw_request_cancel\0")? };
-let get_scheduler_snapshot = unsafe { *library.get::<GetSchedulerSnapshotFn>(b"llw_get_scheduler_snapshot\0")? };
-let get_metrics = unsafe { *library.get::<GetMetricsFn>(b"llw_get_metrics\0")? };
-```
+pub struct Api {
+    _library: libloading::Library,
+    pub get_abi_info: GetAbiInfoFn,
+    pub runtime_version: RuntimeVersionFn,
+    pub llama_commit: LlamaCommitFn,
+    pub runtime_create: RuntimeCreateFn,
+    pub runtime_destroy: RuntimeDestroyFn,
+    pub runtime_get_capabilities: RuntimeGetCapabilitiesFn,
+    pub runtime_list_devices: RuntimeListDevicesFn,
+    pub runtime_get_option_schema: RuntimeGetOptionSchemaFn,
+    pub model_load: ModelLoadFn,
+    pub model_unload: ModelUnloadFn,
+    pub request_submit: RequestSubmitFn,
+    pub request_cancel: RequestCancelFn,
+    pub get_scheduler_snapshot: GetSchedulerSnapshotFn,
+    pub get_metrics: GetMetricsFn,
+}
 
-Initialize each corresponding `Api` field once. Add a source test that counts each NUL-terminated export byte string exactly once, including the original seven.
+impl Api {
+    /// # Safety
+    ///
+    /// `path` must name an LLW ABI 1.x library. Every runtime and handle created through this
+    /// object must be destroyed before the object is dropped.
+    pub unsafe fn load(path: &std::path::Path) -> Result<Self, libloading::Error> {
+        let library = unsafe { libloading::Library::new(path)? };
+        let get_abi_info = unsafe { *library.get::<GetAbiInfoFn>(b"llw_get_abi_info\0")? };
+        let runtime_version = unsafe {
+            *library.get::<RuntimeVersionFn>(b"llw_runtime_version\0")?
+        };
+        let llama_commit = unsafe {
+            *library.get::<LlamaCommitFn>(b"llw_llama_cpp_commit\0")?
+        };
+        let runtime_create = unsafe {
+            *library.get::<RuntimeCreateFn>(b"llw_runtime_create\0")?
+        };
+        let runtime_destroy = unsafe {
+            *library.get::<RuntimeDestroyFn>(b"llw_runtime_destroy\0")?
+        };
+        let runtime_get_capabilities = unsafe {
+            *library.get::<RuntimeGetCapabilitiesFn>(b"llw_runtime_get_capabilities\0")?
+        };
+        let runtime_list_devices = unsafe {
+            *library.get::<RuntimeListDevicesFn>(b"llw_runtime_list_devices\0")?
+        };
+        let runtime_get_option_schema = unsafe {
+            *library.get::<RuntimeGetOptionSchemaFn>(b"llw_runtime_get_option_schema\0")?
+        };
+        let model_load = unsafe { *library.get::<ModelLoadFn>(b"llw_model_load\0")? };
+        let model_unload = unsafe { *library.get::<ModelUnloadFn>(b"llw_model_unload\0")? };
+        let request_submit = unsafe {
+            *library.get::<RequestSubmitFn>(b"llw_request_submit\0")?
+        };
+        let request_cancel = unsafe {
+            *library.get::<RequestCancelFn>(b"llw_request_cancel\0")?
+        };
+        let get_scheduler_snapshot = unsafe {
+            *library.get::<GetSchedulerSnapshotFn>(b"llw_get_scheduler_snapshot\0")?
+        };
+        let get_metrics = unsafe { *library.get::<GetMetricsFn>(b"llw_get_metrics\0")? };
+        Ok(Self {
+            _library: library,
+            get_abi_info,
+            runtime_version,
+            llama_commit,
+            runtime_create,
+            runtime_destroy,
+            runtime_get_capabilities,
+            runtime_list_devices,
+            runtime_get_option_schema,
+            model_load,
+            model_unload,
+            request_submit,
+            request_cancel,
+            get_scheduler_snapshot,
+            get_metrics,
+        })
+    }
+}
+```
 
 - [ ] **Step 3: Add safe owned types and callback delivery**
 
-Add `crossbeam-channel = "0.5"` to workspace dependencies and `crates/llm-runtime/Cargo.toml`. Define `RuntimeOptions`, `ModelOptions`, `GenerationOptions`, `EventKind`, `EventPayload`, `RuntimeEvent`, `Model`, and `Request`. `RuntimeEvent` owns `Vec<u8>` payload and copies all scalar fields.
+Apply these exact dependency table edits:
 
-Use this trampoline shape:
+```toml
+# Cargo.toml [workspace.dependencies]
+crossbeam-channel = "0.5"
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+```
+
+```toml
+# crates/llm-runtime/Cargo.toml [dependencies]
+crossbeam-channel.workspace = true
+libloading.workspace = true
+llm-runtime-sys = { path = "../llm-runtime-sys" }
+thiserror.workspace = true
+```
+
+Add these imports and complete owned type definitions to `crates/llm-runtime/src/lib.rs` after the existing probe types:
 
 ```rust
+use std::collections::{HashMap, HashSet};
+use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Weak};
+
+use crossbeam_channel::{Receiver, Sender};
+
+#[derive(Debug, Clone)]
+pub struct RuntimeOptions {
+    pub slot_count: u32,
+    pub request_queue_capacity: u32,
+    pub event_queue_capacity: u32,
+}
+impl Default for RuntimeOptions {
+    fn default() -> Self {
+        Self { slot_count: 1, request_queue_capacity: 16, event_queue_capacity: 1024 }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ModelOptions {
+    pub backend: Backend,
+    pub device_index: u32,
+    pub context_tokens_per_slot: u32,
+    pub logical_batch_tokens: u32,
+    pub physical_batch_tokens: u32,
+    pub n_threads: i32,
+    pub n_threads_batch: i32,
+    pub n_gpu_layers: i32,
+    pub use_mmap: bool,
+    pub use_mlock: bool,
+    pub check_tensors: bool,
+}
+impl Default for ModelOptions {
+    fn default() -> Self {
+        Self { backend: Backend::Auto, device_index: 0, context_tokens_per_slot: 4096,
+            logical_batch_tokens: 512, physical_batch_tokens: 128, n_threads: 8,
+            n_threads_batch: 8, n_gpu_layers: 0, use_mmap: true, use_mlock: false,
+            check_tensors: false }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct GenerationOptions {
+    pub max_new_tokens: u32,
+    pub seed: u32,
+    pub temperature: f32,
+    pub top_k: i32,
+    pub top_p: f32,
+    pub min_p: f32,
+    pub repeat_last_n: i32,
+    pub repeat_penalty: f32,
+    pub frequency_penalty: f32,
+    pub presence_penalty: f32,
+    pub stop_sequences: Vec<Vec<u8>>,
+}
+impl Default for GenerationOptions {
+    fn default() -> Self {
+        Self { max_new_tokens: 256, seed: u32::MAX, temperature: 0.8, top_k: 40,
+            top_p: 0.95, min_p: 0.05, repeat_last_n: 64, repeat_penalty: 1.1,
+            frequency_penalty: 0.0, presence_penalty: 0.0, stop_sequences: Vec::new() }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventKind { ModelProgress, Queued, Token, Metrics, Done, Cancelled, Error, Log }
+
+#[derive(Debug, Clone)]
+pub struct RuntimeEvent {
+    pub kind: EventKind,
+    pub data_format: u32,
+    pub error_code: i32,
+    pub model_handle: u64,
+    pub request_handle: u64,
+    pub slot_id: u32,
+    pub sequence_number: u64,
+    pub request_user_data: usize,
+    pub payload: Vec<u8>,
+}
+impl RuntimeEvent {
+    fn from_raw(raw: &sys::Event, payload: Vec<u8>) -> Option<Self> {
+        let kind = match raw.event_type {
+            1 => EventKind::ModelProgress, 2 => EventKind::Queued, 3 => EventKind::Token,
+            4 => EventKind::Metrics, 5 => EventKind::Done, 6 => EventKind::Cancelled,
+            7 => EventKind::Error, 8 => EventKind::Log, _ => return None,
+        };
+        Some(Self { kind, data_format: raw.flags, error_code: raw.error_code,
+            model_handle: raw.model_handle, request_handle: raw.request_handle,
+            slot_id: raw.slot_id, sequence_number: raw.sequence_number,
+            request_user_data: raw.request_user_data as usize, payload })
+    }
+    fn terminal(&self) -> bool {
+        matches!(self.kind, EventKind::Done | EventKind::Cancelled | EventKind::Error)
+    }
+}
+
+struct CallbackState {
+    sender: Sender<RuntimeEvent>,
+    requests: Mutex<HashMap<u64, Weak<AtomicBool>>>,
+    terminal_before_registration: Mutex<HashSet<u64>>,
+    test_hook: Option<Arc<dyn Fn(&RuntimeEvent) + Send + Sync>>,
+}
+
 unsafe extern "C" fn event_trampoline(event: *const sys::Event, user_data: *mut c_void) {
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let Some(raw) = event.as_ref() else { return };
+        let Some(raw) = (unsafe { event.as_ref() }) else { return };
         if raw.struct_size < std::mem::size_of::<sys::Event>() as u32 { return; }
         let payload = if raw.data.is_null() || raw.data_len == 0 {
             Vec::new()
@@ -1214,18 +3251,198 @@ unsafe extern "C" fn event_trampoline(event: *const sys::Event, user_data: *mut 
             unsafe { std::slice::from_raw_parts(raw.data, len) }.to_vec()
         };
         let state = unsafe { &*(user_data.cast::<CallbackState>()) };
-        let _ = state.sender.send(RuntimeEvent::from_raw(raw, payload));
+        let Some(event) = RuntimeEvent::from_raw(raw, payload) else { return };
+        if event.terminal() && event.request_handle != 0 {
+            let terminal = state.requests.lock().expect("request registry poisoned")
+                .get(&event.request_handle).and_then(Weak::upgrade);
+            if let Some(terminal) = terminal {
+                terminal.store(true, Ordering::Release);
+            } else {
+                state.terminal_before_registration.lock()
+                    .expect("early terminal registry poisoned").insert(event.request_handle);
+            }
+        }
+        if let Some(hook) = &state.test_hook { hook(&event); }
+        let _ = state.sender.send(event);
     }));
+}
+
+struct RuntimeInner {
+    api: sys::Api,
+    runtime: *mut sys::Runtime,
+    callback_state: Box<CallbackState>,
+    call_lock: Mutex<()>,
+}
+// SAFETY: every native call is serialized by call_lock; callback state is thread-safe and the DLL
+// contract keeps the runtime valid until runtime_destroy returns.
+unsafe impl Send for RuntimeInner {}
+unsafe impl Sync for RuntimeInner {}
+impl Drop for RuntimeInner {
+    fn drop(&mut self) {
+        let _guard = self.call_lock.lock().expect("runtime call lock poisoned");
+        if !self.runtime.is_null() {
+            unsafe { (self.api.runtime_destroy)(self.runtime) };
+            self.runtime = std::ptr::null_mut();
+        }
+    }
+}
+
+pub struct InferenceRuntime { inner: Arc<RuntimeInner>, events: Receiver<RuntimeEvent> }
+struct ModelState { runtime: Arc<RuntimeInner>, handle: u64 }
+impl Drop for ModelState {
+    fn drop(&mut self) {
+        let _guard = self.runtime.call_lock.lock().expect("runtime call lock poisoned");
+        let mut error = sys::Error::default();
+        unsafe { (self.runtime.api.model_unload)(self.runtime.runtime, self.handle, &mut error) };
+    }
+}
+pub struct Model { state: Arc<ModelState> }
+pub struct Request { model: Arc<ModelState>, handle: u64, terminal: Arc<AtomicBool> }
+impl Drop for Request {
+    fn drop(&mut self) {
+        if self.terminal.load(Ordering::Acquire) { return; }
+        let _guard = self.model.runtime.call_lock.lock().expect("runtime call lock poisoned");
+        let mut error = sys::Error::default();
+        unsafe { (self.model.runtime.api.request_cancel)(
+            self.model.runtime.runtime, self.handle, &mut error) };
+    }
 }
 ```
 
-Keep `Box<CallbackState>` alive inside `RuntimeLibrary` until after native `runtime_destroy`. `Request::drop` calls cancel once unless a terminal event has marked its shared atomic terminal flag. `Model::drop` unloads only after all requests are dropped; encode this with `Arc<RuntimeInner>`, handle IDs, and a mutex rather than exposing raw pointers.
+`RuntimeInner` declares `api` before `callback_state`, but its custom `Drop` destroys the native runtime before Rust drops callback state. `Request` holds `Arc<ModelState>`, so model unload occurs only after the `Model` and all its requests are dropped.
 
 - [ ] **Step 4: Implement safe load, submit, cancel, snapshot, and metrics methods**
 
-Convert paths with `path.as_os_str().encode_wide()` only for Rust filesystem checks; pass a canonical UTF-8 path to the C ABI and return an explicit error when a Windows path is not representable as UTF-8. Build stop `Vec<sys::Bytes>` only after owned stop byte vectors are finalized so pointers do not move. Keep all vectors alive through `request_submit`; native copies them before return.
+Add these complete method implementations after the types above. `InferenceRuntime::load` remains unsafe, like the existing probe loader; application code must first resolve a project-managed pack ID.
 
-Reject model APIs when runtime ABI minor is below 1. Preserve the existing unsafe `RuntimeLibrary::load(&Path)` contract; do not create a safe public arbitrary-DLL loader.
+```rust
+impl InferenceRuntime {
+    /// # Safety
+    /// `path` must be a trusted project-managed runtime pack DLL implementing LLW ABI 1.1.
+    pub unsafe fn load(path: &Path, options: RuntimeOptions) -> Result<Self, Error> {
+        let api = unsafe { sys::Api::load(path)? };
+        let query = sys::AbiQuery::default();
+        let mut info = sys::AbiInfo::default();
+        let mut raw_error = sys::Error::default();
+        check_result(unsafe { (api.get_abi_info)(&query, &mut info, &mut raw_error) }, &raw_error)?;
+        if info.abi_major != sys::ABI_MAJOR {
+            return Err(Error::AbiMismatch { expected: sys::ABI_MAJOR, actual: info.abi_major });
+        }
+        if info.abi_minor < 1 {
+            return Err(Error::Runtime { code: sys::ERR_UNSUPPORTED,
+                message: "runtime does not support inference ABI 1.1".into() });
+        }
+        let (sender, events) = crossbeam_channel::unbounded();
+        let mut callback_state = Box::new(CallbackState { sender,
+            requests: Mutex::new(HashMap::new()),
+            terminal_before_registration: Mutex::new(HashSet::new()), test_hook: None });
+        let callbacks = sys::CallbackTable { struct_size: std::mem::size_of::<sys::CallbackTable>() as u32,
+            flags: 0, on_event: Some(event_trampoline),
+            user_data: (&mut *callback_state as *mut CallbackState).cast(), reserved: [0; 8] };
+        let create = sys::RuntimeCreateParams { struct_size: std::mem::size_of::<sys::RuntimeCreateParams>() as u32,
+            flags: 0, callbacks, reserved: [0; 8],
+            scheduler: sys::SchedulerConfig { struct_size: std::mem::size_of::<sys::SchedulerConfig>() as u32,
+                flags: 0, slot_count: options.slot_count,
+                request_queue_capacity: options.request_queue_capacity,
+                event_queue_capacity: options.event_queue_capacity, reserved0: 0, reserved: [0; 8] },
+            reserved_v1: [0; 8] };
+        let mut runtime = std::ptr::null_mut();
+        let mut raw_error = sys::Error::default();
+        let code = unsafe { (api.runtime_create)(&create, &mut runtime, &mut raw_error) };
+        let runtime = finish_runtime_create(code, runtime, &raw_error,
+            |value| unsafe { (api.runtime_destroy)(value) })?;
+        Ok(Self { inner: Arc::new(RuntimeInner { api, runtime, callback_state,
+            call_lock: Mutex::new(()) }), events })
+    }
+
+    pub fn events(&self) -> Receiver<RuntimeEvent> { self.events.clone() }
+
+    pub fn load_model(&self, path: &Path, options: ModelOptions) -> Result<Model, Error> {
+        let canonical = path.canonicalize().map_err(|error| Error::Runtime {
+            code: -1, message: format!("failed to canonicalize model path: {error}") })?;
+        let utf8 = canonical.to_str().ok_or_else(|| Error::Runtime {
+            code: -1, message: "model path is not representable as UTF-8".into() })?;
+        let params = sys::ModelLoadParams { struct_size: std::mem::size_of::<sys::ModelLoadParams>() as u32,
+            flags: 0, path_utf8: utf8.as_ptr(), path_len: utf8.len() as u64,
+            backend: options.backend.raw(), device_index: options.device_index,
+            context_tokens_per_slot: options.context_tokens_per_slot,
+            logical_batch_tokens: options.logical_batch_tokens,
+            physical_batch_tokens: options.physical_batch_tokens, n_threads: options.n_threads,
+            n_threads_batch: options.n_threads_batch, n_gpu_layers: options.n_gpu_layers,
+            use_mmap: u32::from(options.use_mmap), use_mlock: u32::from(options.use_mlock),
+            check_tensors: u32::from(options.check_tensors), reserved0: 0, reserved: [0; 12] };
+        let _guard = self.inner.call_lock.lock().expect("runtime call lock poisoned");
+        let mut handle = 0;
+        let mut error = sys::Error::default();
+        check_result(unsafe { (self.inner.api.model_load)(self.inner.runtime, &params,
+            &mut handle, &mut error) }, &error)?;
+        Ok(Model { state: Arc::new(ModelState { runtime: self.inner.clone(), handle }) })
+    }
+
+    pub fn scheduler_snapshot(&self) -> Result<sys::SchedulerSnapshot, Error> {
+        let _guard = self.inner.call_lock.lock().expect("runtime call lock poisoned");
+        let mut value = sys::SchedulerSnapshot::default();
+        let mut error = sys::Error::default();
+        check_result(unsafe { (self.inner.api.get_scheduler_snapshot)(self.inner.runtime,
+            &mut value, &mut error) }, &error)?;
+        Ok(value)
+    }
+
+    pub fn metrics(&self) -> Result<sys::Metrics, Error> {
+        let _guard = self.inner.call_lock.lock().expect("runtime call lock poisoned");
+        let mut value = sys::Metrics::default();
+        let mut error = sys::Error::default();
+        check_result(unsafe { (self.inner.api.get_metrics)(self.inner.runtime,
+            &mut value, &mut error) }, &error)?;
+        Ok(value)
+    }
+}
+
+impl Model {
+    pub fn handle(&self) -> u64 { self.state.handle }
+
+    pub fn submit(&self, prompt: &[u8], options: GenerationOptions) -> Result<Request, Error> {
+        let stop_storage = options.stop_sequences;
+        let stop_ffi: Vec<sys::Bytes> = stop_storage.iter().map(|stop| sys::Bytes {
+            struct_size: std::mem::size_of::<sys::Bytes>() as u32, flags: 0,
+            data: stop.as_ptr(), len: stop.len() as u64, reserved: [0; 8] }).collect();
+        let params = sys::RequestParams { struct_size: std::mem::size_of::<sys::RequestParams>() as u32,
+            flags: 0, model_handle: self.state.handle, prompt: prompt.as_ptr(),
+            prompt_len: prompt.len() as u64, max_new_tokens: options.max_new_tokens,
+            seed: options.seed, temperature: options.temperature, top_k: options.top_k,
+            top_p: options.top_p, min_p: options.min_p, repeat_last_n: options.repeat_last_n,
+            repeat_penalty: options.repeat_penalty, frequency_penalty: options.frequency_penalty,
+            presence_penalty: options.presence_penalty, stop_count: stop_ffi.len() as u32,
+            reserved0: 0, stop_sequences: if stop_ffi.is_empty() { std::ptr::null() }
+                else { stop_ffi.as_ptr() }, request_user_data: std::ptr::null_mut(),
+            reserved: [0; 12] };
+        let _guard = self.state.runtime.call_lock.lock().expect("runtime call lock poisoned");
+        let mut handle = 0;
+        let mut error = sys::Error::default();
+        check_result(unsafe { (self.state.runtime.api.request_submit)(self.state.runtime.runtime,
+            &params, &mut handle, &mut error) }, &error)?;
+        let terminal = Arc::new(AtomicBool::new(false));
+        self.state.runtime.callback_state.requests.lock().expect("request registry poisoned")
+            .insert(handle, Arc::downgrade(&terminal));
+        if self.state.runtime.callback_state.terminal_before_registration.lock()
+            .expect("early terminal registry poisoned").remove(&handle) {
+            terminal.store(true, Ordering::Release);
+        }
+        Ok(Request { model: self.state.clone(), handle, terminal })
+    }
+}
+
+impl Request {
+    pub fn handle(&self) -> u64 { self.handle }
+    pub fn cancel(&self) -> Result<(), Error> {
+        if self.terminal.load(Ordering::Acquire) { return Ok(()); }
+        let _guard = self.model.runtime.call_lock.lock().expect("runtime call lock poisoned");
+        let mut error = sys::Error::default();
+        check_result(unsafe { (self.model.runtime.api.request_cancel)(self.model.runtime.runtime,
+            self.handle, &mut error) }, &error)
+    }
+}
+```
 
 - [ ] **Step 5: Run Rust and DLL integration tests**
 
@@ -1236,7 +3453,7 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 ```
 
-Expected: callback copying, panic containment, request-drop cancellation, existing probe, ABI layout, and runtime integration tests pass.
+Expected: callback copying, panic containment, existing probe, ABI layout, and native tests pass. Task 9 adds model-backed request-drop and concurrent-generation integration coverage once the checksum-pinned GGUF is available.
 
 - [ ] **Step 6: Commit the Rust boundary**
 
@@ -1252,7 +3469,8 @@ git commit -m "feat: wrap native inference callbacks safely"
 - Create: `scripts/acquire-test-model.ps1`
 - Create: `native/llm-runtime/tests/runtime_backend_test.cpp`
 - Modify: `native/llm-runtime/CMakeLists.txt`
-- Modify: `crates/llm-runtime/tests/native_runtime.rs`
+- Create: `crates/llm-runtime/tests/native_runtime.rs`
+- Modify: `.gitignore`
 
 - [ ] **Step 1: Record the non-redistributed fixture**
 
@@ -1292,11 +3510,160 @@ Move-Item -Force -LiteralPath $temporary -Destination $destinationPath
 Write-Output $destinationPath
 ```
 
-Add `.test-models/` to `.gitignore` in the implementation commit that creates this script.
+Append this exact entry to `.gitignore`:
+
+```gitignore
+.test-models/
+```
 
 - [ ] **Step 3: Write the CPU end-to-end test**
 
-Create `runtime_backend_test.cpp`. Accept the GGUF path as `argv[1]`; read `LLW_TEST_BACKEND` as CPU/CUDA/VULKAN and default to CPU; create a 2-slot runtime; load the selected backend with context 512 per slot, batch 128, ubatch 64, hardware concurrency clamped to `1..8`, GPU layers 0 for CPU and `-1` for GPU; submit prompts `"Once"` and `"The"` with deterministic greedy temperature 0 and 8 max tokens; wait up to 60 seconds; assert both handles receive TOKEN bytes, exactly one DONE each, no ERROR, at least one scheduler snapshot reports active count 2, and model unload/runtime destroy succeed. On timeout cancel both and fail after terminal callbacks arrive.
+Create `native/llm-runtime/tests/runtime_backend_test.cpp`:
+
+```cpp
+#include "llw_runtime.h"
+#include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <map>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+
+#define CHECK(condition) do { if (!(condition)) { \
+    std::fprintf(stderr, "%s:%d failed: %s\n", __FILE__, __LINE__, #condition); return 1; \
+} } while (false)
+
+struct RequestResult { std::vector<uint8_t> bytes; uint32_t terminals{}; bool error{}; };
+struct Events {
+    std::mutex mutex;
+    std::condition_variable changed;
+    std::map<llw_handle_t, RequestResult> requests;
+};
+
+void LLW_CALL collect_backend_event(const llw_event_t* event, void* user_data) {
+    if (!event || event->request_handle == 0) return;
+    auto& events = *static_cast<Events*>(user_data);
+    {
+        std::lock_guard lock(events.mutex);
+        RequestResult& result = events.requests[event->request_handle];
+        if (event->event_type == LLW_EVENT_TOKEN && event->data)
+            result.bytes.insert(result.bytes.end(), event->data, event->data + event->data_len);
+        if (event->event_type == LLW_EVENT_DONE || event->event_type == LLW_EVENT_CANCELLED ||
+            event->event_type == LLW_EVENT_ERROR) ++result.terminals;
+        if (event->event_type == LLW_EVENT_ERROR) result.error = true;
+    }
+    events.changed.notify_all();
+}
+
+int32_t selected_backend() {
+    const char* value = std::getenv("LLW_TEST_BACKEND");
+    if (!value || std::string(value) == "CPU") return LLW_BACKEND_CPU;
+    if (std::string(value) == "CUDA") return LLW_BACKEND_CUDA;
+    if (std::string(value) == "VULKAN") return LLW_BACKEND_VULKAN;
+    return -1;
+}
+
+llw_request_params_t generation(llw_handle_t model, const std::string& prompt) {
+    llw_request_params_t params{};
+    params.struct_size = sizeof(params);
+    params.model_handle = model;
+    params.prompt = reinterpret_cast<const uint8_t*>(prompt.data());
+    params.prompt_len = prompt.size();
+    params.max_new_tokens = 8;
+    params.seed = 7;
+    params.temperature = 0;
+    params.top_k = 40;
+    params.top_p = 0.95f;
+    params.min_p = 0.05f;
+    params.repeat_last_n = 64;
+    params.repeat_penalty = 1.1f;
+    return params;
+}
+
+int main(int argc, char** argv) {
+    CHECK(argc == 2);
+    const int32_t backend = selected_backend();
+    CHECK(backend >= LLW_BACKEND_CPU && backend <= LLW_BACKEND_VULKAN);
+    Events events;
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.callbacks.on_event = collect_backend_event;
+    create.callbacks.user_data = &events;
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 2;
+    create.scheduler.request_queue_capacity = 4;
+    create.scheduler.event_queue_capacity = 1024;
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    llw_runtime_t* runtime{};
+    CHECK(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
+
+    const std::string path = argv[1];
+    llw_model_load_params_t model_params{};
+    model_params.struct_size = sizeof(model_params);
+    model_params.path_utf8 = reinterpret_cast<const uint8_t*>(path.data());
+    model_params.path_len = path.size();
+    model_params.backend = backend;
+    model_params.device_index = 0;
+    model_params.context_tokens_per_slot = 512;
+    model_params.logical_batch_tokens = 128;
+    model_params.physical_batch_tokens = 64;
+    const unsigned hardware = std::thread::hardware_concurrency();
+    model_params.n_threads = static_cast<int32_t>(std::clamp(hardware == 0 ? 1u : hardware, 1u, 8u));
+    model_params.n_threads_batch = model_params.n_threads;
+    model_params.n_gpu_layers = backend == LLW_BACKEND_CPU ? 0 : -1;
+    model_params.use_mmap = 1;
+    llw_handle_t model{};
+    CHECK(llw_model_load(runtime, &model_params, &model, &error) == LLW_OK);
+    CHECK(model != 0);
+
+    const std::string first_prompt = "Once";
+    const std::string second_prompt = "The";
+    llw_request_params_t first_params = generation(model, first_prompt);
+    llw_request_params_t second_params = generation(model, second_prompt);
+    llw_handle_t first{};
+    llw_handle_t second{};
+    CHECK(llw_request_submit(runtime, &first_params, &first, &error) == LLW_OK);
+    CHECK(llw_request_submit(runtime, &second_params, &second, &error) == LLW_OK);
+
+    bool saw_two_active = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    for (;;) {
+        llw_scheduler_snapshot_t snapshot{};
+        snapshot.struct_size = sizeof(snapshot);
+        CHECK(llw_get_scheduler_snapshot(runtime, &snapshot, &error) == LLW_OK);
+        saw_two_active = saw_two_active || snapshot.active_count == 2;
+        {
+            std::unique_lock lock(events.mutex);
+            if (events.requests[first].terminals == 1 && events.requests[second].terminals == 1) break;
+            if (events.changed.wait_until(lock, deadline) == std::cv_status::timeout) {
+                lock.unlock();
+                llw_request_cancel(runtime, first, &error);
+                llw_request_cancel(runtime, second, &error);
+                CHECK(false);
+            }
+        }
+    }
+    {
+        std::lock_guard lock(events.mutex);
+        CHECK(!events.requests[first].bytes.empty());
+        CHECK(!events.requests[second].bytes.empty());
+        CHECK(events.requests[first].terminals == 1);
+        CHECK(events.requests[second].terminals == 1);
+        CHECK(!events.requests[first].error && !events.requests[second].error);
+    }
+    CHECK(saw_two_active);
+    CHECK(llw_model_unload(runtime, model, &error) == LLW_OK);
+    llw_runtime_destroy(runtime);
+    return 0;
+}
+```
 
 Add the target and opt-in registration:
 
@@ -1308,6 +3675,94 @@ if(DEFINED ENV{LLW_TEST_GGUF} AND EXISTS "$ENV{LLW_TEST_GGUF}")
   add_test(NAME llw_runtime_backend_test COMMAND llw_runtime_backend_test "$ENV{LLW_TEST_GGUF}")
   set_tests_properties(llw_runtime_backend_test PROPERTIES TIMEOUT 90 LABELS "model;opt-in")
 endif()
+```
+
+Create `crates/llm-runtime/tests/native_runtime.rs` with the complete Rust-to-DLL drop-cancellation test below. It uses the same explicit `LLW_TEST_RUNTIME` and checksum-verified `LLW_TEST_GGUF` boundary as the C++ test:
+
+```rust
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use llm_runtime::{
+    Backend, EventKind, GenerationOptions, InferenceRuntime, ModelOptions, RuntimeOptions,
+};
+
+fn required_path(name: &str) -> PathBuf {
+    std::env::var_os(name).map(PathBuf::from).unwrap_or_else(|| {
+        panic!("{name} must be set by the explicit model-backed test command")
+    })
+}
+
+#[test]
+fn dropping_a_queued_request_cancels_it_once() {
+    let dll = required_path("LLW_TEST_RUNTIME");
+    let Some(gguf) = std::env::var_os("LLW_TEST_GGUF").map(PathBuf::from) else {
+        eprintln!("LLW_TEST_GGUF is unset; model-backed cancellation test is opt-in");
+        return;
+    };
+    let options = RuntimeOptions {
+        slot_count: 1,
+        request_queue_capacity: 4,
+        event_queue_capacity: 1024,
+    };
+    // SAFETY: both paths are supplied by this repository's explicit, checksum-verified test flow.
+    let runtime = unsafe { InferenceRuntime::load(&dll, options) }.expect("load runtime");
+    let events = runtime.events();
+    let model = runtime
+        .load_model(
+            &gguf,
+            ModelOptions {
+                backend: Backend::Cpu,
+                context_tokens_per_slot: 512,
+                logical_batch_tokens: 128,
+                physical_batch_tokens: 64,
+                n_gpu_layers: 0,
+                ..ModelOptions::default()
+            },
+        )
+        .expect("load tiny model");
+    let long = GenerationOptions {
+        max_new_tokens: 1024,
+        seed: 11,
+        ..GenerationOptions::default()
+    };
+    let blocker = model.submit(b"Once", long).expect("submit active request");
+    let queued = model
+        .submit(
+            b"The",
+            GenerationOptions {
+                max_new_tokens: 32,
+                seed: 12,
+                ..GenerationOptions::default()
+            },
+        )
+        .expect("submit queued request");
+    let queued_handle = queued.handle();
+    drop(queued);
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut queued_terminals = Vec::new();
+    while Instant::now() < deadline && queued_terminals.is_empty() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let event = events.recv_timeout(remaining).expect("terminal event before timeout");
+        if event.request_handle == queued_handle
+            && matches!(event.kind, EventKind::Done | EventKind::Cancelled | EventKind::Error)
+        {
+            queued_terminals.push(event.kind);
+        }
+    }
+    blocker.cancel().expect("cancel active request");
+    assert_eq!(queued_terminals, vec![EventKind::Cancelled]);
+
+    let duplicate_deadline = Instant::now() + Duration::from_millis(250);
+    while let Ok(event) = events.recv_deadline(duplicate_deadline) {
+        assert!(
+            event.request_handle != queued_handle
+                || !matches!(event.kind, EventKind::Done | EventKind::Cancelled | EventKind::Error),
+            "queued request emitted a duplicate terminal event"
+        );
+    }
+}
 ```
 
 - [ ] **Step 4: Acquire and run CPU E2E explicitly**
@@ -1357,7 +3812,16 @@ cmake -S native/llm-runtime -B .cmake-build/llm-cuda -A x64 -DLLW_BACKEND_PACK=C
 cmake --build .cmake-build/llm-cuda --config Release
 
 ## Vulkan compile smoke
-$env:VULKAN_SDK must name an installed LunarG Vulkan SDK.
+$version = '1.4.350.0'
+$url = 'https://sdk.lunarg.com/sdk/download/1.4.350.0/windows/vulkansdk-windows-X64-1.4.350.0.exe'
+$sha256 = '855b27ba05d2d8119c5114c5d4ff870ca38f2c632b11e1bb9923b9b7e6ecfe7b'
+$installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk.exe'
+Invoke-WebRequest -Uri $url -OutFile $installer
+if ((Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant() -ne $sha256) { throw 'Vulkan SDK checksum mismatch' }
+$root = "C:\VulkanSDK\$version"
+$process = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList '--root', $root, '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+if ($process.ExitCode -ne 0) { throw "Vulkan SDK installer failed: $($process.ExitCode)" }
+$env:VULKAN_SDK = $root
 cmake -S native/llm-runtime -B .cmake-build/llm-vulkan -A x64 -DLLW_BACKEND_PACK=VULKAN
 cmake --build .cmake-build/llm-vulkan --config Release
 
@@ -1366,37 +3830,146 @@ $env:LLW_TEST_GGUF = & scripts/acquire-test-model.ps1
 $env:LLW_TEST_BACKEND = 'CUDA' # use VULKAN on a Vulkan-capable host
 ctest --test-dir .cmake-build/llm-cuda -C Release -R llw_runtime_backend_test --output-on-failure
 
-The CUDA command requires a compatible NVIDIA driver/GPU and CUDA toolkit. The Vulkan command requires a
-working Vulkan loader/device/driver. Standard CI performs configuration or compile smoke only when toolkits
-are installed and does not claim runtime GPU validation. Metal is reserved for a future ABI-compatible macOS
-plan and is not configured, compiled, or tested here.
+The Vulkan SDK source, version, 324012984-byte size, and SHA-256 are pinned from
+`https://vulkan.lunarg.com/sdk/files.json`; unattended arguments are from
+`https://vulkan.lunarg.com/doc/view/1.4.350.0/windows/getting_started.html`.
+The CUDA command requires the self-hosted runner labels `Windows`, `X64`, and `cuda`, plus `nvcc` and
+`CUDA_PATH`. Compile smoke does not claim runtime GPU validation. Runtime CUDA/Vulkan tests use the explicit
+hardware-gated command above. Metal is reserved for a future ABI-compatible macOS plan and is not configured,
+compiled, or tested here.
 ```
 
 - [ ] **Step 2: Add realistic CI jobs**
 
-Keep the existing Windows CPU contract job and update it to configure `LLW_BACKEND_PACK=CPU`, acquire the tiny model only in a scheduled/manual job, and run locked Rust commands. Add `windows-cuda-configure` and `windows-vulkan-configure` jobs gated by repository variables `ENABLE_CUDA_SMOKE == 'true'` and `ENABLE_VULKAN_SMOKE == 'true'`. CUDA installs no driver and only configures/builds with the runner's available toolkit; Vulkan installs a pinned LunarG SDK version configured in the workflow and performs compile smoke. Neither job runs a model.
-
-Use these job conditions exactly:
+Replace `.github/workflows/ci.yml` with this complete workflow. Vulkan uses the public `windows-2025` runner and an official checksum-pinned SDK. CUDA is an explicit `workflow_dispatch` job on a pre-provisioned self-hosted runner; it cannot accidentally run or claim validation on standard hardware.
 
 ```yaml
-if: vars.ENABLE_CUDA_SMOKE == 'true'
-```
+name: ci
 
-```yaml
-if: vars.ENABLE_VULKAN_SMOKE == 'true'
-```
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      cpu_model_test:
+        description: Run the checksum-pinned tiny GGUF CPU test
+        required: true
+        type: boolean
+        default: false
+      vulkan_compile_smoke:
+        description: Install LunarG SDK 1.4.350.0 and compile the Vulkan pack
+        required: true
+        type: boolean
+        default: false
+      cuda_compile_smoke:
+        description: Compile on a self-hosted Windows CUDA runner
+        required: true
+        type: boolean
+        default: false
 
-Do not mark either optional job required until the repository has stable toolkit provisioning.
+permissions:
+  contents: read
+
+jobs:
+  windows-cpu-contract:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci --prefix apps/desktop
+      - name: Build frontend
+        run: npm run build --prefix apps/desktop
+      - name: Acquire checksum-pinned test model
+        if: github.event_name == 'workflow_dispatch' && inputs.cpu_model_test
+        shell: pwsh
+        run: |
+          $path = & scripts/acquire-test-model.ps1
+          "LLW_TEST_GGUF=$path" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Configure CPU runtime
+        run: cmake -S native/llm-runtime -B .cmake-build/llm-cpu -A x64 -DLLW_BACKEND_PACK=CPU
+      - name: Build CPU runtime
+        run: cmake --build .cmake-build/llm-cpu --config Debug
+      - name: Test native runtime
+        run: ctest --test-dir .cmake-build/llm-cpu -C Debug --output-on-failure
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Lint Rust
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: Test Rust with native runtime
+        shell: pwsh
+        run: |
+          $env:LLW_TEST_RUNTIME = (Resolve-Path '.cmake-build/llm-cpu/Debug/local_llm_runtime.dll')
+          cargo test --locked --workspace
+
+  windows-vulkan-compile:
+    if: github.event_name == 'workflow_dispatch' && inputs.vulkan_compile_smoke
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      VULKAN_SDK_VERSION: 1.4.350.0
+      VULKAN_SDK_URL: https://sdk.lunarg.com/sdk/download/1.4.350.0/windows/vulkansdk-windows-X64-1.4.350.0.exe
+      VULKAN_SDK_SHA256: 855b27ba05d2d8119c5114c5d4ff870ca38f2c632b11e1bb9923b9b7e6ecfe7b
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install pinned LunarG Vulkan SDK
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk.exe'
+          Invoke-WebRequest -Uri $env:VULKAN_SDK_URL -OutFile $installer
+          $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          if ($actual -ne $env:VULKAN_SDK_SHA256) { throw "Vulkan SDK checksum mismatch: $actual" }
+          $root = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          $process = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList '--root', $root, '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+          if ($process.ExitCode -ne 0) { throw "Vulkan SDK installer failed: $($process.ExitCode)" }
+          "VULKAN_SDK=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$root\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Configure Vulkan runtime pack
+        run: cmake -S native/llm-runtime -B .cmake-build/llm-vulkan -A x64 -DLLW_BACKEND_PACK=VULKAN
+      - name: Compile Vulkan runtime pack
+        run: cmake --build .cmake-build/llm-vulkan --config Release --target local_llm_runtime
+
+  windows-cuda-compile:
+    if: github.event_name == 'workflow_dispatch' && inputs.cuda_compile_smoke
+    runs-on: [self-hosted, Windows, X64, cuda]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Verify pre-provisioned CUDA toolkit
+        shell: pwsh
+        run: |
+          if (-not $env:CUDA_PATH) { throw 'CUDA_PATH is not set on the self-hosted runner' }
+          $nvcc = Get-Command nvcc -ErrorAction Stop
+          & $nvcc.Source --version
+      - name: Configure CUDA runtime pack
+        run: cmake -S native/llm-runtime -B .cmake-build/llm-cuda -A x64 -DLLW_BACKEND_PACK=CUDA
+      - name: Compile CUDA runtime pack
+        run: cmake --build .cmake-build/llm-cuda --config Release --target local_llm_runtime
+```
 
 - [ ] **Step 3: Configure every available pack locally**
 
 ```powershell
 cmake -S native/llm-runtime -B .cmake-build/llm-cpu -A x64 -DLLW_BACKEND_PACK=CPU
-if (Get-Command nvcc -ErrorAction SilentlyContinue) { cmake -S native/llm-runtime -B .cmake-build/llm-cuda -A x64 -DLLW_BACKEND_PACK=CUDA }
-if ($env:VULKAN_SDK) { cmake -S native/llm-runtime -B .cmake-build/llm-vulkan -A x64 -DLLW_BACKEND_PACK=VULKAN }
+$env:VULKAN_SDK = 'C:\VulkanSDK\1.4.350.0'
+cmake -S native/llm-runtime -B .cmake-build/llm-vulkan -A x64 -DLLW_BACKEND_PACK=VULKAN
+cmake --build .cmake-build/llm-vulkan --config Release --target local_llm_runtime
+if (-not $env:CUDA_PATH) { throw 'Run CUDA smoke only on the labeled self-hosted CUDA runner' }
+cmake -S native/llm-runtime -B .cmake-build/llm-cuda -A x64 -DLLW_BACKEND_PACK=CUDA
+cmake --build .cmake-build/llm-cuda --config Release --target local_llm_runtime
 ```
 
-Expected: CPU always configures. CUDA/Vulkan configure when their toolkits are present; absence is reported as skipped, not as runtime validation.
+Expected: CPU and the pinned Vulkan SDK build succeed. CUDA succeeds only on the explicitly provisioned self-hosted runner. These are compile checks, not runtime GPU claims.
 
 - [ ] **Step 4: Commit backend validation**
 
@@ -1413,7 +3986,25 @@ git commit -m "ci: smoke test native backend packs"
 
 - [ ] **Step 1: Add a regression assertion for command input**
 
-Add a source-level test that reads `runtime_probe.rs`, finds `pub async fn probe_runtime`, and asserts the signature contains `runtime_pack_id: String` and does not contain `PathBuf` or `dll_path`. Keep the existing traversal, separator, junction escape, missing-pack, and canonical-root tests.
+Add this complete test inside the existing `tests` module in `apps/desktop/src-tauri/src/runtime_probe.rs`:
+
+```rust
+#[test]
+fn command_accepts_pack_id_not_runtime_library_path() {
+    let source = include_str!("runtime_probe.rs");
+    let start = source
+        .find("pub async fn probe_runtime(")
+        .expect("probe_runtime command must exist");
+    let remainder = &source[start..];
+    let end = remainder
+        .find(") -> Result<RuntimeInfoDto, String>")
+        .expect("probe_runtime signature must retain its result type");
+    let signature = &remainder[..end];
+    assert!(signature.contains("runtime_pack_id: String"));
+    assert!(!signature.contains("PathBuf"));
+    assert!(!signature.contains("dll_path"));
+}
+```
 
 Run:
 
