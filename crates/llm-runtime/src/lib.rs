@@ -261,18 +261,16 @@ where
         };
         let mut raw_error = sys::Error::default();
         let code = call(&mut list, &mut raw_error);
+        if code != sys::OK && code != sys::ERR_BUFFER_TOO_SMALL {
+            return Err(runtime_error(code, &raw_error));
+        }
         let required_len = validate_device_response(&list, storage.len())?;
 
-        match code {
-            sys::OK if required_len <= storage.len() => {
-                storage.truncate(list.count as usize);
-                return Ok(storage);
-            }
-            sys::OK | sys::ERR_BUFFER_TOO_SMALL => {
-                grow_device_storage(&mut storage, required_len)?;
-            }
-            _ => return Err(runtime_error(code, &raw_error)),
+        if code == sys::OK && required_len <= storage.len() {
+            storage.truncate(list.count as usize);
+            return Ok(storage);
         }
+        grow_device_storage(&mut storage, required_len)?;
     }
 
     Err(Error::Runtime {
@@ -518,6 +516,29 @@ mod tests {
         .expect("count above capacity must fail");
 
         assert!(matches!(error, Error::Runtime { code: -1, .. }));
+    }
+
+    #[test]
+    fn preserves_unexpected_runtime_error_when_counts_are_malformed() {
+        let error = enumerate_devices(|list, error| {
+            list.required_count = u64::MAX;
+            list.count = u32::MAX;
+            for (destination, source) in error
+                .message
+                .iter_mut()
+                .zip(b"enumeration failed\0".iter().copied())
+            {
+                *destination = source as _;
+            }
+            77
+        })
+        .err()
+        .expect("unexpected runtime error must fail");
+
+        assert!(matches!(
+            error,
+            Error::Runtime { code: 77, message } if message == "enumeration failed"
+        ));
     }
 
     #[test]
