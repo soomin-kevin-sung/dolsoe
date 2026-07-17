@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.93.0
+          components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci --prefix apps/desktop
+      - name: Build frontend
+        run: npm run build --prefix apps/desktop
+      - name: Configure fake runtime
+        run: cmake -S native/llm-runtime -B .cmake-build/llm-runtime -A x64
+      - name: Build fake runtime
+        run: cmake --build .cmake-build/llm-runtime --config Debug
+      - name: Test native ABI
+        run: ctest --test-dir .cmake-build/llm-runtime -C Debug --output-on-failure
+      - name: Check Rust formatting
+        run: cargo fmt --all --check
+      - name: Lint Rust
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test Rust with fake runtime
+        shell: pwsh
+        run: |
+          $env:LLW_TEST_RUNTIME = (Resolve-Path '.cmake-build/llm-runtime/Debug/local_llm_runtime.dll')
+          cargo test --workspace
