@@ -52,7 +52,7 @@ native/llm-runtime/src/runtime.cpp                 C ABI validation, exception b
 native/llm-runtime/tests/abi_layout_test.cpp       C ABI type, size, offset, and legacy-prefix tests
 native/llm-runtime/tests/fake_engine.h             Deterministic engine used only by scheduler tests
 native/llm-runtime/tests/scheduler_test.cpp        Concurrency, queue-full, cancellation, terminal tests
-native/llm-runtime/tests/runtime_backend_test.cpp Opt-in real GGUF backend end-to-end test
+native/llm-runtime/tests/runtime_backend_test.cpp Required checksum-pinned GGUF CPU end-to-end test
 native/llm-runtime/tests/fixtures/model.json       Tiny GGUF URL, SHA-256, size, and provenance
 scripts/acquire-test-model.ps1                     Explicit checksum-verified fixture acquisition
 crates/llm-runtime-sys/src/lib.rs                  Exact repr(C) mirrors and fourteen dynamic exports
@@ -134,6 +134,7 @@ target_compile_definitions(local_llm_runtime PRIVATE
   LLW_RUNTIME_BUILD
   LLW_BACKEND_PACK_NAME="${LLW_BACKEND_PACK}"
   LLW_LLAMA_CPP_COMMIT="${LLAMA_CPP_COMMIT}"
+  $<$<CONFIG:Debug>:LLW_RUNTIME_TESTING>
 )
 target_include_directories(local_llm_runtime PUBLIC include PRIVATE src)
 target_link_libraries(local_llm_runtime PRIVATE llama ggml)
@@ -142,6 +143,7 @@ add_executable(llw_abi_layout_test tests/abi_layout_test.cpp)
 target_include_directories(llw_abi_layout_test PRIVATE include)
 target_link_libraries(llw_abi_layout_test PRIVATE local_llm_runtime)
 add_test(NAME llw_abi_layout_test COMMAND llw_abi_layout_test)
+set_tests_properties(llw_abi_layout_test PROPERTIES TIMEOUT 30)
 ```
 
 - [ ] **Step 3: Configure and inspect the CPU source pin**
@@ -482,6 +484,12 @@ and must not block indefinitely. Each accepted request emits increasing sequence
 exactly one of DONE, CANCELLED, or ERROR. After that terminal event is copied into the bounded event
 queue and sequence cleanup completes, the scheduler erases the request and later
 llw_request_cancel calls for that handle deterministically return LLW_ERR_NOT_FOUND.
+DONE JSON uses `reason:"stop"` for EOS/configured-stop completion and `reason:"length"` when the
+effective per-slot generation budget is exhausted; per-slot length completion is not an ERROR.
+The caller must externally exclude llw_runtime_destroy from every other llw_* call and callback;
+no thread may retain or use the raw llw_runtime_t pointer once destruction begins. Load, unload,
+submit, and cancel are internally serialized while the runtime remains alive. Under this precondition,
+model-progress callbacks finish before unload/destroy returns and cannot outlive the runtime.
 ```
 
 Bounds to document beside fields: slots `1..4`; request queue `1..1024`; event queue `16..65536`; model path `1..32768` UTF-8 bytes with no NUL; backend AUTO/CPU/CUDA/VULKAN; device index `0..255`; context per slot `512..262144`; logical batch `1..8192`; physical batch `1..logical_batch`; threads and batch threads `1..256`; GPU layers `-1..65535`; prompt `1..LLW_MAX_PROMPT_BYTES`; new tokens `1..1048576`; top-k `0..100000`; probabilities `0.0..1.0`; temperature `0.0..10.0`; repeat-last-n `0..262144`; repeat penalty `0.0..10.0`; frequency/presence penalties `-2.0..2.0`; stop count `0..8`; each stop `1..256` bytes; all stops combined `0..2048` bytes.
@@ -492,6 +500,8 @@ In `crates/llm-runtime-sys/src/lib.rs`, change `ABI_MINOR` and insert this compl
 
 ```rust
 pub const ABI_MINOR: u32 = 1;
+pub const ERR_INVALID_ARGUMENT: i32 = 1;
+pub const ERR_INTERNAL: i32 = 2;
 pub const ERR_BUSY: i32 = 4;
 pub const ERR_QUEUE_FULL: i32 = 5;
 pub const ERR_NOT_FOUND: i32 = 6;
@@ -818,6 +828,7 @@ add_executable(llw_scheduler_test tests/scheduler_test.cpp src/event_dispatcher.
 target_include_directories(llw_scheduler_test PRIVATE include src tests)
 target_link_libraries(llw_scheduler_test PRIVATE Threads::Threads)
 add_test(NAME llw_scheduler_test COMMAND llw_scheduler_test)
+set_tests_properties(llw_scheduler_test PROPERTIES TIMEOUT 30)
 ```
 
 - [ ] **Step 3: Implement payload ownership and serialized callbacks**
@@ -826,6 +837,8 @@ Create `native/llm-runtime/src/event_dispatcher.cpp`:
 
 ```cpp
 #include "event_dispatcher.h"
+#include <chrono>
+#include <stdexcept>
 #include <utility>
 
 EventDispatcher::EventDispatcher(llw_callback_table_t callbacks, uint32_t capacity)
@@ -855,7 +868,9 @@ void EventDispatcher::stop() {
 
 void EventDispatcher::drain_for_test() {
     std::unique_lock lock(mutex_);
-    drained_.wait(lock, [this] { return queue_.empty() && in_callback_ == 0; });
+    if (!drained_.wait_for(lock, std::chrono::seconds(5),
+                           [this] { return queue_.empty() && in_callback_ == 0; }))
+        throw std::runtime_error("event dispatcher drain timeout");
 }
 
 void EventDispatcher::run() {
@@ -1055,6 +1070,41 @@ void queue_full_test() {
     wait_for_terminals(collector, 2);
 }
 
+void per_slot_failure_isolation_test() {
+    Collector collector;
+    EventDispatcher dispatcher(callbacks(collector), 64);
+    FakeEngine engine;
+    const std::string oversized_prompt = "oversized";
+    const std::string healthy_prompt = "healthy";
+    engine.reject_prompt(std::vector<uint8_t>(oversized_prompt.begin(), oversized_prompt.end()));
+    Scheduler scheduler(2, 2, engine, dispatcher);
+    llw_handle_t oversized{}, healthy{};
+    std::string error;
+    if (scheduler.submit(request_params(oversized_prompt), oversized, error) != LLW_OK)
+        throw std::runtime_error(error);
+    if (scheduler.submit(request_params(healthy_prompt), healthy, error) != LLW_OK)
+        throw std::runtime_error(error);
+    engine.wait_for_started(1);
+    engine.release();
+    wait_for_terminals(collector, 2);
+    dispatcher.drain_for_test();
+    std::lock_guard lock(collector.mutex);
+    assert_sequences(collector, oversized);
+    assert_sequences(collector, healthy);
+    const auto terminal_type = [&collector](llw_handle_t handle) {
+        for (const SeenEvent& event : collector.events) {
+            if (event.request == handle && (event.type == LLW_EVENT_DONE ||
+                event.type == LLW_EVENT_CANCELLED || event.type == LLW_EVENT_ERROR))
+                return event.type;
+        }
+        return int32_t{0};
+    };
+    if (terminal_type(oversized) != LLW_EVENT_ERROR || terminal_type(healthy) != LLW_EVENT_DONE)
+        throw std::runtime_error("per-slot failure affected a healthy peer");
+    if (engine.cleanup_count(oversized) != 0 || engine.cleanup_count(healthy) != 1)
+        throw std::runtime_error("per-slot cleanup counts are incorrect");
+}
+
 void cancellation_test() {
     Collector collector;
     EventDispatcher dispatcher(callbacks(collector), 64);
@@ -1168,6 +1218,7 @@ int main() {
     try {
         concurrent_requests_test();
         queue_full_test();
+        per_slot_failure_isolation_test();
         cancellation_test();
         decode_failure_cleanup_precedes_slot_reuse_test();
         bounded_terminal_storage_test();
@@ -1209,7 +1260,8 @@ struct EngineRequest {
     uint32_t max_new_tokens{}; SamplingConfig sampling; std::vector<std::vector<uint8_t>> stops;
 };
 struct EngineStep {
-    llw_handle_t handle{}; std::vector<uint8_t> token_bytes; bool finished{}; bool failed{}; std::string error;
+    llw_handle_t handle{}; std::vector<uint8_t> token_bytes; bool finished{}; bool failed{};
+    std::string error; std::string finish_reason;
 };
 class InferenceEngine {
 public:
@@ -1231,6 +1283,7 @@ add_executable(llw_scheduler_test
 target_include_directories(llw_scheduler_test PRIVATE include src tests)
 target_link_libraries(llw_scheduler_test PRIVATE Threads::Threads)
 add_test(NAME llw_scheduler_test COMMAND llw_scheduler_test)
+set_tests_properties(llw_scheduler_test PROPERTIES TIMEOUT 30)
 ```
 
 - [ ] **Step 3: Define scheduler ownership and states**
@@ -1565,7 +1618,9 @@ void Scheduler::finish_locked(llw_handle_t handle, RequestState state, int32_t e
         }
     }
     int32_t event_type = LLW_EVENT_DONE;
-    std::string payload = "{\"state\":\"done\",\"generatedTokens\":" +
+    const std::string done_reason = message.empty() ? "stop" : message;
+    std::string payload = "{\"state\":\"done\",\"reason\":\"" +
+                          json_escape(done_reason) + "\",\"generatedTokens\":" +
                           std::to_string(request.generated_tokens) + "}";
     if (state == RequestState::Cancelled) {
         event_type = LLW_EVENT_CANCELLED;
@@ -1642,7 +1697,8 @@ void Scheduler::run() {
             }
             if (step.failed) finish_locked(request.handle, RequestState::Error,
                                            LLW_ERR_INTERNAL, step.error);
-            else if (step.finished) finish_locked(request.handle, RequestState::Done, 0, "");
+            else if (step.finished) finish_locked(request.handle, RequestState::Done, 0,
+                                                  step.finish_reason);
         }
 
         OwnedEvent metrics_event;
@@ -1666,6 +1722,7 @@ Create `native/llm-runtime/tests/fake_engine.h`:
 ```cpp
 #pragma once
 #include "inference_engine.h"
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
@@ -1680,6 +1737,8 @@ class FakeEngine final : public InferenceEngine {
 public:
     uint64_t start(EngineRequest request) override {
         std::lock_guard lock(mutex_);
+        if (request.prompt == rejected_prompt_)
+            throw std::invalid_argument("prompt leaves no generation token in its slot context");
         const uint64_t prompt_tokens = request.prompt.size();
         operation_log_.push_back("start:" + std::to_string(request.handle));
         requests_.emplace(request.handle, Stored{std::move(request), 0});
@@ -1691,7 +1750,8 @@ public:
         std::unique_lock lock(mutex_);
         batches_.push_back(active);
         changed_.notify_all();
-        gate_.wait(lock, [this] { return released_; });
+        if (!gate_.wait_for(lock, std::chrono::seconds(5), [this] { return released_; }))
+            throw std::runtime_error("fake engine release timeout");
         if (decode_failure_) throw std::runtime_error("injected decode failure");
         std::vector<EngineStep> result;
         for (const llw_handle_t handle : active) {
@@ -1724,6 +1784,11 @@ public:
         decode_failure_ = value;
     }
 
+    void reject_prompt(std::vector<uint8_t> prompt) {
+        std::lock_guard lock(mutex_);
+        rejected_prompt_ = std::move(prompt);
+    }
+
     void release() {
         std::lock_guard lock(mutex_);
         released_ = true;
@@ -1732,15 +1797,17 @@ public:
 
     void wait_for_started(size_t count) {
         std::unique_lock lock(mutex_);
-        changed_.wait(lock, [this, count] { return requests_.size() >= count; });
+        if (!changed_.wait_for(lock, std::chrono::seconds(5),
+                               [this, count] { return requests_.size() >= count; }))
+            throw std::runtime_error("fake engine start timeout");
     }
 
     void wait_for_batch_size(size_t count) {
         std::unique_lock lock(mutex_);
-        changed_.wait(lock, [this, count] {
+        if (!changed_.wait_for(lock, std::chrono::seconds(5), [this, count] {
             for (const auto& batch : batches_) if (batch.size() >= count) return true;
             return false;
-        });
+        })) throw std::runtime_error("fake engine batch timeout");
     }
 
     std::vector<std::vector<llw_handle_t>> batches() const {
@@ -1770,6 +1837,7 @@ private:
     std::vector<std::string> operation_log_;
     bool released_{};
     bool decode_failure_{};
+    std::vector<uint8_t> rejected_prompt_;
 };
 ```
 
@@ -1936,6 +2004,11 @@ struct LogitOwner {
     llw_handle_t handle{};
     int32_t batch_index{};
 };
+struct StopMatch {
+    size_t position{};
+    size_t stop_index{};
+    size_t length{};
+};
 
 llw_result_t validate_model_config(const ModelConfig&, std::string&);
 std::vector<DeviceRecord> assign_device_indices(std::vector<DeviceRecord>);
@@ -1945,6 +2018,16 @@ std::vector<DeviceRecord> enumerate_pack_devices(const std::string& backend_dire
 BatchPlan plan_batch(
     const std::vector<SequenceView>& sequences, size_t capacity, size_t start_index);
 std::vector<LogitOwner> collect_logit_owners(const BatchPlan& plan);
+uint32_t effective_generation_budget(
+    size_t prompt_tokens, uint32_t requested_tokens, uint32_t context_tokens_per_slot);
+std::optional<StopMatch> find_stop_match(
+    const std::vector<uint8_t>& output, const std::vector<std::vector<uint8_t>>& stops);
+size_t safe_output_prefix(
+    const std::vector<uint8_t>& output, const std::vector<std::vector<uint8_t>>& stops);
+void accept_history_tokens(const std::vector<llama_token>& tokens,
+                           const std::function<void(llama_token)>& accept);
+void accept_history_token(llama_token token,
+                          const std::function<void(llama_token)>& accept);
 
 class LlamaEngine final : public InferenceEngine {
 public:
@@ -1970,6 +2053,10 @@ private:
 - [ ] **Step 3: Implement pack discovery, model ownership, shared decode, and samplers**
 
 Create `native/llm-runtime/src/llama_engine.cpp` with this complete implementation:
+
+Stop matching chooses the lowest output byte position across all configured stops. At the same
+position, the longest stop wins; equal-length ties preserve configuration order. Only bytes before
+the selected stop are emitted, and suffixes that are prefixes of any stop remain buffered.
 
 ```cpp
 #include "llama_engine.h"
@@ -2037,21 +2124,18 @@ std::vector<uint8_t> token_piece(const llama_vocab* vocab, llama_token token) {
             reinterpret_cast<uint8_t*>(storage.data()) + count};
 }
 
-size_t longest_stop(const std::vector<std::vector<uint8_t>>& stops) {
-    size_t result = 0;
-    for (const auto& stop : stops) result = std::max(result, stop.size());
-    return result;
-}
 } // namespace
 
 struct LlamaEngine::Sequence {
     llw_handle_t handle{};
     uint32_t seq_id{};
     std::vector<llama_token> prompt_tokens;
+    uint32_t prompt_token_count{};
     size_t prompt_cursor{};
     uint32_t next_position{};
     uint32_t generated{};
     uint32_t max_new_tokens{};
+    uint32_t effective_generation_budget{};
     std::optional<llama_token> pending_token;
     std::vector<std::vector<uint8_t>> stops;
     std::vector<uint8_t> pending_output;
@@ -2212,6 +2296,58 @@ std::vector<LogitOwner> collect_logit_owners(const BatchPlan& plan) {
     return owners;
 }
 
+uint32_t effective_generation_budget(size_t prompt_tokens, uint32_t requested_tokens,
+                                     uint32_t context_tokens_per_slot) {
+    if (prompt_tokens >= context_tokens_per_slot) return 0;
+    const uint64_t available = static_cast<uint64_t>(context_tokens_per_slot) - prompt_tokens;
+    return static_cast<uint32_t>(std::min<uint64_t>(requested_tokens, available));
+}
+
+std::optional<StopMatch> find_stop_match(
+    const std::vector<uint8_t>& output, const std::vector<std::vector<uint8_t>>& stops) {
+    std::optional<StopMatch> best;
+    for (size_t index = 0; index < stops.size(); ++index) {
+        if (stops[index].empty()) continue;
+        const auto found = std::search(output.begin(), output.end(),
+                                       stops[index].begin(), stops[index].end());
+        if (found == output.end()) continue;
+        const size_t position = static_cast<size_t>(found - output.begin());
+        const StopMatch candidate{position, index, stops[index].size()};
+        if (!best || candidate.position < best->position ||
+            (candidate.position == best->position && candidate.length > best->length)) {
+            best = candidate;
+        }
+    }
+    return best;
+}
+
+size_t safe_output_prefix(const std::vector<uint8_t>& output,
+                          const std::vector<std::vector<uint8_t>>& stops) {
+    size_t retained = 0;
+    for (const auto& stop : stops) {
+        if (stop.empty()) continue;
+        const size_t limit = std::min(output.size(), stop.size() - 1);
+        for (size_t length = limit; length > retained; --length) {
+            if (std::equal(output.end() - static_cast<std::ptrdiff_t>(length), output.end(),
+                           stop.begin(), stop.begin() + static_cast<std::ptrdiff_t>(length))) {
+                retained = length;
+                break;
+            }
+        }
+    }
+    return output.size() - retained;
+}
+
+void accept_history_tokens(const std::vector<llama_token>& tokens,
+                           const std::function<void(llama_token)>& accept) {
+    for (const llama_token token : tokens) accept(token);
+}
+
+void accept_history_token(llama_token token,
+                          const std::function<void(llama_token)>& accept) {
+    accept(token);
+}
+
 LlamaEngine::LlamaEngine(ModelConfig config, std::function<void(float)> progress)
     : config_(std::move(config)) {
     std::string error;
@@ -2300,11 +2436,21 @@ uint64_t LlamaEngine::start(EngineRequest request) {
         static_cast<int32_t>(sequence->prompt_tokens.size()), true, true);
     if (count < 0) throw std::runtime_error("prompt tokenization failed");
     sequence->prompt_tokens.resize(static_cast<size_t>(count));
+    const uint32_t budget = effective_generation_budget(
+        sequence->prompt_tokens.size(), request.max_new_tokens,
+        config_.context_tokens_per_slot);
+    if (budget == 0)
+        throw std::invalid_argument("prompt leaves no generation token in its slot context");
     sequence->handle = request.handle;
     sequence->seq_id = request.seq_id;
     sequence->max_new_tokens = request.max_new_tokens;
+    sequence->prompt_token_count = static_cast<uint32_t>(sequence->prompt_tokens.size());
+    sequence->effective_generation_budget = budget;
     sequence->stops = std::move(request.stops);
     sequence->sampler = make_sampler(request.sampling);
+    accept_history_tokens(sequence->prompt_tokens, [sampler = sequence->sampler](llama_token token) {
+        llama_sampler_accept(sampler, token);
+    });
     const uint64_t prompt_tokens = sequence->prompt_tokens.size();
     sequences_.emplace(request.handle, std::move(sequence));
     return prompt_tokens;
@@ -2352,30 +2498,29 @@ std::vector<EngineStep> LlamaEngine::decode(const std::vector<llw_handle_t>& act
         Sequence& sequence = *sequences_.at(owner.handle);
         const llama_token token = llama_sampler_sample(sequence.sampler, context_,
                                                        owner.batch_index);
-        llama_sampler_accept(sequence.sampler, token);
+        accept_history_token(token, [sampler = sequence.sampler](llama_token accepted) {
+            llama_sampler_accept(sampler, accepted);
+        });
         ++sequence.generated;
         EngineStep step;
         step.handle = owner.handle;
         bool done = llama_vocab_is_eog(vocab_, token) ||
-                    sequence.generated >= sequence.max_new_tokens;
+                    sequence.generated >= sequence.effective_generation_budget;
+        step.finish_reason = llama_vocab_is_eog(vocab_, token) ? "stop" :
+            (sequence.generated >= sequence.effective_generation_budget ? "length" : "");
         if (!llama_vocab_is_eog(vocab_, token)) {
             const std::vector<uint8_t> piece = token_piece(vocab_, token);
             sequence.pending_output.insert(sequence.pending_output.end(), piece.begin(), piece.end());
-            for (const auto& stop : sequence.stops) {
-                const auto match = std::search(sequence.pending_output.begin(), sequence.pending_output.end(),
-                                               stop.begin(), stop.end());
-                if (match != sequence.pending_output.end()) {
-                    step.token_bytes.assign(sequence.pending_output.begin(), match);
-                    sequence.pending_output.clear();
-                    done = true;
-                    break;
-                }
+            if (const auto match = find_stop_match(sequence.pending_output, sequence.stops)) {
+                step.token_bytes.assign(sequence.pending_output.begin(),
+                    sequence.pending_output.begin() + static_cast<std::ptrdiff_t>(match->position));
+                sequence.pending_output.clear();
+                step.finish_reason = "stop";
+                done = true;
             }
             if (!done) {
-                const size_t keep = longest_stop(sequence.stops);
-                const size_t retain = keep == 0 ? 0 : keep - 1;
-                if (sequence.pending_output.size() > retain) {
-                    const size_t emit = sequence.pending_output.size() - retain;
+                const size_t emit = safe_output_prefix(sequence.pending_output, sequence.stops);
+                if (emit != 0) {
                     step.token_bytes.assign(sequence.pending_output.begin(),
                                             sequence.pending_output.begin() + emit);
                     sequence.pending_output.erase(sequence.pending_output.begin(),
@@ -2421,6 +2566,7 @@ target_compile_definitions(llw_llama_engine_test PRIVATE
 )
 target_link_libraries(llw_llama_engine_test PRIVATE llama ggml Threads::Threads)
 add_test(NAME llw_llama_engine_test COMMAND llw_llama_engine_test)
+set_tests_properties(llw_llama_engine_test PROPERTIES TIMEOUT 30)
 ```
 
 - [ ] **Step 5: Run pure CPU tests**
@@ -2571,6 +2717,25 @@ int main() {
     CHECK(generation_plan.items[0].token == 31 && generation_plan.items[0].logits);
     CHECK(generation_plan.items[1].token == 41 && generation_plan.items[1].logits);
     CHECK(generation_plan.items[0].seq_id != generation_plan.items[1].seq_id);
+
+    CHECK(effective_generation_budget(510, 1000, 512) == 2);
+    CHECK(effective_generation_budget(512, 1, 512) == 0);
+    std::vector<llama_token> accepted;
+    accept_history_tokens(first_tokens, [&accepted](llama_token token) { accepted.push_back(token); });
+    accept_history_token(31, [&accepted](llama_token token) { accepted.push_back(token); });
+    CHECK(accepted == std::vector<llama_token>({10, 11, 12, 31}));
+
+    const std::vector<std::vector<uint8_t>> stops = {
+        {'a', 'b'}, {'a', 'b', 'c'}, {'b', 'c'}, {'a', 'b', 'c'},
+    };
+    const std::vector<uint8_t> overlapping = {'z', 'a', 'b', 'c', 'q'};
+    const auto stop = find_stop_match(overlapping, stops);
+    CHECK(stop.has_value());
+    CHECK(stop->position == 1 && stop->length == 3 && stop->stop_index == 1);
+    const std::vector<uint8_t> partial = {'x', 'a'};
+    CHECK(safe_output_prefix(partial, stops) == 1);
+    const std::vector<uint8_t> no_prefix = {'x', 'y'};
+    CHECK(safe_output_prefix(no_prefix, stops) == 2);
     return 0;
 }
 ```
@@ -2646,6 +2811,25 @@ int test_v11_exports() {
     CHECK(request_handle == 0);
     CHECK(llw_model_unload(runtime, 1, &error) == LLW_ERR_NOT_FOUND);
 
+    const std::string missing_model = "llw-test-bad-alloc.gguf";
+    llw_model_load_params_t failing_model{};
+    failing_model.struct_size = sizeof(failing_model);
+    failing_model.path_utf8 = reinterpret_cast<const uint8_t*>(missing_model.data());
+    failing_model.path_len = missing_model.size();
+    failing_model.backend = LLW_BACKEND_CPU;
+    failing_model.context_tokens_per_slot = 512;
+    failing_model.logical_batch_tokens = 64;
+    failing_model.physical_batch_tokens = 64;
+    failing_model.n_threads = 1;
+    failing_model.n_threads_batch = 1;
+    failing_model.use_mmap = 1;
+    llw_handle_t failed_model{};
+    CHECK(llw_model_load(runtime, &failing_model, &failed_model, &error) != LLW_OK);
+    CHECK(failed_model == 0);
+    const llw_result_t retry = llw_model_load(runtime, &failing_model, &failed_model, &error);
+    CHECK(retry != LLW_ERR_BUSY);
+    CHECK(retry != LLW_OK);
+
     llw_scheduler_config_t undersized{};
     undersized.struct_size = sizeof(undersized) - 1;
     create.scheduler = undersized;
@@ -2688,6 +2872,7 @@ target_compile_definitions(local_llm_runtime PRIVATE
   LLW_RUNTIME_BUILD
   LLW_BACKEND_PACK_NAME="${LLW_BACKEND_PACK}"
   LLW_LLAMA_CPP_COMMIT="${LLAMA_CPP_COMMIT}"
+  $<$<CONFIG:Debug>:LLW_RUNTIME_TESTING>
 )
 target_include_directories(local_llm_runtime PUBLIC include PRIVATE src)
 target_link_libraries(local_llm_runtime PRIVATE llama ggml Threads::Threads)
@@ -2759,6 +2944,23 @@ struct llw_runtime_t {
     bool model_loading{};
     std::string backend_directory;
     std::mutex mutex;
+};
+
+struct ModelLoadingReset {
+    llw_runtime_t& runtime;
+    std::unique_lock<std::mutex>& lock;
+    bool active{true};
+    ~ModelLoadingReset() {
+        if (!active) return;
+        if (lock.owns_lock()) {
+            runtime.model_loading = false;
+        } else {
+            lock.lock();
+            runtime.model_loading = false;
+            lock.unlock();
+        }
+    }
+    void release() { active = false; }
 };
 
 namespace {
@@ -3087,9 +3289,13 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
         if (runtime->model_handle != 0 || runtime->model_loading)
             return fail(error, LLW_ERR_BUSY, "a model is already loaded or loading");
         runtime->model_loading = true;
+        ModelLoadingReset loading_reset{*runtime, lock};
         llw_handle_t handle = runtime->next_model_handle++;
         if (handle == 0) handle = runtime->next_model_handle++;
         const std::string path(reinterpret_cast<const char*>(params->path_utf8), params->path_len);
+#ifdef LLW_RUNTIME_TESTING
+        if (path == "llw-test-bad-alloc.gguf") throw std::bad_alloc();
+#endif
         ModelConfig config;
         config.path = path;
         config.backend_directory = runtime->backend_directory;
@@ -3108,24 +3314,19 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
         lock.unlock();
         std::unique_ptr<LlamaEngine> engine;
         std::unique_ptr<Scheduler> scheduler;
-        try {
-            engine = std::make_unique<LlamaEngine>(config, [runtime, handle](float progress) {
-                publish_runtime_event(*runtime, LLW_EVENT_MODEL_PROGRESS,
-                    LLW_EVENT_DATA_JSON_UTF8, handle,
-                    "{\"progress\":" + std::to_string(progress) + "}");
-            });
-            scheduler = std::make_unique<Scheduler>(runtime->config.slot_count,
-                runtime->config.request_queue_capacity, *engine, *runtime->dispatcher);
-        } catch (...) {
-            lock.lock();
-            runtime->model_loading = false;
-            throw;
-        }
+        engine = std::make_unique<LlamaEngine>(config, [runtime, handle](float progress) {
+            publish_runtime_event(*runtime, LLW_EVENT_MODEL_PROGRESS,
+                LLW_EVENT_DATA_JSON_UTF8, handle,
+                "{\"progress\":" + std::to_string(progress) + "}");
+        });
+        scheduler = std::make_unique<Scheduler>(runtime->config.slot_count,
+            runtime->config.request_queue_capacity, *engine, *runtime->dispatcher);
         lock.lock();
         runtime->engine = std::move(engine);
         runtime->scheduler = std::move(scheduler);
         runtime->model_handle = handle;
         runtime->model_loading = false;
+        loading_reset.release();
         *out_model = handle;
         publish_runtime_event(*runtime, LLW_EVENT_LOG, LLW_EVENT_DATA_UTF8, handle,
                               "model loaded on backend " + std::to_string(config.backend) +
@@ -3278,37 +3479,114 @@ fn loader_names_each_required_export_once() {
 Add these tests to `crates/llm-runtime/src/lib.rs`'s existing test module after Task 8 Step 3 adds `CallbackState`:
 
 ```rust
+fn callback_state(capacity: usize, max_outstanding: usize) -> (CallbackState, EventStream) {
+    let (regular_sender, regular) = crossbeam_channel::bounded(capacity);
+    let (terminal_sender, terminal) = crossbeam_channel::bounded(max_outstanding);
+    (CallbackState { regular_sender, terminal_sender,
+        registry: Mutex::new(RequestRegistry::default()), max_outstanding,
+        invariant_violations: AtomicUsize::new(0), test_hook: None },
+     EventStream { regular, terminal, deferred_terminal: Arc::new(Mutex::new(None)),
+         receive_lock: Arc::new(Mutex::new(())) })
+}
+
+fn raw_event(event_type: i32, request: u64, sequence: u64, data: &[u8]) -> sys::Event {
+    sys::Event { struct_size: std::mem::size_of::<sys::Event>() as u32,
+        flags: if event_type == sys::EVENT_TOKEN { sys::EVENT_DATA_BYTES }
+            else { sys::EVENT_DATA_JSON_UTF8 }, event_type, error_code: 0,
+        model_handle: 1, request_handle: request, slot_id: 0, reserved0: 0,
+        sequence_number: sequence, data: data.as_ptr(), data_len: data.len() as u64,
+        request_user_data: std::ptr::null_mut(), reserved: [0; 8] }
+}
+
+fn invoke(state: &CallbackState, event: &sys::Event) {
+    unsafe { event_trampoline(event, (state as *const CallbackState).cast_mut().cast()) };
+}
+
 #[test]
 fn callback_copies_stack_backed_payload_before_return() {
-    let (sender, receiver) = crossbeam_channel::bounded(4);
-    let state = CallbackState { sender, requests: Mutex::new(HashMap::new()),
-        terminal_before_registration: Mutex::new(HashSet::new()), test_hook: None };
+    let (state, events) = callback_state(4, 2);
     let mut payload = [0xf0, 0x9f, 0x92, 0xa1];
-    let event = sys::Event { struct_size: std::mem::size_of::<sys::Event>() as u32,
-        flags: sys::EVENT_DATA_BYTES, event_type: sys::EVENT_TOKEN, error_code: 0,
-        model_handle: 1, request_handle: 2, slot_id: 0, reserved0: 0,
-        sequence_number: 2, data: payload.as_ptr(), data_len: payload.len() as u64,
-        request_user_data: std::ptr::null_mut(), reserved: [0; 8] };
-    unsafe { event_trampoline(&event, (&state as *const CallbackState).cast_mut().cast()) };
+    let event = raw_event(sys::EVENT_TOKEN, 2, 2, &payload);
+    invoke(&state, &event);
     payload.fill(0);
-    assert_eq!(receiver.recv().unwrap().payload, vec![0xf0, 0x9f, 0x92, 0xa1]);
+    assert_eq!(events.recv_timeout(Duration::from_secs(1)).unwrap().payload,
+               vec![0xf0, 0x9f, 0x92, 0xa1]);
 }
 
 #[test]
 fn callback_contains_panics_from_test_consumer() {
-    let (sender, _receiver) = crossbeam_channel::bounded(1);
-    let state = CallbackState { sender, requests: Mutex::new(HashMap::new()),
-        terminal_before_registration: Mutex::new(HashSet::new()),
-        test_hook: Some(Arc::new(|_| panic!("test panic"))) };
-    let event = sys::Event { struct_size: std::mem::size_of::<sys::Event>() as u32,
-        flags: sys::EVENT_DATA_JSON_UTF8, event_type: sys::EVENT_DONE, error_code: 0,
-        model_handle: 1, request_handle: 2, slot_id: 0, reserved0: 0,
-        sequence_number: 3, data: std::ptr::null(), data_len: 0,
-        request_user_data: std::ptr::null_mut(), reserved: [0; 8] };
+    let (mut state, _events) = callback_state(1, 1);
+    state.test_hook = Some(Arc::new(|_| panic!("test panic")));
+    let event = raw_event(sys::EVENT_DONE, 2, 3, &[]);
     let escaped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         event_trampoline(&event, (&state as *const CallbackState).cast_mut().cast())
     }));
     assert!(escaped.is_ok());
+}
+
+#[test]
+fn terminal_before_registration_is_atomic_and_removed() {
+    let (state, events) = callback_state(2, 2);
+    invoke(&state, &raw_event(sys::EVENT_DONE, 7, 2, &[]));
+    let terminal = Arc::new(AtomicBool::new(false));
+    state.register(7, &terminal);
+    assert!(terminal.load(Ordering::Acquire));
+    assert_eq!(events.recv_timeout(Duration::from_secs(1)).unwrap().request_handle, 7);
+    let registry = state.registry.lock().unwrap();
+    assert!(registry.requests.is_empty() && registry.terminal_before_registration.is_empty());
+}
+
+#[test]
+fn overflow_emits_one_error_and_bounds_all_storage() {
+    let (state, events) = callback_state(1, 2);
+    assert_eq!(state.regular_sender.capacity(), Some(1));
+    assert_eq!(state.terminal_sender.capacity(), Some(2));
+    let terminal = Arc::new(AtomicBool::new(false));
+    state.register(9, &terminal);
+    invoke(&state, &raw_event(sys::EVENT_QUEUED, 9, 1, &[]));
+    invoke(&state, &raw_event(sys::EVENT_TOKEN, 9, 2, b"a"));
+    invoke(&state, &raw_event(sys::EVENT_TOKEN, 9, 3, b"b"));
+    assert!(terminal.load(Ordering::Acquire));
+    let first = events.recv_timeout(Duration::from_secs(1)).unwrap();
+    let overflow = events.recv_timeout(Duration::from_secs(1)).unwrap();
+    assert_eq!(first.kind, EventKind::Queued);
+    assert_eq!(overflow.kind, EventKind::Error);
+    assert!(String::from_utf8_lossy(&overflow.payload).contains("rustEventOverflow"));
+    invoke(&state, &raw_event(sys::EVENT_DONE, 9, 4, &[]));
+    assert!(events.recv_timeout(Duration::from_millis(20)).is_err());
+    let registry = state.registry.lock().unwrap();
+    assert!(registry.requests.is_empty() && registry.terminal_before_registration.is_empty() &&
+            registry.overflowed.is_empty());
+    assert_eq!(state.invariant_violations.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn abandoned_receivers_never_block_callback_shutdown() {
+    let (state, events) = callback_state(1, 1);
+    drop(events);
+    invoke(&state, &raw_event(sys::EVENT_TOKEN, 1, 1, b"x"));
+    invoke(&state, &raw_event(sys::EVENT_DONE, 1, 2, &[]));
+    let registry = state.registry.lock().unwrap();
+    assert!(registry.requests.len() <= 1);
+    assert!(registry.terminal_before_registration.len() <= 1);
+    assert!(registry.overflowed.len() <= 1);
+}
+
+#[test]
+fn high_volume_registry_state_returns_to_zero() {
+    let (state, events) = callback_state(2, 4);
+    for handle in 1..=1000 {
+        invoke(&state, &raw_event(sys::EVENT_DONE, handle, 1, &[]));
+        let terminal = Arc::new(AtomicBool::new(false));
+        state.register(handle, &terminal);
+        assert!(terminal.load(Ordering::Acquire));
+        assert_eq!(events.recv_timeout(Duration::from_secs(1)).unwrap().request_handle, handle);
+        let registry = state.registry.lock().unwrap();
+        assert!(registry.requests.is_empty());
+        assert!(registry.terminal_before_registration.is_empty());
+        assert!(registry.overflowed.len() <= state.max_outstanding);
+    }
+    assert_eq!(state.invariant_violations.load(Ordering::Relaxed), 0);
 }
 ```
 
@@ -3430,10 +3708,11 @@ Add these imports and complete owned type definitions to `crates/llm-runtime/src
 ```rust
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, TrySendError};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeOptions {
@@ -3524,11 +3803,107 @@ impl RuntimeEvent {
     }
 }
 
+#[derive(Default)]
+struct RequestRegistry {
+    requests: HashMap<u64, Weak<AtomicBool>>,
+    terminal_before_registration: HashSet<u64>,
+    overflowed: HashSet<u64>,
+}
+
 struct CallbackState {
-    sender: Sender<RuntimeEvent>,
-    requests: Mutex<HashMap<u64, Weak<AtomicBool>>>,
-    terminal_before_registration: Mutex<HashSet<u64>>,
+    regular_sender: Sender<RuntimeEvent>,
+    terminal_sender: Sender<RuntimeEvent>,
+    registry: Mutex<RequestRegistry>,
+    max_outstanding: usize,
+    invariant_violations: AtomicUsize,
     test_hook: Option<Arc<dyn Fn(&RuntimeEvent) + Send + Sync>>,
+}
+
+impl CallbackState {
+    fn mark_terminal_locked(&self, registry: &mut RequestRegistry, handle: u64) {
+        if let Some(weak) = registry.requests.remove(&handle) {
+            if let Some(terminal) = weak.upgrade() {
+                terminal.store(true, Ordering::Release);
+            }
+            return;
+        }
+        if registry.terminal_before_registration.len() < self.max_outstanding {
+            registry.terminal_before_registration.insert(handle);
+        } else {
+            self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn register(&self, handle: u64, terminal: &Arc<AtomicBool>) {
+        let mut registry = self.registry.lock().expect("request registry poisoned");
+        if registry.terminal_before_registration.remove(&handle) {
+            terminal.store(true, Ordering::Release);
+            return;
+        }
+        if registry.requests.len() >= self.max_outstanding {
+            self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+            terminal.store(true, Ordering::Release);
+            return;
+        }
+        registry.requests.insert(handle, Arc::downgrade(terminal));
+    }
+
+    fn deliver(&self, event: RuntimeEvent) {
+        let request = event.request_handle;
+        let terminal = event.terminal();
+        let mut suppress_native_terminal = false;
+        if request != 0 {
+            let mut registry = self.registry.lock().expect("request registry poisoned");
+            if terminal {
+                suppress_native_terminal = registry.overflowed.remove(&request);
+                if !suppress_native_terminal {
+                    self.mark_terminal_locked(&mut registry, request);
+                }
+            } else if registry.overflowed.contains(&request) {
+                return;
+            }
+        }
+        if suppress_native_terminal { return; }
+        if terminal {
+            if self.terminal_sender.try_send(event).is_err() {
+                self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+            }
+            return;
+        }
+        match self.regular_sender.try_send(event) {
+            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+            Err(TrySendError::Full(dropped)) if dropped.request_handle != 0 => {
+                let mut registry = self.registry.lock().expect("request registry poisoned");
+                if !registry.overflowed.contains(&dropped.request_handle) &&
+                    registry.overflowed.len() >= self.max_outstanding {
+                    self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+                    self.mark_terminal_locked(&mut registry, dropped.request_handle);
+                    return;
+                }
+                if registry.overflowed.insert(dropped.request_handle) {
+                    self.mark_terminal_locked(&mut registry, dropped.request_handle);
+                    drop(registry);
+                    let overflow = RuntimeEvent {
+                        kind: EventKind::Error,
+                        data_format: sys::EVENT_DATA_JSON_UTF8,
+                        error_code: sys::ERR_INTERNAL,
+                        model_handle: dropped.model_handle,
+                        request_handle: dropped.request_handle,
+                        slot_id: dropped.slot_id,
+                        sequence_number: dropped.sequence_number,
+                        request_user_data: dropped.request_user_data,
+                        payload: br#"{"state":"error","reason":"rustEventOverflow"}"#.to_vec(),
+                    };
+                    if self.terminal_sender.try_send(overflow).is_err() {
+                        self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            Err(TrySendError::Full(_)) => {
+                self.invariant_violations.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
 }
 
 unsafe extern "C" fn event_trampoline(event: *const sys::Event, user_data: *mut c_void) {
@@ -3543,19 +3918,51 @@ unsafe extern "C" fn event_trampoline(event: *const sys::Event, user_data: *mut 
         };
         let state = unsafe { &*(user_data.cast::<CallbackState>()) };
         let Some(event) = RuntimeEvent::from_raw(raw, payload) else { return };
-        if event.terminal() && event.request_handle != 0 {
-            let terminal = state.requests.lock().expect("request registry poisoned")
-                .get(&event.request_handle).and_then(Weak::upgrade);
-            if let Some(terminal) = terminal {
-                terminal.store(true, Ordering::Release);
-            } else {
-                state.terminal_before_registration.lock()
-                    .expect("early terminal registry poisoned").insert(event.request_handle);
+        if let Some(hook) = &state.test_hook { hook(&event); }
+        state.deliver(event);
+    }));
+}
+
+#[derive(Clone)]
+pub struct EventStream {
+    regular: Receiver<RuntimeEvent>,
+    terminal: Receiver<RuntimeEvent>,
+    deferred_terminal: Arc<Mutex<Option<RuntimeEvent>>>,
+    receive_lock: Arc<Mutex<()>>,
+}
+impl EventStream {
+    pub fn recv_timeout(&self, timeout: Duration) -> Result<RuntimeEvent, RecvTimeoutError> {
+        let deadline = Instant::now() + timeout;
+        self.recv_deadline(deadline)
+    }
+    pub fn recv_deadline(&self, deadline: Instant) -> Result<RuntimeEvent, RecvTimeoutError> {
+        let _receive = self.receive_lock.lock().expect("event receive lock poisoned");
+        loop {
+            match self.regular.try_recv() {
+                Ok(event) => return Ok(event),
+                Err(_) => {}
+            }
+            if let Some(event) = self.deferred_terminal.lock()
+                .expect("deferred terminal poisoned").take() { return Ok(event); }
+            if let Ok(terminal) = self.terminal.try_recv() {
+                if let Ok(regular) = self.regular.try_recv() {
+                    *self.deferred_terminal.lock().expect("deferred terminal poisoned") =
+                        Some(terminal);
+                    return Ok(regular);
+                }
+                return Ok(terminal);
+            }
+            let now = Instant::now();
+            if now >= deadline { return Err(RecvTimeoutError::Timeout); }
+            let slice = std::cmp::min(deadline - now, Duration::from_millis(1));
+            match self.regular.recv_timeout(slice) {
+                Ok(event) => return Ok(event),
+                Err(RecvTimeoutError::Disconnected) if self.terminal.is_empty() =>
+                    return Err(RecvTimeoutError::Disconnected),
+                Err(_) => {}
             }
         }
-        if let Some(hook) = &state.test_hook { hook(&event); }
-        let _ = state.sender.send(event);
-    }));
+    }
 }
 
 struct RuntimeInner {
@@ -3564,10 +3971,8 @@ struct RuntimeInner {
     callback_state: Box<CallbackState>,
     call_lock: Mutex<()>,
 }
-// SAFETY: every native call is serialized by call_lock; callback state is thread-safe and the DLL
-// contract keeps the runtime valid until runtime_destroy returns.
-unsafe impl Send for RuntimeInner {}
-unsafe impl Sync for RuntimeInner {}
+// RuntimeInner deliberately has no Send or Sync implementation. Arc ownership keeps the native
+// runtime alive through every Model and Request, and call_lock serializes calls on its owner thread.
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
         let _guard = self.call_lock.lock().expect("runtime call lock poisoned");
@@ -3578,7 +3983,7 @@ impl Drop for RuntimeInner {
     }
 }
 
-pub struct InferenceRuntime { inner: Arc<RuntimeInner>, events: Receiver<RuntimeEvent> }
+pub struct InferenceRuntime { inner: Arc<RuntimeInner>, events: EventStream }
 struct ModelState { runtime: Arc<RuntimeInner>, handle: u64 }
 impl Drop for ModelState {
     fn drop(&mut self) {
@@ -3602,6 +4007,18 @@ impl Drop for Request {
 
 `RuntimeInner` declares `api` before `callback_state`, but its custom `Drop` destroys the native runtime before Rust drops callback state. `Request` holds `Arc<ModelState>`, so model unload occurs only after the `Model` and all its requests are dropped.
 
+The Rust callback queue is bounded to `event_queue_capacity`. A second reserved terminal queue is
+bounded to `slot_count + request_queue_capacity`, the maximum native outstanding requests. Regular
+events use `try_send` and never block the native dispatcher. If a request event encounters a full
+regular queue, Rust suppresses every later native event for that request, atomically marks its request
+state terminal, and enqueues exactly one synthetic `Error` with reason `rustEventOverflow` on the
+reserved path. `EventStream` serializes cloned receivers and drains already queued regular events
+before terminal events. Disconnected
+or abandoned receivers cannot hang callback or runtime shutdown because neither path performs a
+blocking send; its shared deferred-terminal slot is bounded to one event. The single
+`RequestRegistry` bounds registered, early-terminal, and overflow sets by
+the native outstanding-request limit and removes request state when terminal delivery is enqueued.
+
 - [ ] **Step 4: Implement safe load, submit, cancel, snapshot, and metrics methods**
 
 Add these complete method implementations after the types above. `InferenceRuntime::load` remains unsafe, like the existing probe loader; application code must first resolve a project-managed pack ID.
@@ -3611,6 +4028,12 @@ impl InferenceRuntime {
     /// # Safety
     /// `path` must be a trusted project-managed runtime pack DLL implementing LLW ABI 1.1.
     pub unsafe fn load(path: &Path, options: RuntimeOptions) -> Result<Self, Error> {
+        if !(1..=4).contains(&options.slot_count) ||
+            !(1..=1024).contains(&options.request_queue_capacity) ||
+            !(16..=65536).contains(&options.event_queue_capacity) {
+            return Err(Error::Runtime { code: sys::ERR_INVALID_ARGUMENT,
+                message: "runtime queue options are outside ABI bounds".into() });
+        }
         let api = unsafe { sys::Api::load(path)? };
         let query = sys::AbiQuery::default();
         let mut info = sys::AbiInfo::default();
@@ -3623,10 +4046,18 @@ impl InferenceRuntime {
             return Err(Error::Runtime { code: sys::ERR_UNSUPPORTED,
                 message: "runtime does not support inference ABI 1.1".into() });
         }
-        let (sender, events) = crossbeam_channel::unbounded();
-        let mut callback_state = Box::new(CallbackState { sender,
-            requests: Mutex::new(HashMap::new()),
-            terminal_before_registration: Mutex::new(HashSet::new()), test_hook: None });
+        let max_outstanding = usize::try_from(options.slot_count + options.request_queue_capacity)
+            .expect("runtime bounds fit usize");
+        let regular_capacity = usize::try_from(options.event_queue_capacity)
+            .expect("runtime bounds fit usize");
+        let (regular_sender, regular) = crossbeam_channel::bounded(regular_capacity);
+        let (terminal_sender, terminal) = crossbeam_channel::bounded(max_outstanding);
+        let events = EventStream { regular, terminal,
+            deferred_terminal: Arc::new(Mutex::new(None)),
+            receive_lock: Arc::new(Mutex::new(())) };
+        let mut callback_state = Box::new(CallbackState {
+            regular_sender, terminal_sender, registry: Mutex::new(RequestRegistry::default()),
+            max_outstanding, invariant_violations: AtomicUsize::new(0), test_hook: None });
         let callbacks = sys::CallbackTable { struct_size: std::mem::size_of::<sys::CallbackTable>() as u32,
             flags: 0, on_event: Some(event_trampoline),
             user_data: (&mut *callback_state as *mut CallbackState).cast(), reserved: [0; 8] };
@@ -3646,7 +4077,7 @@ impl InferenceRuntime {
             call_lock: Mutex::new(()) }), events })
     }
 
-    pub fn events(&self) -> Receiver<RuntimeEvent> { self.events.clone() }
+    pub fn events(&self) -> EventStream { self.events.clone() }
 
     pub fn load_model(&self, path: &Path, options: ModelOptions) -> Result<Model, Error> {
         let canonical = path.canonicalize().map_err(|error| Error::Runtime {
@@ -3713,12 +4144,7 @@ impl Model {
         check_result(unsafe { (self.state.runtime.api.request_submit)(self.state.runtime.runtime,
             &params, &mut handle, &mut error) }, &error)?;
         let terminal = Arc::new(AtomicBool::new(false));
-        self.state.runtime.callback_state.requests.lock().expect("request registry poisoned")
-            .insert(handle, Arc::downgrade(&terminal));
-        if self.state.runtime.callback_state.terminal_before_registration.lock()
-            .expect("early terminal registry poisoned").remove(&handle) {
-            terminal.store(true, Ordering::Release);
-        }
+        self.state.runtime.callback_state.register(handle, &terminal);
         Ok(Request { model: self.state.clone(), handle, terminal })
     }
 }
@@ -3745,7 +4171,9 @@ cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 ```
 
-Expected: callback copying, panic containment, existing probe, ABI layout, and native tests pass. Task 9 adds model-backed request-drop and concurrent-generation integration coverage once the checksum-pinned GGUF is available.
+Expected: callback copying, bounded overflow handling, atomic terminal registration, panic
+containment, existing probe, ABI layout, and native tests pass. Task 9 adds the required
+checksum-pinned model-backed request-drop and concurrent-generation integration coverage.
 
 - [ ] **Step 6: Commit the Rust boundary**
 
@@ -3754,7 +4182,7 @@ git add Cargo.toml Cargo.lock crates/llm-runtime-sys crates/llm-runtime
 git commit -m "feat: wrap native inference callbacks safely"
 ```
 
-### Task 9: Add A Reproducible Opt-In Tiny GGUF CPU Test
+### Task 9: Add A Reproducible Required Tiny GGUF CPU Test
 
 **Files:**
 - Create: `native/llm-runtime/tests/fixtures/model.json`
@@ -3770,28 +4198,44 @@ Create `native/llm-runtime/tests/fixtures/model.json`:
 
 ```json
 {
-  "name": "stories260K.gguf",
-  "url": "https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf",
-  "sha256": "270cba1bd5109f42d03350f60406024560464db173c0e387d91f0426d3bd256d",
-  "size": 1185376,
-  "provenance": "ggml-org/models tinyllamas test artifact",
-  "redistribution": "not committed; acquired only by explicit developer or CI opt-in"
+  "name": "tiny-random-f16.gguf",
+  "repository": "amakhov/tiny-random-llama",
+  "repositoryCommit": "fbf68d33cf68a9d1d4b71b3d098ae82c8c14443b",
+  "repositoryPath": "gguf/tiny-random-f16.gguf",
+  "url": "https://huggingface.co/amakhov/tiny-random-llama/resolve/fbf68d33cf68a9d1d4b71b3d098ae82c8c14443b/gguf/tiny-random-f16.gguf",
+  "sha256": "1010fc48b2a1880a01fa5e267eb35bf586e3e3ad5539ff5b0e025e4f63616a82",
+  "size": 9083072,
+  "license": "Apache-2.0",
+  "licenseSource": "https://huggingface.co/api/models/amakhov/tiny-random-llama/revision/fbf68d33cf68a9d1d4b71b3d098ae82c8c14443b",
+  "redistribution": "not committed; checksum-acquired by tests"
 }
 ```
 
-The repository does not redistribute the GGUF. The acquisition URL is organization-maintained test data used for llama.cpp ecosystem validation; retaining only URL/checksum/provenance avoids silently relicensing model bytes. Before enabling a public CI download, repository maintainers must separately confirm the upstream artifact's license remains acceptable.
+The repository does not redistribute the GGUF. During plan editing, the official Hugging Face revision
+API returned commit `fbf68d33cf68a9d1d4b71b3d098ae82c8c14443b` and model-card license
+`apache-2.0`; the pinned download returned 9,083,072 bytes and SHA-256
+`1010fc48b2a1880a01fa5e267eb35bf586e3e3ad5539ff5b0e025e4f63616a82`.
 
 - [ ] **Step 2: Create checksum-verified acquisition**
 
 Create `scripts/acquire-test-model.ps1`:
 
 ```powershell
-param([string]$Destination = '.test-models/stories260K.gguf')
+param([string]$Destination = '.test-models/tiny-random-f16.gguf')
 $ErrorActionPreference = 'Stop'
 $manifest = Get-Content -Raw 'native/llm-runtime/tests/fixtures/model.json' | ConvertFrom-Json
 $destinationPath = [IO.Path]::GetFullPath((Join-Path (Get-Location) $Destination))
 $directory = Split-Path -Parent $destinationPath
 New-Item -ItemType Directory -Force $directory | Out-Null
+if (Test-Path $destinationPath) {
+  $existing = Get-Item $destinationPath
+  $existingHash = (Get-FileHash -Algorithm SHA256 $destinationPath).Hash.ToLowerInvariant()
+  if ($existing.Length -eq [int64]$manifest.size -and $existingHash -eq $manifest.sha256) {
+    Write-Output $destinationPath
+    exit 0
+  }
+  Remove-Item -LiteralPath $destinationPath
+}
 $temporary = "$destinationPath.download"
 Invoke-WebRequest -Uri $manifest.url -OutFile $temporary
 $file = Get-Item $temporary
@@ -3952,6 +4396,28 @@ int main(int argc, char** argv) {
         CHECK(!events.requests[first].error && !events.requests[second].error);
     }
     CHECK(saw_two_active);
+
+    std::string oversized_prompt;
+    oversized_prompt.reserve(32768);
+    for (size_t index = 0; index < 32768; ++index)
+        oversized_prompt.push_back(static_cast<char>('!' + (index % 90)));
+    const std::string isolated_prompt = "Healthy peer";
+    llw_request_params_t oversized_params = generation(model, oversized_prompt);
+    llw_request_params_t isolated_params = generation(model, isolated_prompt);
+    llw_handle_t oversized{}, isolated{};
+    CHECK(llw_request_submit(runtime, &oversized_params, &oversized, &error) == LLW_OK);
+    CHECK(llw_request_submit(runtime, &isolated_params, &isolated, &error) == LLW_OK);
+    const auto isolation_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    {
+        std::unique_lock lock(events.mutex);
+        CHECK(events.changed.wait_until(lock, isolation_deadline, [&] {
+            return events.requests[oversized].terminals == 1 &&
+                   events.requests[isolated].terminals == 1;
+        }));
+        CHECK(events.requests[oversized].error);
+        CHECK(!events.requests[isolated].error);
+        CHECK(!events.requests[isolated].bytes.empty());
+    }
     llw_metrics_t metrics{};
     metrics.struct_size = sizeof(metrics);
     CHECK(llw_get_metrics(runtime, &metrics, &error) == LLW_OK);
@@ -3959,12 +4425,53 @@ int main(int argc, char** argv) {
     CHECK(metrics.generated_tokens > 0);
     CHECK(metrics.decode_calls > 0);
     CHECK(llw_model_unload(runtime, model, &error) == LLW_OK);
+
+    llw_handle_t lifecycle_model{};
+    CHECK(llw_model_load(runtime, &model_params, &lifecycle_model, &error) == LLW_OK);
+    llw_request_params_t long_params = generation(lifecycle_model, first_prompt);
+    long_params.max_new_tokens = 1024;
+    llw_handle_t active_one{}, active_two{}, queued{};
+    CHECK(llw_request_submit(runtime, &long_params, &active_one, &error) == LLW_OK);
+    long_params.seed = 8;
+    CHECK(llw_request_submit(runtime, &long_params, &active_two, &error) == LLW_OK);
+    long_params.seed = 9;
+    CHECK(llw_request_submit(runtime, &long_params, &queued, &error) == LLW_OK);
+    const auto lifecycle_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    for (;;) {
+        llw_scheduler_snapshot_t snapshot{};
+        snapshot.struct_size = sizeof(snapshot);
+        CHECK(llw_get_scheduler_snapshot(runtime, &snapshot, &error) == LLW_OK);
+        if (snapshot.active_count >= 1 && snapshot.queued_count >= 1) break;
+        CHECK(std::chrono::steady_clock::now() < lifecycle_deadline);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    llw_result_t cancel_result{LLW_ERR_INTERNAL};
+    std::thread cancel_thread([&] {
+        llw_error_t cancel_error{};
+        cancel_error.struct_size = sizeof(cancel_error);
+        cancel_result = llw_request_cancel(runtime, active_one, &cancel_error);
+    });
+    const llw_result_t unload_result = llw_model_unload(runtime, lifecycle_model, &error);
+    cancel_thread.join();
+    CHECK(unload_result == LLW_OK);
+    CHECK(cancel_result == LLW_OK || cancel_result == LLW_ERR_INVALID_STATE ||
+          cancel_result == LLW_ERR_NOT_FOUND);
+    const auto terminal_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    {
+        std::unique_lock lock(events.mutex);
+        CHECK(events.changed.wait_until(lock, terminal_deadline, [&] {
+            return events.requests[active_one].terminals == 1 &&
+                   events.requests[active_two].terminals == 1 &&
+                   events.requests[queued].terminals == 1;
+        }));
+    }
+    CHECK(llw_request_cancel(runtime, queued, &error) == LLW_ERR_INVALID_STATE);
     llw_runtime_destroy(runtime);
     return 0;
 }
 ```
 
-Add the target and opt-in registration:
+Add the target and checksum-fixture registration:
 
 ```cmake
 add_executable(llw_runtime_backend_test tests/runtime_backend_test.cpp)
@@ -3973,11 +4480,11 @@ target_link_libraries(llw_runtime_backend_test PRIVATE local_llm_runtime Threads
 install(TARGETS llw_runtime_backend_test RUNTIME DESTINATION ".")
 if(DEFINED ENV{LLW_TEST_GGUF} AND EXISTS "$ENV{LLW_TEST_GGUF}")
   add_test(NAME llw_runtime_backend_test COMMAND llw_runtime_backend_test "$ENV{LLW_TEST_GGUF}")
-  set_tests_properties(llw_runtime_backend_test PROPERTIES TIMEOUT 90 LABELS "model;opt-in")
+  set_tests_properties(llw_runtime_backend_test PROPERTIES TIMEOUT 180 LABELS "model;required-ci")
 endif()
 ```
 
-Create `crates/llm-runtime/tests/native_runtime.rs` with the complete Rust-to-DLL drop-cancellation test below. It uses the same explicit `LLW_TEST_RUNTIME` and checksum-verified `LLW_TEST_GGUF` boundary as the C++ test:
+Create `crates/llm-runtime/tests/native_runtime.rs` with the complete Rust-to-DLL drop-cancellation test below. CI supplies the staged `LLW_TEST_RUNTIME` and checksum-verified `LLW_TEST_GGUF`:
 
 ```rust
 use std::path::PathBuf;
@@ -3996,10 +4503,7 @@ fn required_path(name: &str) -> PathBuf {
 #[test]
 fn dropping_a_queued_request_cancels_it_once() {
     let dll = required_path("LLW_TEST_RUNTIME");
-    let Some(gguf) = std::env::var_os("LLW_TEST_GGUF").map(PathBuf::from) else {
-        eprintln!("LLW_TEST_GGUF is unset; model-backed cancellation test is opt-in");
-        return;
-    };
+    let gguf = required_path("LLW_TEST_GGUF");
     let options = RuntimeOptions {
         slot_count: 1,
         request_queue_capacity: 4,
@@ -4065,7 +4569,7 @@ fn dropping_a_queued_request_cancels_it_once() {
 }
 ```
 
-- [ ] **Step 4: Acquire and run CPU E2E explicitly**
+- [ ] **Step 4: Acquire and run the required CPU E2E**
 
 ```powershell
 $env:LLW_TEST_GGUF = & scripts/acquire-test-model.ps1
@@ -4084,9 +4588,12 @@ $env:LLW_TEST_RUNTIME = (Join-Path $pack 'local_llm_runtime.dll')
 cargo test --locked --workspace
 ```
 
-Expected: native and Rust suites pass; CPU E2E proves two concurrent requests, streaming, terminal uniqueness, and unload. Standard developer/PR runs that do not set `LLW_TEST_GGUF` do not download or register the model test.
+Expected: native and Rust suites pass; CPU E2E proves two concurrent requests, streaming,
+terminal uniqueness, context/lifecycle isolation, and unload. The normal PR CI job always acquires the
+checksum-pinned fixture before CMake configure, so this CTest is required there. Local runs register it
+whenever `LLW_TEST_GGUF` is explicitly set by the acquisition command above.
 
-- [ ] **Step 5: Commit the opt-in CPU fixture strategy**
+- [ ] **Step 5: Commit the required CPU fixture strategy**
 
 ```powershell
 git add .gitignore scripts/acquire-test-model.ps1 native/llm-runtime/tests crates/llm-runtime/tests/native_runtime.rs native/llm-runtime/CMakeLists.txt
@@ -4178,11 +4685,6 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
-      cpu_model_test:
-        description: Run the checksum-pinned tiny GGUF CPU test
-        required: true
-        type: boolean
-        default: false
       vulkan_compile_smoke:
         description: Install LunarG SDK 1.4.350.0 and compile the Vulkan pack
         required: true
@@ -4216,8 +4718,12 @@ jobs:
         run: npm ci --prefix apps/desktop
       - name: Build frontend
         run: npm run build --prefix apps/desktop
+      - name: Cache checksum-pinned CPU test model
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .test-models/tiny-random-f16.gguf
+          key: tiny-random-f16-1010fc48b2a1880a01fa5e267eb35bf586e3e3ad5539ff5b0e025e4f63616a82
       - name: Acquire checksum-pinned test model
-        if: github.event_name == 'workflow_dispatch' && inputs.cpu_model_test
         shell: pwsh
         run: |
           $path = & scripts/acquire-test-model.ps1
@@ -4240,7 +4746,6 @@ jobs:
           if ($unexpected) { throw "CPU pack has unexpected backend DLLs: $($unexpected -join ', ')" }
           Get-ChildItem -File $pack | Sort-Object Name | Select-Object Name,Length
       - name: Test installed CPU backend
-        if: github.event_name == 'workflow_dispatch' && inputs.cpu_model_test
         shell: pwsh
         run: |
           $env:LLW_TEST_BACKEND = 'CPU'
@@ -4407,7 +4912,13 @@ Compare every C structure name, field name, order, signedness, width, array leng
 
 - [ ] **Step 2: Audit scheduler requirements**
 
-Map evidence to: one loaded model; opaque nonzero numeric handles; explicit bounded model/request params; copied caller buffers; generic event encodings/lifetimes/thread rules; bounded request/event queues; configurable 1-4 slots; one shared batch decode call per tick; independent sequence IDs/KV/samplers; queued and active cancellation; exactly one terminal event; two concurrent requests; queue-full behavior; CPU E2E; hardware-gated CUDA/Vulkan.
+Map evidence to: one loaded model; opaque nonzero numeric handles; explicit bounded model/request
+params; copied caller buffers; generic event encodings/lifetimes/thread rules; bounded native and Rust
+event queues; atomic bounded request registry; configured 1-4 slots; per-slot context budgets; one
+shared batch decode call per tick; exact logits indices; independent sequence IDs/KV/samplers;
+prompt and generated penalty history; deterministic stop matching; queued and active cancellation;
+exactly one terminal event; terminal request erasure; lifecycle exception/race handling; isolated
+oversized peer behavior; required checksum-pinned CPU E2E; hardware-gated CUDA/Vulkan.
 
 - [ ] **Step 3: Audit scope and security**
 
