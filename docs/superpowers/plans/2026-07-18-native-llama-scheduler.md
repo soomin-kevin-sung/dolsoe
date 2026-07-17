@@ -1932,6 +1932,10 @@ struct BatchPlan {
     std::vector<BatchItem> items;
     size_t next_start{};
 };
+struct LogitOwner {
+    llw_handle_t handle{};
+    int32_t batch_index{};
+};
 
 llw_result_t validate_model_config(const ModelConfig&, std::string&);
 std::vector<DeviceRecord> assign_device_indices(std::vector<DeviceRecord>);
@@ -1940,6 +1944,7 @@ std::optional<DeviceRecord> select_device(
 std::vector<DeviceRecord> enumerate_pack_devices(const std::string& backend_directory);
 BatchPlan plan_batch(
     const std::vector<SequenceView>& sequences, size_t capacity, size_t start_index);
+std::vector<LogitOwner> collect_logit_owners(const BatchPlan& plan);
 
 class LlamaEngine final : public InferenceEngine {
 public:
@@ -2196,6 +2201,17 @@ BatchPlan plan_batch(const std::vector<SequenceView>& sequences, size_t capacity
     return result;
 }
 
+std::vector<LogitOwner> collect_logit_owners(const BatchPlan& plan) {
+    std::vector<LogitOwner> owners;
+    for (size_t index = 0; index < plan.items.size(); ++index) {
+        if (plan.items[index].logits) {
+            owners.push_back(LogitOwner{
+                plan.items[index].handle, static_cast<int32_t>(index)});
+        }
+    }
+    return owners;
+}
+
 LlamaEngine::LlamaEngine(ModelConfig config, std::function<void(float)> progress)
     : config_(std::move(config)) {
     std::string error;
@@ -2309,7 +2325,7 @@ std::vector<EngineStep> LlamaEngine::decode(const std::vector<llw_handle_t>& act
     batch_start_ = plan.next_start;
     if (plan.items.empty()) return {};
     batch_.n_tokens = static_cast<int32_t>(plan.items.size());
-    std::vector<llw_handle_t> logit_owners;
+    const std::vector<LogitOwner> logit_owners = collect_logit_owners(plan);
     for (size_t index = 0; index < plan.items.size(); ++index) {
         const BatchItem& item = plan.items[index];
         batch_.token[index] = item.token;
@@ -2321,7 +2337,6 @@ std::vector<EngineStep> LlamaEngine::decode(const std::vector<llw_handle_t>& act
         if (sequence.prompt_cursor < sequence.prompt_tokens.size()) ++sequence.prompt_cursor;
         else sequence.pending_token.reset();
         ++sequence.next_position;
-        if (item.logits) logit_owners.push_back(item.handle);
     }
     const int32_t decode_result = llama_decode(context_, batch_);
     if (decode_result != 0) {
@@ -2333,15 +2348,14 @@ std::vector<EngineStep> LlamaEngine::decode(const std::vector<llw_handle_t>& act
     }
 
     std::vector<EngineStep> result;
-    for (size_t output = 0; output < logit_owners.size(); ++output) {
-        const llw_handle_t handle = logit_owners[output];
-        Sequence& sequence = *sequences_.at(handle);
+    for (const LogitOwner& owner : logit_owners) {
+        Sequence& sequence = *sequences_.at(owner.handle);
         const llama_token token = llama_sampler_sample(sequence.sampler, context_,
-                                                       static_cast<int32_t>(output));
+                                                       owner.batch_index);
         llama_sampler_accept(sequence.sampler, token);
         ++sequence.generated;
         EngineStep step;
-        step.handle = handle;
+        step.handle = owner.handle;
         bool done = llama_vocab_is_eog(vocab_, token) ||
                     sequence.generated >= sequence.max_new_tokens;
         if (!llama_vocab_is_eog(vocab_, token)) {
@@ -2512,6 +2526,10 @@ int main() {
     CHECK(prompt_plan.items[3].logits);
     CHECK(prompt_plan.items[4].handle == 101 && prompt_plan.items[4].position == 2);
     CHECK(prompt_plan.items[4].logits);
+    const std::vector<LogitOwner> prompt_owners = collect_logit_owners(prompt_plan);
+    CHECK(prompt_owners.size() == 2);
+    CHECK(prompt_owners[0].handle == 202 && prompt_owners[0].batch_index == 3);
+    CHECK(prompt_owners[1].handle == 101 && prompt_owners[1].batch_index == 4);
 
     const std::vector<SequenceView> capacity_views = {
         {101, 0, &first_tokens, 1, 8, false, 0},
