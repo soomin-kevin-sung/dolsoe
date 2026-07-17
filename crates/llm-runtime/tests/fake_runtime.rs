@@ -5,7 +5,8 @@ fn probes_fake_runtime() {
     let path = std::env::var_os("LLW_TEST_RUNTIME")
         .map(std::path::PathBuf::from)
         .expect("LLW_TEST_RUNTIME must point to the fake DLL");
-    let runtime = RuntimeLibrary::load(&path).expect("load fake runtime");
+    // SAFETY: The test DLL is built from this repository's conforming fake LLW runtime.
+    let runtime = unsafe { RuntimeLibrary::load(&path) }.expect("load fake runtime");
     let info = runtime.info();
     assert_eq!(info.abi_major, 1);
     assert_eq!(info.runtime_version, "0.1.0-fake");

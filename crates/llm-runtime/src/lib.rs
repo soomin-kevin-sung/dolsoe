@@ -5,6 +5,9 @@ use std::ptr;
 use llm_runtime_sys as sys;
 use thiserror::Error;
 
+const MAX_DEVICE_ATTEMPTS: usize = 4;
+const MAX_DEVICE_COUNT: usize = 256;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error("failed to load runtime DLL: {0}")]
@@ -70,6 +73,35 @@ pub struct RuntimeLibrary {
     info: RuntimeInfo,
 }
 
+struct RuntimeGuard {
+    runtime: *mut sys::Runtime,
+    destroy: sys::RuntimeDestroyFn,
+}
+
+impl RuntimeGuard {
+    fn new(runtime: *mut sys::Runtime, destroy: sys::RuntimeDestroyFn) -> Self {
+        Self { runtime, destroy }
+    }
+
+    fn as_ptr(&self) -> *mut sys::Runtime {
+        self.runtime
+    }
+
+    fn into_raw(mut self) -> *mut sys::Runtime {
+        let runtime = self.runtime;
+        self.runtime = ptr::null_mut();
+        runtime
+    }
+}
+
+impl Drop for RuntimeGuard {
+    fn drop(&mut self) {
+        if !self.runtime.is_null() {
+            unsafe { (self.destroy)(self.runtime) };
+        }
+    }
+}
+
 impl Drop for RuntimeLibrary {
     fn drop(&mut self) {
         if !self.runtime.is_null() {
@@ -79,7 +111,19 @@ impl Drop for RuntimeLibrary {
 }
 
 impl RuntimeLibrary {
-    pub fn load(path: &Path) -> Result<Self, Error> {
+    /// Loads and probes a trusted runtime library.
+    ///
+    /// # Safety
+    ///
+    /// `path` must identify a trusted DLL that conforms to the declared LLW ABI. Its initializers
+    /// and finalizers must be safe to execute in this process, every loaded symbol must use the
+    /// declared signature and calling convention, and exported functions must not unwind across
+    /// the FFI boundary. Version functions must return valid static NUL-terminated UTF-8 strings
+    /// that remain readable while the library is loaded. Runtime functions must return valid
+    /// handles and must honor all output buffer, capacity, count, and lifetime contracts. Any
+    /// non-null handle returned from `runtime_create`, including on failure, must be valid to pass
+    /// exactly once to `runtime_destroy`.
+    pub unsafe fn load(path: &Path) -> Result<Self, Error> {
         let api = unsafe { sys::Api::load(path)? };
         let query = sys::AbiQuery {
             struct_size: std::mem::size_of::<sys::AbiQuery>() as u32,
@@ -112,25 +156,22 @@ impl RuntimeLibrary {
             reserved: [0; 8],
         };
         let mut runtime = ptr::null_mut();
+        let mut raw_error = sys::Error::default();
         let code = unsafe { (api.runtime_create)(&create, &mut runtime, &mut raw_error) };
-        check_result(code, &raw_error)?;
-        if runtime.is_null() {
-            return Err(Error::Runtime {
-                code: -1,
-                message: "runtime returned a null handle".into(),
-            });
-        }
+        let runtime = finish_runtime_create(code, runtime, &raw_error, |runtime| unsafe {
+            (api.runtime_destroy)(runtime)
+        })?;
+        let runtime = RuntimeGuard::new(runtime, api.runtime_destroy);
 
         let mut capabilities = sys::Capabilities {
             struct_size: std::mem::size_of::<sys::Capabilities>() as u32,
             ..Default::default()
         };
-        let code =
-            unsafe { (api.runtime_get_capabilities)(runtime, &mut capabilities, &mut raw_error) };
-        if let Err(error) = check_result(code, &raw_error) {
-            unsafe { (api.runtime_destroy)(runtime) };
-            return Err(error);
-        }
+        let mut raw_error = sys::Error::default();
+        let code = unsafe {
+            (api.runtime_get_capabilities)(runtime.as_ptr(), &mut capabilities, &mut raw_error)
+        };
+        check_result(code, &raw_error)?;
 
         let info = RuntimeInfo {
             abi_major: abi.abi_major,
@@ -146,7 +187,11 @@ impl RuntimeLibrary {
                 max_parallel_slots: capabilities.max_parallel_slots,
             },
         };
-        Ok(Self { api, runtime, info })
+        Ok(Self {
+            api,
+            runtime: runtime.into_raw(),
+            info,
+        })
     }
 
     pub fn info(&self) -> &RuntimeInfo {
@@ -154,51 +199,121 @@ impl RuntimeLibrary {
     }
 
     pub fn devices(&self, backend: Backend) -> Result<Vec<DeviceInfo>, Error> {
-        let mut raw_error = sys::Error::default();
-        let mut list = sys::DeviceList::default();
-        let first = unsafe {
-            (self.api.runtime_list_devices)(self.runtime, backend.raw(), &mut list, &mut raw_error)
-        };
-        if first != sys::OK && first != sys::ERR_BUFFER_TOO_SMALL {
-            return Err(runtime_error(first, &raw_error));
-        }
-
-        let required_count = list.required_count;
-        let required_len = validate_device_counts(required_count, 0, 0)?;
-        if required_len == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut storage = Vec::new();
-        storage
-            .try_reserve_exact(required_len)
-            .map_err(|error| Error::Runtime {
-                code: -1,
-                message: format!("failed to allocate device list: {error}"),
-            })?;
-        storage.resize_with(required_len, sys::DeviceInfo::default);
-        list.capacity = u32::try_from(required_len).map_err(|_| malformed_device_count())?;
-        list.devices = storage.as_mut_ptr();
-        let second = unsafe {
-            (self.api.runtime_list_devices)(self.runtime, backend.raw(), &mut list, &mut raw_error)
-        };
-        check_result(second, &raw_error)?;
-        validate_device_counts(required_count, list.capacity, list.count)?;
-
-        storage
-            .into_iter()
-            .take(list.count as usize)
-            .map(|raw| {
-                Ok(DeviceInfo {
-                    backend: raw.backend,
-                    device_index: raw.device_index,
-                    id: read_fixed_string(&raw.id)?,
-                    name: read_fixed_string(&raw.name)?,
-                    vendor: read_fixed_string(&raw.vendor)?,
-                })
+        enumerate_devices(|list, raw_error| unsafe {
+            (self.api.runtime_list_devices)(self.runtime, backend.raw(), list, raw_error)
+        })?
+        .into_iter()
+        .map(|raw| {
+            Ok(DeviceInfo {
+                backend: raw.backend,
+                device_index: raw.device_index,
+                id: read_fixed_string(&raw.id)?,
+                name: read_fixed_string(&raw.name)?,
+                vendor: read_fixed_string(&raw.vendor)?,
             })
-            .collect()
+        })
+        .collect()
     }
+}
+
+fn finish_runtime_create<F>(
+    code: i32,
+    runtime: *mut sys::Runtime,
+    error: &sys::Error,
+    mut destroy: F,
+) -> Result<*mut sys::Runtime, Error>
+where
+    F: FnMut(*mut sys::Runtime),
+{
+    if code != sys::OK {
+        // A conforming runtime returns null on failure. The unsafe load contract additionally
+        // requires any non-null failure output to be a valid owned handle so it can be reclaimed.
+        if !runtime.is_null() {
+            destroy(runtime);
+        }
+        return Err(runtime_error(code, error));
+    }
+    if runtime.is_null() {
+        return Err(Error::Runtime {
+            code: -1,
+            message: "runtime returned a null handle".into(),
+        });
+    }
+    Ok(runtime)
+}
+
+fn enumerate_devices<F>(mut call: F) -> Result<Vec<sys::DeviceInfo>, Error>
+where
+    F: FnMut(&mut sys::DeviceList, &mut sys::Error) -> i32,
+{
+    let mut storage = Vec::new();
+
+    for _ in 0..MAX_DEVICE_ATTEMPTS {
+        storage.fill(sys::DeviceInfo::default());
+        let mut list = sys::DeviceList {
+            capacity: storage.len() as u32,
+            devices: if storage.is_empty() {
+                ptr::null_mut()
+            } else {
+                storage.as_mut_ptr()
+            },
+            ..Default::default()
+        };
+        let mut raw_error = sys::Error::default();
+        let code = call(&mut list, &mut raw_error);
+        let required_len = validate_device_response(&list, storage.len())?;
+
+        match code {
+            sys::OK if required_len <= storage.len() => {
+                storage.truncate(list.count as usize);
+                return Ok(storage);
+            }
+            sys::OK | sys::ERR_BUFFER_TOO_SMALL => {
+                grow_device_storage(&mut storage, required_len)?;
+            }
+            _ => return Err(runtime_error(code, &raw_error)),
+        }
+    }
+
+    Err(Error::Runtime {
+        code: -1,
+        message: format!(
+            "device enumeration did not stabilize after {MAX_DEVICE_ATTEMPTS} attempts"
+        ),
+    })
+}
+
+fn validate_device_response(list: &sys::DeviceList, storage_len: usize) -> Result<usize, Error> {
+    let required_len =
+        usize::try_from(list.required_count).map_err(|_| malformed_device_count())?;
+    let capacity = list.capacity as usize;
+    let count = list.count as usize;
+    if required_len > MAX_DEVICE_COUNT
+        || capacity > storage_len
+        || count > capacity
+        || count > storage_len
+        || count > required_len
+    {
+        return Err(malformed_device_count());
+    }
+    Ok(required_len)
+}
+
+fn grow_device_storage(
+    storage: &mut Vec<sys::DeviceInfo>,
+    required_len: usize,
+) -> Result<(), Error> {
+    if required_len <= storage.len() {
+        return Ok(());
+    }
+    storage
+        .try_reserve_exact(required_len - storage.len())
+        .map_err(|error| Error::Runtime {
+            code: -1,
+            message: format!("failed to allocate device list: {error}"),
+        })?;
+    storage.resize_with(required_len, sys::DeviceInfo::default);
+    Ok(())
 }
 
 fn check_result(code: i32, error: &sys::Error) -> Result<(), Error> {
@@ -222,15 +337,6 @@ fn malformed_device_count() -> Error {
         code: -1,
         message: "runtime returned invalid device counts".into(),
     }
-}
-
-fn validate_device_counts(required_count: u64, capacity: u32, count: u32) -> Result<usize, Error> {
-    let required_capacity = u32::try_from(required_count).map_err(|_| malformed_device_count())?;
-    let required_len = usize::try_from(required_count).map_err(|_| malformed_device_count())?;
-    if capacity > required_capacity || count > capacity || count as usize > required_len {
-        return Err(malformed_device_count());
-    }
-    Ok(required_len)
 }
 
 fn read_fixed_string(value: &[std::ffi::c_char]) -> Result<String, Error> {
@@ -258,8 +364,14 @@ unsafe fn read_static_string(value: *const std::ffi::c_char) -> Result<String, E
 #[cfg(test)]
 mod tests {
     use std::ffi::CString;
+    use std::ptr::NonNull;
 
-    use super::{read_fixed_string, read_static_string, validate_device_counts};
+    use llm_runtime_sys as sys;
+
+    use super::{
+        enumerate_devices, finish_runtime_create, read_fixed_string, read_static_string, Error,
+        MAX_DEVICE_ATTEMPTS, MAX_DEVICE_COUNT,
+    };
 
     #[test]
     fn reads_fixed_string_until_first_nul() {
@@ -291,12 +403,184 @@ mod tests {
     }
 
     #[test]
-    fn rejects_required_device_count_larger_than_abi_capacity() {
-        assert!(validate_device_counts(u64::from(u32::MAX) + 1, 0, 0).is_err());
+    fn retries_device_enumeration_when_required_count_grows() {
+        let mut calls = 0;
+
+        let devices = enumerate_devices(|list, _| {
+            calls += 1;
+            list.count = 0;
+            match calls {
+                1 => {
+                    assert_eq!(list.capacity, 0);
+                    list.required_count = 1;
+                    sys::ERR_BUFFER_TOO_SMALL
+                }
+                2 => {
+                    assert_eq!(list.capacity, 1);
+                    list.required_count = 2;
+                    sys::ERR_BUFFER_TOO_SMALL
+                }
+                3 => {
+                    assert_eq!(list.capacity, 2);
+                    list.required_count = 2;
+                    list.count = 2;
+                    sys::OK
+                }
+                _ => unreachable!(),
+            }
+        })
+        .unwrap();
+
+        assert_eq!(calls, 3);
+        assert_eq!(devices.len(), 2);
+    }
+
+    #[test]
+    fn retries_when_success_reports_required_count_larger_than_capacity() {
+        let mut calls = 0;
+
+        let devices = enumerate_devices(|list, _| {
+            calls += 1;
+            list.count = 0;
+            match calls {
+                1 => {
+                    list.required_count = 1;
+                    sys::ERR_BUFFER_TOO_SMALL
+                }
+                2 => {
+                    assert_eq!(list.capacity, 1);
+                    list.required_count = 2;
+                    list.count = 1;
+                    sys::OK
+                }
+                3 => {
+                    assert_eq!(list.capacity, 2);
+                    list.required_count = 2;
+                    list.count = 2;
+                    sys::OK
+                }
+                _ => unreachable!(),
+            }
+        })
+        .unwrap();
+
+        assert_eq!(calls, 3);
+        assert_eq!(devices.len(), 2);
+    }
+
+    #[test]
+    fn rejects_device_enumeration_after_retry_exhaustion() {
+        let mut calls = 0;
+
+        let error = enumerate_devices(|list, _| {
+            calls += 1;
+            list.count = 0;
+            list.required_count = 1;
+            sys::ERR_BUFFER_TOO_SMALL
+        })
+        .err()
+        .expect("retry exhaustion must fail");
+
+        assert_eq!(calls, MAX_DEVICE_ATTEMPTS);
+        assert!(matches!(error, Error::Runtime { code: -1, .. }));
+    }
+
+    #[test]
+    fn rejects_required_device_count_above_limit() {
+        let error = enumerate_devices(|list, _| {
+            list.count = 0;
+            list.required_count = (MAX_DEVICE_COUNT + 1) as u64;
+            sys::ERR_BUFFER_TOO_SMALL
+        })
+        .err()
+        .expect("absurd required count must fail");
+
+        assert!(matches!(error, Error::Runtime { code: -1, .. }));
     }
 
     #[test]
     fn rejects_returned_device_count_larger_than_capacity() {
-        assert!(validate_device_counts(1, 1, 2).is_err());
+        let mut calls = 0;
+
+        let error = enumerate_devices(|list, _| {
+            calls += 1;
+            list.required_count = 1;
+            if calls == 1 {
+                list.count = 0;
+                sys::ERR_BUFFER_TOO_SMALL
+            } else {
+                assert_eq!(list.capacity, 1);
+                list.count = 2;
+                sys::OK
+            }
+        })
+        .err()
+        .expect("count above capacity must fail");
+
+        assert!(matches!(error, Error::Runtime { code: -1, .. }));
+    }
+
+    #[test]
+    fn resets_runtime_error_before_each_enumeration_call() {
+        let mut calls = 0;
+
+        enumerate_devices(|list, error| {
+            calls += 1;
+            assert_eq!(error.code, 0);
+            assert_eq!(error.message[0], 0);
+            list.count = 0;
+            list.required_count = 1;
+            if calls == 1 {
+                error.code = 99;
+                error.message[0] = b'x' as _;
+                sys::ERR_BUFFER_TOO_SMALL
+            } else {
+                sys::OK
+            }
+        })
+        .unwrap();
+
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn destroys_non_null_runtime_once_when_create_fails() {
+        let runtime = NonNull::<sys::Runtime>::dangling().as_ptr();
+        let mut destroyed = Vec::new();
+
+        let result = finish_runtime_create(7, runtime, &sys::Error::default(), |handle| {
+            destroyed.push(handle)
+        });
+
+        assert!(result.is_err());
+        assert_eq!(destroyed, vec![runtime]);
+    }
+
+    #[test]
+    fn rejects_null_runtime_when_create_succeeds_without_destroying() {
+        let mut destroy_count = 0;
+
+        let result = finish_runtime_create(
+            sys::OK,
+            std::ptr::null_mut(),
+            &sys::Error::default(),
+            |_| destroy_count += 1,
+        );
+
+        assert!(result.is_err());
+        assert_eq!(destroy_count, 0);
+    }
+
+    #[test]
+    fn accepts_non_null_runtime_when_create_succeeds_without_destroying() {
+        let runtime = NonNull::<sys::Runtime>::dangling().as_ptr();
+        let mut destroy_count = 0;
+
+        let result = finish_runtime_create(sys::OK, runtime, &sys::Error::default(), |_| {
+            destroy_count += 1
+        });
+
+        assert_eq!(result.unwrap(), runtime);
+        assert_eq!(destroy_count, 0);
     }
 }
