@@ -56,6 +56,11 @@ typedef int32_t llw_result_t;
 #define LLW_EVENT_ERROR ((int32_t)7)
 #define LLW_EVENT_LOG ((int32_t)8)
 
+/*
+ * Before passing any input or output structure, zero-initialize the entire
+ * structure and set struct_size to sizeof(structure type). Flags, reserved
+ * fields, and fields unknown to the caller must remain zero unless documented.
+ */
 #pragma pack(push, 8)
 
 typedef struct llw_error_t {
@@ -108,6 +113,15 @@ typedef struct llw_device_info_t {
     uint64_t reserved[8];
 } llw_device_info_t;
 
+/*
+ * Device enumeration uses two calls. For the size query, set devices to NULL
+ * and capacity to zero; required_count receives the total number of matching
+ * devices and LLW_ERR_BUFFER_TOO_SMALL is returned when storage is required.
+ * For the fill call, devices points to a caller-owned array, capacity is its
+ * element count, and element_size is sizeof(llw_device_info_t). The runtime
+ * writes at most capacity entries, sets count to the entries written and
+ * required_count to the total required, and never retains devices.
+ */
 typedef struct llw_device_list_t {
     uint32_t struct_size;
     uint32_t flags;
@@ -120,6 +134,12 @@ typedef struct llw_device_list_t {
     uint64_t reserved[8];
 } llw_device_list_t;
 
+/*
+ * The event and event->data are valid only for the duration of the callback;
+ * copy data before returning to retain it. Callbacks may run on
+ * runtime-managed threads, so consumers must be thread-safe. Do not call
+ * runtime functions reentrantly from a callback unless explicitly documented.
+ */
 typedef struct llw_event_t {
     uint32_t struct_size;
     uint32_t flags;
@@ -161,8 +181,10 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_abi_info(
     const llw_abi_query_t* query,
     llw_abi_info_t* out_info,
     llw_error_t* out_error);
+/* Returned strings are runtime-owned, static, UTF-8, null-terminated, and valid while the DLL is loaded. */
 LLW_EXTERN_C LLW_EXPORT const char* LLW_CALL llw_runtime_version(void);
 LLW_EXTERN_C LLW_EXPORT const char* LLW_CALL llw_llama_cpp_commit(void);
+/* On success, out_runtime receives a caller-owned handle; destroy it exactly once. */
 LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_create(
     const llw_runtime_create_params_t* params,
     llw_runtime_t** out_runtime,
