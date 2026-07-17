@@ -1,8 +1,9 @@
 #include "llw_runtime.h"
 
-#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstring>
 #include <type_traits>
 
 #define LLW_ASSERT_LAYOUT(type, expected_size) \
@@ -12,6 +13,14 @@
 #define LLW_ASSERT_FIELD(type, field, expected_type, expected_offset) \
     static_assert(std::is_same_v<decltype(type::field), expected_type>); \
     static_assert(offsetof(type, field) == expected_offset)
+
+#define CHECK(condition) \
+    do { \
+        if (!(condition)) { \
+            std::fprintf(stderr, "%s:%d: CHECK failed: %s\n", __FILE__, __LINE__, #condition); \
+            return 1; \
+        } \
+    } while (false)
 
 int main() {
     static_assert(sizeof(void*) == 8);
@@ -106,44 +115,142 @@ int main() {
 
     llw_abi_info_t info{};
     info.struct_size = sizeof(info);
-    assert(info.struct_size >= sizeof(std::uint32_t));
-
     llw_abi_query_t query{};
     query.struct_size = sizeof(query);
     query.requested_major = LLW_ABI_MAJOR;
     query.requested_minor = LLW_ABI_MINOR;
     llw_error_t error{};
     error.struct_size = sizeof(error);
-    assert(llw_get_abi_info(&query, &info, &error) == LLW_OK);
-    assert(info.abi_major == LLW_ABI_MAJOR);
-    assert(info.abi_minor == LLW_ABI_MINOR);
+    const auto reset_error = [&error]() {
+        error = {};
+        error.struct_size = sizeof(error);
+    };
+
+    CHECK(std::strcmp(llw_runtime_version(), "0.1.0-fake") == 0);
+    CHECK(std::strcmp(llw_llama_cpp_commit(), "not-linked") == 0);
+    CHECK(llw_get_abi_info(&query, &info, &error) == LLW_OK);
+    CHECK(info.abi_major == LLW_ABI_MAJOR);
+    CHECK(info.abi_minor == LLW_ABI_MINOR);
+
+    reset_error();
+    CHECK(llw_get_abi_info(nullptr, &info, &error) == LLW_ERR_INVALID_ARGUMENT);
+    CHECK(error.code == LLW_ERR_INVALID_ARGUMENT);
+    CHECK(std::strcmp(error.message, "invalid ABI query") == 0);
+
+    reset_error();
+    CHECK(llw_get_abi_info(&query, nullptr, &error) == LLW_ERR_INVALID_ARGUMENT);
+
+    llw_abi_query_t undersized_query{};
+    undersized_query.struct_size = sizeof(undersized_query) - 1u;
+    reset_error();
+    CHECK(llw_get_abi_info(&undersized_query, &info, &error) == LLW_ERR_INVALID_ARGUMENT);
+
+    llw_abi_info_t undersized_info{};
+    undersized_info.struct_size = sizeof(undersized_info) - 1u;
+    reset_error();
+    CHECK(llw_get_abi_info(&query, &undersized_info, &error) == LLW_ERR_INVALID_ARGUMENT);
+
+    llw_abi_query_t mismatched_query = query;
+    mismatched_query.requested_major = LLW_ABI_MAJOR + 1u;
+    reset_error();
+    std::memset(error.message, 'x', sizeof(error.message));
+    CHECK(llw_get_abi_info(&mismatched_query, &info, &error) == LLW_ERR_ABI_MISMATCH);
+    CHECK(error.code == LLW_ERR_ABI_MISMATCH);
+    CHECK(error.message[sizeof(error.message) - 1u] == '\0');
+    CHECK(std::strcmp(error.message, "unsupported ABI major") == 0);
 
     llw_runtime_create_params_t create{};
     create.struct_size = sizeof(create);
-    llw_runtime_t* runtime = nullptr;
-    assert(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
-    assert(runtime != nullptr);
+    llw_runtime_t* runtime = reinterpret_cast<llw_runtime_t*>(std::uintptr_t{1u});
+
+    reset_error();
+    CHECK(llw_runtime_create(nullptr, &runtime, &error) == LLW_ERR_INVALID_ARGUMENT);
+    CHECK(runtime == nullptr);
+
+    llw_runtime_create_params_t undersized_create{};
+    undersized_create.struct_size = sizeof(undersized_create) - 1u;
+    runtime = reinterpret_cast<llw_runtime_t*>(std::uintptr_t{1u});
+    reset_error();
+    CHECK(llw_runtime_create(&undersized_create, &runtime, &error) == LLW_ERR_INVALID_ARGUMENT);
+    CHECK(runtime == nullptr);
+
+    reset_error();
+    CHECK(llw_runtime_create(&create, nullptr, &error) == LLW_ERR_INVALID_ARGUMENT);
+
+    // Callback copying is not externally observable through the current opaque seven-export ABI.
+    reset_error();
+    CHECK(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
+    CHECK(runtime != nullptr);
 
     llw_capabilities_t capabilities{};
     capabilities.struct_size = sizeof(capabilities);
-    assert(llw_runtime_get_capabilities(runtime, &capabilities, &error) == LLW_OK);
-    assert(capabilities.supports_cpu == 1u);
-    assert(capabilities.max_parallel_slots == 4u);
+    CHECK(llw_runtime_get_capabilities(runtime, &capabilities, &error) == LLW_OK);
+    CHECK(capabilities.supports_cpu == 1u);
+    CHECK(capabilities.max_parallel_slots == 4u);
+
+    reset_error();
+    CHECK(llw_runtime_get_capabilities(runtime, nullptr, &error) == LLW_ERR_INVALID_ARGUMENT);
+
+    llw_capabilities_t undersized_capabilities{};
+    undersized_capabilities.struct_size = sizeof(undersized_capabilities) - 1u;
+    reset_error();
+    CHECK(llw_runtime_get_capabilities(runtime, &undersized_capabilities, &error) ==
+          LLW_ERR_INVALID_ARGUMENT);
 
     llw_device_list_t devices{};
     devices.struct_size = sizeof(devices);
-    assert(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) == LLW_ERR_BUFFER_TOO_SMALL);
-    assert(devices.required_count == 1u);
+    reset_error();
+    CHECK(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) ==
+          LLW_ERR_BUFFER_TOO_SMALL);
+    CHECK(devices.count == 0u);
+    CHECK(devices.required_count == 1u);
 
     llw_device_info_t storage[1]{};
     storage[0].struct_size = sizeof(llw_device_info_t);
     devices.capacity = 1u;
     devices.devices = storage;
+    devices.element_size = sizeof(llw_device_info_t) - 1u;
+    reset_error();
+    CHECK(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) ==
+          LLW_ERR_BUFFER_TOO_SMALL);
+    CHECK(devices.count == 0u);
+
+    llw_device_info_t undersized_device{};
+    std::memset(&undersized_device, 0xa5, sizeof(undersized_device));
+    undersized_device.struct_size = sizeof(std::uint32_t);
+    llw_device_info_t original_undersized_device{};
+    std::memcpy(&original_undersized_device, &undersized_device, sizeof(undersized_device));
+    devices.devices = &undersized_device;
     devices.element_size = sizeof(llw_device_info_t);
-    assert(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) == LLW_OK);
-    assert(devices.count == 1u);
-    assert(storage[0].backend == LLW_BACKEND_CPU);
+    reset_error();
+    CHECK(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) ==
+          LLW_ERR_INVALID_ARGUMENT);
+    CHECK(error.code == LLW_ERR_INVALID_ARGUMENT);
+    CHECK(error.message[sizeof(error.message) - 1u] == '\0');
+    CHECK(std::strcmp(error.message, "device element struct_size is too small") == 0);
+    CHECK(std::memcmp(&undersized_device, &original_undersized_device, sizeof(undersized_device)) == 0);
+    CHECK(devices.count == 0u);
+
+    llw_device_list_t unsupported_devices{};
+    unsupported_devices.struct_size = sizeof(unsupported_devices);
+    unsupported_devices.count = 7u;
+    unsupported_devices.required_count = 9u;
+    reset_error();
+    CHECK(llw_runtime_list_devices(runtime, LLW_BACKEND_CUDA, &unsupported_devices, &error) == LLW_OK);
+    CHECK(unsupported_devices.count == 0u);
+    CHECK(unsupported_devices.required_count == 0u);
+
+    storage[0] = {};
+    storage[0].struct_size = sizeof(llw_device_info_t);
+    devices.devices = storage;
+    devices.element_size = sizeof(llw_device_info_t);
+    reset_error();
+    CHECK(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) == LLW_OK);
+    CHECK(devices.count == 1u);
+    CHECK(storage[0].backend == LLW_BACKEND_CPU);
+    CHECK(std::strcmp(storage[0].id, "cpu:0") == 0);
 
     llw_runtime_destroy(runtime);
+    llw_runtime_destroy(nullptr);
     return 0;
 }

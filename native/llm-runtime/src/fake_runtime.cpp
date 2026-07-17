@@ -120,6 +120,9 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_list_devices(
         return fail(out_error, LLW_ERR_BUFFER_TOO_SMALL, "device buffer is too small");
     }
     auto& device = out_devices->devices[0];
+    if (device.struct_size < sizeof(llw_device_info_t)) {
+        return fail(out_error, LLW_ERR_INVALID_ARGUMENT, "device element struct_size is too small");
+    }
     device = {};
     device.struct_size = sizeof(device);
     device.backend = LLW_BACKEND_CPU;
