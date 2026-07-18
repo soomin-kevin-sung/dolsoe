@@ -38,7 +38,7 @@ export default function App() {
 
   useEffect(() => {
     const requested = queryValue("theme");
-    const theme = requested === "dark" ? "dark" : requested === "light" ? "light" : "light";
+    const theme = requested === "dark" ? "dark" : requested === "light" ? "light" : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     document.documentElement.dataset.theme = theme;
   }, []);
 

@@ -4,6 +4,7 @@ body { color: var(--text-1); background: var(--bg-app); font-family: var(--font-
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 button, input, textarea { color: inherit; font: inherit; }
 button { border: 0; }
+button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .app { display: grid; grid-template-rows: minmax(0, 1fr) 28px; width: 100%; height: 100%; background: var(--bg-surface); }
 .workspace { display: flex; min-width: 0; min-height: 0; }
 .conversation-shell { display: grid; grid-template-rows: 48px minmax(0, 1fr) auto; min-width: 0; flex: 1; background: var(--bg-surface); }
@@ -83,7 +84,7 @@ button { border: 0; }
 .status-metric-label { color: var(--text-3); font-size: 10px; }
 .status-metric-value { white-space: nowrap; font: 11px var(--font-mono); font-variant-numeric: tabular-nums; }
 .status-metric-value.live { color: var(--accent); font-weight: 600; }
-.settings-panel { display: flex; width: 320px; flex: 0 0 320px; flex-direction: column; border-left: 1px solid var(--border); background: var(--bg-surface); }
+.settings-panel { display: flex; width: 320px; flex: 0 0 320px; flex-direction: column; border-left: 1px solid var(--border); background: var(--bg-surface); transition: transform 160ms ease-out; }
 .settings-panel[hidden] { display: none; }
 .panel-header { display: flex; height: 48px; flex: none; align-items: center; justify-content: space-between; padding: 0 10px 0 16px; border-bottom: 1px solid var(--border); }
 .panel-header h2 { margin: 0; font-size: 16px; font-weight: 600; }
@@ -137,3 +138,20 @@ html[data-theme="dark"] .dialog-scrim { background: rgba(0, 0, 0, 0.5); }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes blink { 50% { opacity: 0; } }
 @keyframes pulse { 50% { opacity: 0.35; } }
+
+@media (max-width: 1279px) {
+  .settings-panel { position: fixed; z-index: 10; top: 0; right: 0; bottom: 28px; box-shadow: var(--shadow-overlay); }
+}
+
+@media (max-width: 1179px) {
+  .sidebar { width: 224px; flex-basis: 224px; }
+  .model-chip { width: min(200px, 30vw); }
+  .message-column, .diagnostics { padding-right: 20px; padding-left: 20px; }
+  .status-model { max-width: 180px; }
+  .metric-토큰, .metric-시간 { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-cursor, .status-dot.streaming, .status-dot.loading, .spin { animation: none; }
+  .settings-panel { transition: none; }
+}

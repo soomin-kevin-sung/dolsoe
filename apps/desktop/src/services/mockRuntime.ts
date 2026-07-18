@@ -61,7 +61,9 @@ function snapshot(state: MockStateName): RuntimeSnapshot {
     statusText: modelMissing ? "모델 없음" : modelLoading ? "모델 로딩 중" : hasError ? "백엔드 오류" : streaming ? state === "multi" ? "생성 중 · 2" : "생성 중" : "준비됨",
     sessions: state === "multi"
       ? sessions.map((session, index) => ({ ...session, generating: index < 2 }))
-      : sessions,
+      : state === "streaming"
+        ? sessions.map((session, index) => ({ ...session, generating: index === 0 }))
+        : sessions,
     messages: state === "empty" || modelMissing || modelLoading ? [] : stateMessages,
     telemetry: {
       backend: modelMissing ? "—" : "CUDA · RTX 4070",

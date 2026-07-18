@@ -124,3 +124,42 @@ test("Escape closes dialog before panel and cancels streaming", async ({ page })
   await page.keyboard.press("Escape");
   await expect(page.locator('[data-app-state="cancelled"]')).toBeVisible();
 });
+
+test("responsive settings panel docks and overlays at approved breakpoints", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/?state=settings");
+  const panel = page.getByRole("complementary", { name: "설정" });
+  await expect(panel).toHaveCSS("width", "320px");
+  await expect(panel).toHaveCSS("position", "static");
+  await page.setViewportSize({ width: 1279, height: 800 });
+  await expect(panel).toHaveCSS("position", "fixed");
+  await expect(panel).toHaveCSS("right", "0px");
+  await page.setViewportSize({ width: 1179, height: 700 });
+  await expect(page.getByRole("navigation", { name: "대화 목록" })).toHaveCSS("width", "224px");
+  await expect(page.locator(".metric-토큰")).toBeHidden();
+  await expect(page.locator(".metric-시간")).toBeHidden();
+});
+
+test("focus styling is visible for keyboard navigation", async ({ page }) => {
+  await page.goto("/?state=ready");
+  await page.keyboard.press("Tab");
+  const focused = page.locator(":focus");
+  await expect(focused).toBeVisible();
+  expect(await focused.evaluate((element) => getComputedStyle(element).outlineStyle)).not.toBe("none");
+});
+
+test("reduced motion disables cursor pulse spinner and panel transition", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/?state=streaming");
+  await expect(page.locator(".streaming-cursor")).toHaveCSS("animation-name", "none");
+  await expect(page.locator(".status-dot.streaming")).toHaveCSS("animation-name", "none");
+  await expect(page.locator(".spin").first()).toHaveCSS("animation-name", "none");
+  await page.keyboard.press("Control+,");
+  await expect(page.getByRole("complementary", { name: "설정" })).toHaveCSS("transition-duration", "0s");
+});
+
+test("system theme follows the operating system on first load", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.goto("/?state=ready");
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
