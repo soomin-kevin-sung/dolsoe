@@ -4,14 +4,26 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      vulkan_compile_smoke:
+        description: Install LunarG SDK 1.4.350.0 and compile the Vulkan pack
+        required: true
+        type: boolean
+        default: false
+      cuda_compile_smoke:
+        description: Compile on a self-hosted Windows CUDA runner
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 jobs:
-  windows-contract:
+  windows-cpu-contract:
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 60
     env:
       CMAKE_GENERATOR: Visual Studio 17 2022
       CMAKE_GENERATOR_PLATFORM: x64
@@ -31,18 +43,116 @@ jobs:
         run: npm ci --prefix apps/desktop
       - name: Build frontend
         run: npm run build --prefix apps/desktop
-      - name: Configure fake runtime
-        run: cmake -S native/llm-runtime -B .cmake-build/llm-runtime -G "Visual Studio 17 2022" -A x64 -T v143
-      - name: Build fake runtime
-        run: cmake --build .cmake-build/llm-runtime --config Debug
-      - name: Test native ABI
-        run: ctest --test-dir .cmake-build/llm-runtime -C Debug --output-on-failure
+      - name: Cache checksum-pinned CPU test model
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .test-models/tiny-random-f16.gguf
+          key: tiny-random-f16-1010fc48b2a1880a01fa5e267eb35bf586e3e3ad5539ff5b0e025e4f63616a82
+      - name: Acquire checksum-pinned test model
+        shell: pwsh
+        run: |
+          $path = & scripts/acquire-test-model.ps1
+          "LLW_TEST_GGUF=$path" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Configure CPU runtime
+        run: cmake -S native/llm-runtime -B .cmake-build/llm-cpu -G "Visual Studio 17 2022" -A x64 -T v143 -DLLW_BACKEND_PACK=CPU
+      - name: Build CPU runtime
+        run: cmake --build .cmake-build/llm-cpu --config Debug
+      - name: Test native runtime
+        run: ctest --test-dir .cmake-build/llm-cpu -C Debug --output-on-failure
+      - name: Stage and verify CPU pack
+        shell: pwsh
+        run: |
+          cmake --install .cmake-build/llm-cpu --config Debug --prefix .runtime-packs/cpu-debug
+          $pack = '.runtime-packs/cpu-debug'
+          $required = 'local_llm_runtime.dll','llama.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll','llw_runtime_backend_test.exe'
+          $missing = $required | Where-Object { -not (Test-Path (Join-Path $pack $_)) }
+          if ($missing) { throw "CPU pack is missing: $($missing -join ', ')" }
+          $unexpected = 'ggml-cuda.dll','ggml-vulkan.dll' | Where-Object { Test-Path (Join-Path $pack $_) }
+          if ($unexpected) { throw "CPU pack has unexpected backend DLLs: $($unexpected -join ', ')" }
+          Get-ChildItem -File $pack | Sort-Object Name | Select-Object Name,Length
+      - name: Test installed CPU backend
+        shell: pwsh
+        run: |
+          $env:LLW_TEST_BACKEND = 'CPU'
+          & .runtime-packs/cpu-debug/llw_runtime_backend_test.exe $env:LLW_TEST_GGUF
+          if ($LASTEXITCODE -ne 0) { throw "installed CPU backend test failed: $LASTEXITCODE" }
       - name: Check Rust formatting
         run: cargo fmt --all --check
       - name: Lint Rust
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
-      - name: Test Rust with fake runtime
+      - name: Test Rust with native runtime
         shell: pwsh
         run: |
-          $env:LLW_TEST_RUNTIME = (Resolve-Path '.cmake-build/llm-runtime/Debug/local_llm_runtime.dll')
+          $env:LLW_TEST_RUNTIME = (Resolve-Path '.runtime-packs/cpu-debug/local_llm_runtime.dll')
           cargo test --locked --workspace
+
+  windows-vulkan-compile:
+    if: github.event_name == 'workflow_dispatch' && inputs.vulkan_compile_smoke
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      CMAKE_GENERATOR: Visual Studio 17 2022
+      CMAKE_GENERATOR_PLATFORM: x64
+      CMAKE_GENERATOR_TOOLSET: v143
+      VULKAN_SDK_VERSION: 1.4.350.0
+      VULKAN_SDK_URL: https://sdk.lunarg.com/sdk/download/1.4.350.0/windows/vulkansdk-windows-X64-1.4.350.0.exe
+      VULKAN_SDK_SHA256: 855b27ba05d2d8119c5114c5d4ff870ca38f2c632b11e1bb9923b9b7e6ecfe7b
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install pinned LunarG Vulkan SDK
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk.exe'
+          Invoke-WebRequest -Uri $env:VULKAN_SDK_URL -OutFile $installer
+          $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          if ($actual -ne $env:VULKAN_SDK_SHA256) { throw "Vulkan SDK checksum mismatch: $actual" }
+          $root = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          $process = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList '--root', $root, '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+          if ($process.ExitCode -ne 0) { throw "Vulkan SDK installer failed: $($process.ExitCode)" }
+          "VULKAN_SDK=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$root\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Configure Vulkan runtime pack
+        run: cmake -S native/llm-runtime -B .cmake-build/llm-vulkan -G "Visual Studio 17 2022" -A x64 -T v143 -DLLW_BACKEND_PACK=VULKAN
+      - name: Compile Vulkan runtime pack
+        run: cmake --build .cmake-build/llm-vulkan --config Release
+      - name: Stage and verify Vulkan runtime pack
+        shell: pwsh
+        run: |
+          cmake --install .cmake-build/llm-vulkan --config Release --prefix .runtime-packs/vulkan-release
+          $pack = '.runtime-packs/vulkan-release'
+          $required = 'local_llm_runtime.dll','llama.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll','ggml-vulkan.dll'
+          $missing = $required | Where-Object { -not (Test-Path (Join-Path $pack $_)) }
+          if ($missing) { throw "Vulkan pack is missing: $($missing -join ', ')" }
+          if (Test-Path (Join-Path $pack 'ggml-cuda.dll')) { throw 'Vulkan pack contains ggml-cuda.dll' }
+          Get-ChildItem -File $pack | Sort-Object Name | Select-Object Name,Length
+
+  windows-cuda-compile:
+    if: github.event_name == 'workflow_dispatch' && inputs.cuda_compile_smoke
+    runs-on: [self-hosted, Windows, X64, cuda]
+    timeout-minutes: 120
+    env:
+      CMAKE_GENERATOR: Visual Studio 17 2022
+      CMAKE_GENERATOR_PLATFORM: x64
+      CMAKE_GENERATOR_TOOLSET: v143
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Verify pre-provisioned CUDA toolkit
+        shell: pwsh
+        run: |
+          if (-not $env:CUDA_PATH) { throw 'CUDA_PATH is not set on the self-hosted runner' }
+          $nvcc = Get-Command nvcc -ErrorAction Stop
+          & $nvcc.Source --version
+      - name: Configure CUDA runtime pack
+        run: cmake -S native/llm-runtime -B .cmake-build/llm-cuda -G "Visual Studio 17 2022" -A x64 -T v143 -DLLW_BACKEND_PACK=CUDA
+      - name: Compile CUDA runtime pack
+        run: cmake --build .cmake-build/llm-cuda --config Release
+      - name: Stage and verify CUDA runtime pack
+        shell: pwsh
+        run: |
+          cmake --install .cmake-build/llm-cuda --config Release --prefix .runtime-packs/cuda-release
+          $pack = '.runtime-packs/cuda-release'
+          $required = 'local_llm_runtime.dll','llama.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll','ggml-cuda.dll'
+          $missing = $required | Where-Object { -not (Test-Path (Join-Path $pack $_)) }
+          if ($missing) { throw "CUDA pack is missing: $($missing -join ', ')" }
+          if (Test-Path (Join-Path $pack 'ggml-vulkan.dll')) { throw 'CUDA pack contains ggml-vulkan.dll' }
+          Get-ChildItem -File $pack | Sort-Object Name | Select-Object Name,Length
