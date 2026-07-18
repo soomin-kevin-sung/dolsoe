@@ -176,6 +176,22 @@ mod tests {
     }
 
     #[test]
+    fn command_accepts_pack_id_not_runtime_library_path() {
+        let source = include_str!("runtime_probe.rs");
+        let start = source
+            .find("pub async fn probe_runtime(")
+            .expect("probe_runtime command must exist");
+        let remainder = &source[start..];
+        let end = remainder
+            .find(") -> Result<RuntimeInfoDto, String>")
+            .expect("probe_runtime signature must retain its result type");
+        let signature = &remainder[..end];
+        assert!(signature.contains("runtime_pack_id: String"));
+        assert!(!signature.contains("PathBuf"));
+        assert!(!signature.contains("dll_path"));
+    }
+
+    #[test]
     fn accepts_release_runtime_pack_ids() {
         for runtime_pack_id in ["stable", "llama.cpp-1_2.3", "CUDA12", "a"] {
             assert!(validate_runtime_pack_id(runtime_pack_id).is_ok());
