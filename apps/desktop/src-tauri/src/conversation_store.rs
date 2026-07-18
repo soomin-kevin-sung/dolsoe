@@ -481,7 +481,7 @@ fn load_conversation(transaction: &Transaction<'_>, id: &str) -> StoreResult<Con
     let summary = conversation_summary(transaction, id)?;
     let mut statement = transaction
         .prepare(
-            "SELECT id, conversation_id, role, content, status, created_at, updated_at FROM messages WHERE conversation_id = ?1 ORDER BY created_at, id",
+            "SELECT id, conversation_id, role, content, status, created_at, updated_at FROM messages WHERE conversation_id = ?1 ORDER BY created_at, rowid",
         )
         .map_err(store_error)?;
     let rows = statement
@@ -585,7 +585,9 @@ fn store_error(error: rusqlite::Error) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConversationStore, MessageStatus};
+    use rusqlite::params;
+
+    use super::{ConversationStore, MessageRole, MessageStatus};
 
     #[test]
     fn bootstrap_migrates_recovers_and_creates_initial_conversation() {
@@ -684,5 +686,31 @@ mod tests {
         assert!(store
             .finish_turn("missing", "content", MessageStatus::Streaming)
             .is_err());
+    }
+
+    #[test]
+    fn messages_with_the_same_timestamp_keep_insertion_order() {
+        let store = ConversationStore::open_in_memory().unwrap();
+        let conversation = store.bootstrap().unwrap().selected;
+        {
+            let connection = store.lock().unwrap();
+            connection
+                .execute(
+                    "INSERT INTO messages(id, conversation_id, role, content, status, created_at, updated_at) VALUES (?1, ?2, 'user', 'prompt', 'complete', 1, 1)",
+                    params!["z-user", conversation.id],
+                )
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO messages(id, conversation_id, role, content, status, created_at, updated_at) VALUES (?1, ?2, 'assistant', 'answer', 'complete', 1, 1)",
+                    params!["a-assistant", conversation.id],
+                )
+                .unwrap();
+        }
+
+        let loaded = store.load_conversation(&conversation.id).unwrap();
+
+        assert_eq!(loaded.messages[0].role, MessageRole::User);
+        assert_eq!(loaded.messages[1].role, MessageRole::Assistant);
     }
 }

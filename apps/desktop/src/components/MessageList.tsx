@@ -18,8 +18,14 @@ function EmptyContent({ state, modelName, backend, loadingProgress, onChooseMode
 
 interface MessageListProps extends EmptyContentProps { messages: Message[]; error?: string | null; }
 
+export function shouldShowEmptyContent(state: MockStateName, messageCount: number): boolean {
+  if (state === "loading") return true;
+  if (state === "no-model") return messageCount === 0;
+  return state === "empty" && messageCount === 0;
+}
+
 export function MessageList({ state, messages, modelName, backend, loadingProgress, onChooseModel, onCancelLoad, error }: MessageListProps) {
-  if (["no-model", "loading"].includes(state) || (state === "empty" && messages.length === 0)) return <div className="message-column"><EmptyContent state={state} modelName={modelName} backend={backend} loadingProgress={loadingProgress} onChooseModel={onChooseModel} onCancelLoad={onCancelLoad} /></div>;
+  if (shouldShowEmptyContent(state, messages.length)) return <div className="message-column"><EmptyContent state={state} modelName={modelName} backend={backend} loadingProgress={loadingProgress} onChooseModel={onChooseModel} onCancelLoad={onCancelLoad} /></div>;
   if (state === "error" && error) return <div className="message-column"><div className="message assistant"><div className="error-block"><h3 className="error-title"><TriangleAlert size={14} />로컬 추론을 완료하지 못했습니다</h3><p>{error}</p><div className="error-actions"><button className="button-secondary" type="button" onClick={onChooseModel}>모델 다시 선택</button></div></div></div></div>;
   if (state === "error") return <div className="message-column"><div className="message user"><div className="user-bubble">GGUF 양자화 방식 중 Q4_K_M과 Q5_K_M의 차이를 설명해줘. 7B 모델을 12GB VRAM에서 돌릴 건데 어느 쪽이 나아?</div><div className="timestamp">14:02</div></div><div className="message assistant"><div className="error-block"><h3 className="error-title"><TriangleAlert size={14} />CUDA 백엔드를 초기화하지 못했습니다</h3><p>NVIDIA 드라이버에서 CUDA 12 런타임을 찾을 수 없습니다 (오류 코드 LLW_E_BACKEND_INIT). 드라이버를 업데이트하거나 CPU 런타임으로 전환한 뒤 다시 시도하세요.</p><div className="error-actions"><button className="button-secondary" type="button">CPU로 전환 후 다시 로드</button><button className="button-secondary" type="button">다시 시도</button></div></div></div></div>;
   return (

@@ -18,6 +18,25 @@ For desktop development, build, test, and activate the managed `cpu-dev` pack un
 
 Use `-Configuration Release`, `-PackId`, or `-DestinationRoot` only when a different development layout is required. The script verifies the complete CPU pack before replacing the active directory and restores the previous directory if activation fails.
 
+## Conversation persistence smoke
+
+Run the Tauri development app with the managed CPU pack and a verified tiny GGUF fixture:
+
+```powershell
+$env:LLW_TEST_GGUF = & scripts/acquire-test-model.ps1
+npm --prefix apps/desktop run tauri -- dev
+```
+
+Validate the native workflow in this order:
+
+1. Select `$env:LLW_TEST_GGUF` and wait for the runtime to become ready.
+2. Submit a prompt, wait for a terminal state, and create a second conversation with `Ctrl+N`.
+3. Rename the second conversation, close the app, and start it again.
+4. Confirm both conversation titles and the first conversation's user/assistant messages are restored.
+5. Confirm stored messages remain visible before a model is selected after restart.
+
+The SQLite database is stored at `app_local_data_dir/local-llm-wiki.db`. Startup migrations are repeatable, and assistant messages left in `streaming` state are recovered as `interrupted`.
+
 ## CUDA compile smoke
 cmake -S native/llm-runtime -B .cmake-build/llm-cuda -A x64 -DLLW_BACKEND_PACK=CUDA
 cmake --build .cmake-build/llm-cuda --config Release
