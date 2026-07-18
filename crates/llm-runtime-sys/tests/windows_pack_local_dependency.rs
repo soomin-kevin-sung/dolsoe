@@ -27,7 +27,6 @@ fn loads_pack_local_dependency_when_working_directory_is_elsewhere() {
             .arg(&fixture)
             .arg("-B")
             .arg(&build_dir)
-            .args(["-A", "x64"])
             .status()
             .expect("run CMake configure"),
         "configure loader fixture",
@@ -69,6 +68,12 @@ fn loads_pack_local_dependency_when_working_directory_is_elsewhere() {
 fn load_fixture_in_child() {
     let runtime = PathBuf::from(std::env::var_os(DLL_ENV).expect("fixture DLL path"));
     let api = unsafe { llm_runtime_sys::Api::load(&runtime) }.expect("load fixture runtime");
+    let query = llm_runtime_sys::AbiQuery::default();
+    let mut info = llm_runtime_sys::AbiInfo::default();
+    let mut error = llm_runtime_sys::Error::default();
+    let result = unsafe { (api.get_abi_info)(&query, &mut info, &mut error) };
+    assert_eq!(result, llm_runtime_sys::OK);
+    assert_eq!(info.abi_major, llm_runtime_sys::ABI_MAJOR);
     let version = unsafe { CStr::from_ptr((api.runtime_version)()) };
     assert_eq!(version.to_bytes(), b"pack-local-helper");
 }

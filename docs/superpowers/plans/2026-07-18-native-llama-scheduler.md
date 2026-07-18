@@ -3662,11 +3662,19 @@ Add a Windows-only integration test in
 `crates/llm-runtime-sys/tests/windows_pack_local_dependency.rs`. Its CMake fixture must build a
 `local_llm_runtime.dll` that imports and calls an exported function from a sibling
 `llw_pack_local_helper.dll`. Build the fixture into a short per-process directory beneath
-`LOCALAPPDATA`, then re-exec the Rust integration-test binary with `current_dir` set to a separate
-directory. Pass the absolute runtime DLL path through an environment variable, call `Api::load`,
-and assert that `runtime_version` returns the helper DLL's sentinel string. Re-exec keeps the CWD
-change out of the parent test process, and calling through the imported function proves that the
-helper was resolved and loaded rather than merely present.
+`LOCALAPPDATA` without passing generator, platform, or toolset arguments, then re-exec the Rust
+integration-test binary with `current_dir` set to a separate directory. Nested CMake therefore
+inherits `CMAKE_GENERATOR`, `CMAKE_GENERATOR_PLATFORM`, and `CMAKE_GENERATOR_TOOLSET` in CI while
+developer runs use the host default and cannot receive duplicate `-A` arguments. Pass the absolute
+runtime DLL path through an environment variable, call `Api::load`, and assert that
+`llw_get_abi_info` succeeds and `runtime_version` returns the helper DLL's sentinel string. Re-exec
+keeps the CWD change out of the parent test process, and calling through the imported function proves
+that the helper was resolved and loaded rather than merely present.
+
+The fixture CMake target defines `LLW_RUNTIME_BUILD`, includes the real
+`native/llm-runtime/include` directory, and treats compiler warnings as errors. Its `runtime.c`
+includes `llw_runtime.h` and defines all seven ABI 1.0 exports with the exact declared signatures;
+only `runtime_version` delegates to the sibling helper.
 
 Run the raw loader test before changing production code:
 
@@ -5308,6 +5316,10 @@ jobs:
   windows-cpu-contract:
     runs-on: windows-2025
     timeout-minutes: 60
+    env:
+      CMAKE_GENERATOR: Visual Studio 17 2022
+      CMAKE_GENERATOR_PLATFORM: x64
+      CMAKE_GENERATOR_TOOLSET: v143
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -5316,7 +5328,7 @@ jobs:
           components: rustfmt, clippy
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 24
+          node-version: 24.13.1
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Install frontend dependencies
@@ -5334,7 +5346,7 @@ jobs:
           $path = & scripts/acquire-test-model.ps1
           "LLW_TEST_GGUF=$path" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Configure CPU runtime
-        run: cmake -S native/llm-runtime -B .cmake-build/llm-cpu -A x64 -DLLW_BACKEND_PACK=CPU
+        run: cmake -S native/llm-runtime -B .cmake-build/llm-cpu -G "Visual Studio 17 2022" -A x64 -T v143 -DLLW_BACKEND_PACK=CPU
       - name: Build CPU runtime
         run: cmake --build .cmake-build/llm-cpu --config Debug
       - name: Test native runtime
@@ -5371,6 +5383,9 @@ jobs:
     runs-on: windows-2025
     timeout-minutes: 90
     env:
+      CMAKE_GENERATOR: Visual Studio 17 2022
+      CMAKE_GENERATOR_PLATFORM: x64
+      CMAKE_GENERATOR_TOOLSET: v143
       VULKAN_SDK_VERSION: 1.4.350.0
       VULKAN_SDK_URL: https://sdk.lunarg.com/sdk/download/1.4.350.0/windows/vulkansdk-windows-X64-1.4.350.0.exe
       VULKAN_SDK_SHA256: 855b27ba05d2d8119c5114c5d4ff870ca38f2c632b11e1bb9923b9b7e6ecfe7b
@@ -5389,7 +5404,7 @@ jobs:
           "VULKAN_SDK=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
           "$root\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append
       - name: Configure Vulkan runtime pack
-        run: cmake -S native/llm-runtime -B .cmake-build/llm-vulkan -A x64 -DLLW_BACKEND_PACK=VULKAN
+        run: cmake -S native/llm-runtime -B .cmake-build/llm-vulkan -G "Visual Studio 17 2022" -A x64 -T v143 -DLLW_BACKEND_PACK=VULKAN
       - name: Compile Vulkan runtime pack
         run: cmake --build .cmake-build/llm-vulkan --config Release
       - name: Stage and verify Vulkan runtime pack
@@ -5407,6 +5422,10 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.cuda_compile_smoke
     runs-on: [self-hosted, Windows, X64, cuda]
     timeout-minutes: 120
+    env:
+      CMAKE_GENERATOR: Visual Studio 17 2022
+      CMAKE_GENERATOR_PLATFORM: x64
+      CMAKE_GENERATOR_TOOLSET: v143
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - name: Verify pre-provisioned CUDA toolkit
@@ -5416,7 +5435,7 @@ jobs:
           $nvcc = Get-Command nvcc -ErrorAction Stop
           & $nvcc.Source --version
       - name: Configure CUDA runtime pack
-        run: cmake -S native/llm-runtime -B .cmake-build/llm-cuda -A x64 -DLLW_BACKEND_PACK=CUDA
+        run: cmake -S native/llm-runtime -B .cmake-build/llm-cuda -G "Visual Studio 17 2022" -A x64 -T v143 -DLLW_BACKEND_PACK=CUDA
       - name: Compile CUDA runtime pack
         run: cmake --build .cmake-build/llm-cuda --config Release
       - name: Stage and verify CUDA runtime pack

@@ -12,6 +12,10 @@ jobs:
   windows-contract:
     runs-on: windows-2025
     timeout-minutes: 30
+    env:
+      CMAKE_GENERATOR: Visual Studio 17 2022
+      CMAKE_GENERATOR_PLATFORM: x64
+      CMAKE_GENERATOR_TOOLSET: v143
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
