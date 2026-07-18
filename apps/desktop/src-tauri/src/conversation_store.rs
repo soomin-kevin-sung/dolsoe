@@ -189,6 +189,76 @@ impl ConversationStore {
         })
     }
 
+    pub fn create_conversation(&self) -> StoreResult<ConversationDetail> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        let conversation = insert_empty_conversation(&transaction, now_millis()?)?;
+        let detail = load_conversation(&transaction, &conversation.id)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(detail)
+    }
+
+    pub fn load_conversation(&self, id: &str) -> StoreResult<ConversationDetail> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        let detail = load_conversation(&transaction, id)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(detail)
+    }
+
+    pub fn rename_conversation(&self, id: &str, title: &str) -> StoreResult<ConversationSummary> {
+        let title = normalize_title(title, 80)?;
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        conversation_summary(&transaction, id)?;
+        let timestamp = now_millis()?;
+        transaction
+            .execute(
+                "UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3",
+                params![title, timestamp, id],
+            )
+            .map_err(store_error)?;
+        let summary = conversation_summary(&transaction, id)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(summary)
+    }
+
+    pub fn clear_conversation(&self, id: &str) -> StoreResult<ConversationDetail> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        conversation_summary(&transaction, id)?;
+        let timestamp = now_millis()?;
+        transaction
+            .execute("DELETE FROM messages WHERE conversation_id = ?1", [id])
+            .map_err(store_error)?;
+        transaction
+            .execute(
+                "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+                params![timestamp, id],
+            )
+            .map_err(store_error)?;
+        let detail = load_conversation(&transaction, id)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(detail)
+    }
+
+    pub fn delete_conversation(&self, id: &str) -> StoreResult<ConversationDetail> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        conversation_summary(&transaction, id)?;
+        transaction
+            .execute("DELETE FROM conversations WHERE id = ?1", [id])
+            .map_err(store_error)?;
+        let mut conversations = list_conversations(&transaction)?;
+        if conversations.is_empty() {
+            insert_empty_conversation(&transaction, now_millis()?)?;
+            conversations = list_conversations(&transaction)?;
+        }
+        let fallback = load_conversation(&transaction, &conversations[0].id)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(fallback)
+    }
+
     pub fn start_turn(&self, conversation_id: &str, prompt: &str) -> StoreResult<StartedTurn> {
         let prompt = prompt.trim();
         if prompt.is_empty() {
@@ -237,6 +307,64 @@ impl ConversationStore {
             user,
             assistant,
         })
+    }
+
+    pub fn finish_turn(
+        &self,
+        assistant_id: &str,
+        content: &str,
+        status: MessageStatus,
+    ) -> StoreResult<bool> {
+        if !matches!(
+            status,
+            MessageStatus::Complete
+                | MessageStatus::Cancelled
+                | MessageStatus::Interrupted
+                | MessageStatus::Error
+        ) {
+            return Err("assistant message must be finalized with a terminal status".into());
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        let current = transaction
+            .query_row(
+                "SELECT conversation_id, role, status FROM messages WHERE id = ?1",
+                [assistant_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(store_error)?
+            .ok_or_else(|| "assistant message was not found".to_string())?;
+        if current.1 != MessageRole::Assistant.as_str() {
+            return Err("only assistant messages can be finalized".into());
+        }
+        if current.2 != MessageStatus::Streaming.as_str() {
+            transaction.commit().map_err(store_error)?;
+            return Ok(false);
+        }
+        let timestamp = now_millis()?;
+        let updated = transaction
+            .execute(
+                "UPDATE messages SET content = ?1, status = ?2, updated_at = ?3 WHERE id = ?4 AND role = 'assistant' AND status = 'streaming'",
+                params![content, status.as_str(), timestamp, assistant_id],
+            )
+            .map_err(store_error)?;
+        if updated == 1 {
+            transaction
+                .execute(
+                    "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+                    params![timestamp, current.0],
+                )
+                .map_err(store_error)?;
+        }
+        transaction.commit().map_err(store_error)?;
+        Ok(updated == 1)
     }
 
     #[cfg(test)]
@@ -431,6 +559,19 @@ fn automatic_title(prompt: &str) -> String {
         .collect()
 }
 
+fn normalize_title(title: &str, max_chars: usize) -> StoreResult<String> {
+    let normalized = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return Err("conversation title must not be empty".into());
+    }
+    if normalized.chars().count() > max_chars {
+        return Err(format!(
+            "conversation title must not exceed {max_chars} characters"
+        ));
+    }
+    Ok(normalized)
+}
+
 fn now_millis() -> StoreResult<i64> {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -476,5 +617,72 @@ mod tests {
         store.bootstrap().unwrap();
 
         assert_eq!(store.migration_count().unwrap(), 1);
+    }
+
+    #[test]
+    fn conversation_crud_and_turn_lifecycle_are_atomic() {
+        let store = ConversationStore::open_in_memory().unwrap();
+        let initial = store.bootstrap().unwrap().selected;
+        let created = store.create_conversation().unwrap();
+
+        let renamed = store
+            .rename_conversation(&created.id, "  renamed   chat ")
+            .unwrap();
+        assert_eq!(renamed.title, "renamed chat");
+
+        let turn = store
+            .start_turn(&created.id, "  한국어   첫 질문  ")
+            .unwrap();
+        assert_eq!(turn.conversation.title, "한국어 첫 질문");
+        assert!(store
+            .finish_turn(&turn.assistant.id, "answer", MessageStatus::Complete)
+            .unwrap());
+        assert!(!store
+            .finish_turn(&turn.assistant.id, "duplicate", MessageStatus::Complete)
+            .unwrap());
+
+        let cleared = store.clear_conversation(&created.id).unwrap();
+        assert!(cleared.messages.is_empty());
+        let fallback = store.delete_conversation(&created.id).unwrap();
+        assert_eq!(fallback.id, initial.id);
+    }
+
+    #[test]
+    fn deleting_last_conversation_creates_a_fallback() {
+        let store = ConversationStore::open_in_memory().unwrap();
+        let only = store.bootstrap().unwrap().selected;
+
+        let fallback = store.delete_conversation(&only.id).unwrap();
+
+        assert_ne!(fallback.id, only.id);
+        assert!(fallback.messages.is_empty());
+    }
+
+    #[test]
+    fn titles_are_unicode_safe_and_validated() {
+        let store = ConversationStore::open_in_memory().unwrap();
+        let conversation = store.bootstrap().unwrap().selected;
+        let prompt = "한".repeat(45);
+
+        let turn = store.start_turn(&conversation.id, &prompt).unwrap();
+
+        assert_eq!(turn.conversation.title.chars().count(), 40);
+        assert!(store
+            .rename_conversation(&conversation.id, &"가".repeat(81))
+            .is_err());
+        assert!(store.rename_conversation(&conversation.id, "  ").is_err());
+    }
+
+    #[test]
+    fn lifecycle_rejects_unknown_ids_and_non_terminal_status() {
+        let store = ConversationStore::open_in_memory().unwrap();
+        store.bootstrap().unwrap();
+
+        assert!(store.load_conversation("missing").is_err());
+        assert!(store.clear_conversation("missing").is_err());
+        assert!(store.delete_conversation("missing").is_err());
+        assert!(store
+            .finish_turn("missing", "content", MessageStatus::Streaming)
+            .is_err());
     }
 }
