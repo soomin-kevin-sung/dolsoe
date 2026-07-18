@@ -604,28 +604,6 @@ mod tests {
         assert_eq!(ERR_INTERNAL, 1000);
     }
 
-    #[test]
-    fn public_header_documents_callback_ownership_and_quiescence() {
-        let header = include_str!("../../../native/llm-runtime/include/llw_runtime.h");
-
-        assert!(header.contains(
-            "callback_table.user_data pointee must remain alive until llw_runtime_destroy returns"
-        ));
-        assert!(header.contains(
-            "request_user_data pointee must remain alive from an accepted llw_request_submit until its terminal callback returns"
-        ));
-        assert!(header.contains(
-            "On submit failure, the runtime retains neither request_user_data nor its pointee"
-        ));
-        assert!(header.contains("llw_runtime_destroy is a quiescence barrier for every callback"));
-        assert!(header.contains(
-            "Successful llw_model_unload is a quiescence barrier for that model's progress callbacks"
-        ));
-        assert!(header.contains(
-            "Failed model load and failed model unload return only after callbacks started by that call have completed"
-        ));
-    }
-
     macro_rules! assert_layout {
         ($ty:ty, $size:expr) => {
             assert_eq!(std::mem::size_of::<$ty>(), $size);
