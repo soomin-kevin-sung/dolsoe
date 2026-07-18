@@ -62,7 +62,11 @@ add_test(NAME llw_abi_layout_test COMMAND llw_abi_layout_test)
 set_tests_properties(llw_abi_layout_test PROPERTIES TIMEOUT 30)
 
 find_package(Threads REQUIRED)
-add_executable(llw_scheduler_test tests/scheduler_test.cpp src/event_dispatcher.cpp)
+add_executable(llw_scheduler_test
+  tests/scheduler_test.cpp
+  src/event_dispatcher.cpp
+  src/scheduler.cpp
+)
 target_include_directories(llw_scheduler_test PRIVATE include src tests)
 target_compile_definitions(llw_scheduler_test PRIVATE LLW_RUNTIME_TESTING)
 target_link_libraries(llw_scheduler_test PRIVATE Threads::Threads)
