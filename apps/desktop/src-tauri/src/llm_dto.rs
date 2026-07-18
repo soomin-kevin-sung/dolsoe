@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use llm_runtime::{EventKind, RuntimeEvent};
+
 #[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum LlmPhase {
@@ -85,6 +87,84 @@ pub struct LlmEventDto {
     pub bytes: Vec<u8>,
     pub error_code: i32,
     pub metrics: Option<LlmMetricsDto>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeMetricsPayload {
+    prompt_tokens: u64,
+    generated_tokens: u64,
+    queue_wait_nanoseconds: u64,
+    decode_nanoseconds: u64,
+    #[serde(default)]
+    cancelled_requests: u64,
+    #[serde(default)]
+    failed_requests: u64,
+}
+
+impl LlmMetricsDto {
+    pub fn from_counts(
+        prompt_tokens: u64,
+        generated_tokens: u64,
+        cancelled_requests: u64,
+        failed_requests: u64,
+        queue_wait_nanoseconds: u64,
+        decode_nanoseconds: u64,
+    ) -> Self {
+        let tokens_per_second = if decode_nanoseconds == 0 {
+            0.0
+        } else {
+            generated_tokens as f64 / (decode_nanoseconds as f64 / 1_000_000_000.0)
+        };
+        Self {
+            prompt_tokens: prompt_tokens.to_string(),
+            generated_tokens: generated_tokens.to_string(),
+            cancelled_requests: cancelled_requests.to_string(),
+            failed_requests: failed_requests.to_string(),
+            queue_wait_nanoseconds: queue_wait_nanoseconds.to_string(),
+            decode_nanoseconds: decode_nanoseconds.to_string(),
+            tokens_per_second,
+        }
+    }
+}
+
+impl LlmEventDto {
+    pub fn from_runtime_event(event: RuntimeEvent) -> Option<Self> {
+        let kind = match event.kind {
+            EventKind::ModelProgress => LlmEventKind::ModelProgress,
+            EventKind::Queued => LlmEventKind::Queued,
+            EventKind::Token => LlmEventKind::Token,
+            EventKind::Metrics => LlmEventKind::Metrics,
+            EventKind::Done => LlmEventKind::Done,
+            EventKind::Cancelled => LlmEventKind::Cancelled,
+            EventKind::Error => LlmEventKind::Error,
+            EventKind::Log => return None,
+        };
+        let metrics = if event.kind == EventKind::Metrics {
+            serde_json::from_slice::<RuntimeMetricsPayload>(&event.payload)
+                .ok()
+                .map(|value| {
+                    LlmMetricsDto::from_counts(
+                        value.prompt_tokens,
+                        value.generated_tokens,
+                        value.cancelled_requests,
+                        value.failed_requests,
+                        value.queue_wait_nanoseconds,
+                        value.decode_nanoseconds,
+                    )
+                })
+        } else {
+            None
+        };
+        Some(Self {
+            kind,
+            request_handle: (event.request_handle != 0).then(|| event.request_handle.to_string()),
+            sequence_number: event.sequence_number.to_string(),
+            bytes: event.payload,
+            error_code: event.error_code,
+            metrics,
+        })
+    }
 }
 
 #[cfg(test)]
