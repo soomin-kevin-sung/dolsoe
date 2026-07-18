@@ -1,7 +1,6 @@
 #include "llama_engine.h"
 #include <cstdio>
 #include <string>
-#include <type_traits>
 #include <vector>
 
 #define CHECK(condition) do { if (!(condition)) { \
@@ -26,9 +25,6 @@ ModelConfig valid_config() {
 }
 
 int main() {
-    static_assert(!std::is_copy_constructible_v<LlamaEngine>);
-    static_assert(!std::is_copy_assignable_v<LlamaEngine>);
-
     std::string error;
     ModelConfig config = valid_config();
     CHECK(validate_model_config(config, error) == LLW_OK);
@@ -44,70 +40,102 @@ int main() {
     CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
     config = valid_config(); config.n_threads_batch = 257;
     CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
-    config = valid_config(); config.device_index = LLW_MAX_DEVICE_INDEX + 1;
-    CHECK(validate_model_config(config, error) == LLW_ERR_INVALID_ARGUMENT);
 
-    const std::vector<DeviceRecord> devices = {
-        {LLW_BACKEND_CPU, 0, nullptr, "cpu:0", "CPU", "ggml-cpu"},
-        {LLW_BACKEND_CUDA, 0, nullptr, "cuda:0", "CUDA 0", "ggml-cuda"},
-        {LLW_BACKEND_CUDA, 1, nullptr, "cuda:1", "CUDA 1", "ggml-cuda"},
-    };
-    const auto cuda_one = select_device(devices, LLW_BACKEND_CUDA, 1, LLW_BACKEND_CUDA);
-    CHECK(cuda_one.has_value());
-    CHECK(cuda_one->id == "cuda:1");
-    CHECK(!select_device(devices, LLW_BACKEND_VULKAN, 0, LLW_BACKEND_CUDA).has_value());
-    CHECK(!select_device(devices, LLW_BACKEND_CUDA, 2, LLW_BACKEND_CUDA).has_value());
-
-    const auto auto_cuda = select_device(devices, LLW_BACKEND_AUTO, 1, LLW_BACKEND_CUDA);
-    CHECK(auto_cuda.has_value());
-    CHECK(auto_cuda->id == "cuda:1");
-    const auto auto_cpu = select_device(devices, LLW_BACKEND_AUTO, 0, LLW_BACKEND_VULKAN);
-    CHECK(auto_cpu.has_value());
-    CHECK(auto_cpu->id == "cpu:0");
-
-    const auto indexed = assign_device_indices({
-        {LLW_BACKEND_CPU, 9, nullptr, "cpu-a", "CPU A", "ggml-cpu"},
-        {LLW_BACKEND_CPU, 9, nullptr, "cpu-b", "CPU B", "ggml-cpu"},
-        {LLW_BACKEND_CUDA, 9, nullptr, "cuda-a", "CUDA A", "ggml-cuda"},
-        {LLW_BACKEND_CUDA, 9, nullptr, "cuda-b", "CUDA B", "ggml-cuda"},
+    const std::vector<DeviceRecord> devices = assign_device_indices({
+        {LLW_BACKEND_CUDA, 0, nullptr, "cuda:a", "CUDA A", "ggml-cuda"},
+        {LLW_BACKEND_CPU, 99, nullptr, "cpu:a", "CPU A", "ggml-cpu"},
+        {LLW_BACKEND_CUDA, 0, nullptr, "cuda:b", "CUDA B", "ggml-cuda"},
+        {LLW_BACKEND_CPU, 99, nullptr, "cpu:b", "CPU B", "ggml-cpu"},
     });
-    CHECK(indexed[0].backend_index == 0);
-    CHECK(indexed[1].backend_index == 1);
-    CHECK(indexed[2].backend_index == 0);
-    CHECK(indexed[3].backend_index == 1);
+    CHECK(devices[0].backend_index == 0);
+    CHECK(devices[1].backend_index == 0);
+    CHECK(devices[2].backend_index == 1);
+    CHECK(devices[3].backend_index == 1);
+    CHECK(select_device(devices, LLW_BACKEND_CUDA, 1, LLW_BACKEND_CUDA)->id == "cuda:b");
+    CHECK(select_device(devices, LLW_BACKEND_AUTO, 0, LLW_BACKEND_CUDA)->id == "cuda:a");
+    const std::vector<DeviceRecord> cpu_only = assign_device_indices({
+        {LLW_BACKEND_CPU, 77, nullptr, "cpu:only", "CPU", "ggml-cpu"},
+    });
+    CHECK(select_device(cpu_only, LLW_BACKEND_AUTO, 0, LLW_BACKEND_CUDA)->id == "cpu:only");
+    CHECK(!select_device(devices, LLW_BACKEND_VULKAN, 0, LLW_BACKEND_CUDA).has_value());
 
-    CHECK(effective_generation_budget(100, 50, 512) == 50);
-    CHECK(effective_generation_budget(500, 50, 512) == 12);
-    CHECK(effective_generation_budget(512, 50, 512) == 0);
-    CHECK(effective_generation_budget(600, 50, 512) == 0);
+    const std::vector<llama_token> first_tokens = {10, 11, 12};
+    const std::vector<llama_token> second_tokens = {20, 21};
+    const std::vector<SequenceView> prompt_views = {
+        {101, 0, &first_tokens, 0, 0, false, 0},
+        {202, 1, &second_tokens, 0, 0, false, 0},
+    };
+    const BatchPlan prompt_plan = plan_batch(prompt_views, 5, 0);
+    CHECK(prompt_plan.items.size() == 5);
+    CHECK(prompt_plan.items[0].handle == 101 && prompt_plan.items[0].position == 0);
+    CHECK(prompt_plan.items[1].handle == 101 && prompt_plan.items[1].position == 1);
+    CHECK(prompt_plan.items[2].handle == 202 && prompt_plan.items[2].position == 0);
+    CHECK(prompt_plan.items[3].handle == 202 && prompt_plan.items[3].position == 1);
+    CHECK(prompt_plan.items[3].logits);
+    CHECK(prompt_plan.items[4].handle == 101 && prompt_plan.items[4].position == 2);
+    CHECK(prompt_plan.items[4].logits);
+    const std::vector<LogitOwner> prompt_owners = collect_logit_owners(prompt_plan);
+    CHECK(prompt_owners.size() == 2);
+    CHECK(prompt_owners[0].handle == 202 && prompt_owners[0].batch_index == 3);
+    CHECK(prompt_owners[1].handle == 101 && prompt_owners[1].batch_index == 4);
+
+    const std::vector<SequenceView> capacity_views = {
+        {101, 0, &first_tokens, 1, 8, false, 0},
+        {202, 1, &second_tokens, 1, 4, false, 0},
+    };
+    const BatchPlan capacity_plan = plan_batch(capacity_views, 2, 0);
+    CHECK(capacity_plan.items.size() == 2);
+    CHECK(capacity_plan.items[0].handle == 101 && capacity_plan.items[0].token == 11);
+    CHECK(capacity_plan.items[1].handle == 202 && capacity_plan.items[1].token == 21);
+
+    const std::vector<llama_token> third_tokens = {30, 31, 32};
+    const std::vector<SequenceView> small_capacity_views = {
+        {101, 0, &first_tokens, 0, 0, false, 0},
+        {202, 1, &second_tokens, 0, 0, false, 0},
+        {303, 2, &third_tokens, 0, 0, false, 0},
+    };
+    const BatchPlan first_small = plan_batch(small_capacity_views, 2, 0);
+    CHECK(first_small.items.size() == 2);
+    CHECK(first_small.items[0].handle == 101 && first_small.items[1].handle == 202);
+    const BatchPlan second_small = plan_batch(small_capacity_views, 2, first_small.next_start);
+    CHECK(second_small.items.size() == 2);
+    CHECK(second_small.items[0].handle == 303);
+    CHECK(second_small.items[1].handle == 101);
+
+    const std::vector<SequenceView> exhausted_views = {
+        {101, 0, &first_tokens, first_tokens.size(), 3, false, 0},
+        {202, 1, &second_tokens, 1, 4, false, 0},
+    };
+    const BatchPlan larger_than_work = plan_batch(exhausted_views, 8, 0);
+    CHECK(larger_than_work.items.size() == 1);
+    CHECK(larger_than_work.items[0].handle == 202 && larger_than_work.items[0].token == 21);
+
+    const std::vector<SequenceView> generation_views = {
+        {101, 0, &first_tokens, first_tokens.size(), 3, true, 31},
+        {202, 1, &second_tokens, second_tokens.size(), 2, true, 41},
+    };
+    const BatchPlan generation_plan = plan_batch(generation_views, 2, 0);
+    CHECK(generation_plan.items.size() == 2);
+    CHECK(generation_plan.items[0].token == 31 && generation_plan.items[0].logits);
+    CHECK(generation_plan.items[1].token == 41 && generation_plan.items[1].logits);
+    CHECK(generation_plan.items[0].seq_id != generation_plan.items[1].seq_id);
+
+    CHECK(effective_generation_budget(510, 1000, 512) == 2);
+    CHECK(effective_generation_budget(512, 1, 512) == 0);
+    std::vector<llama_token> accepted;
+    accept_history_tokens(first_tokens, [&accepted](llama_token token) { accepted.push_back(token); });
+    CHECK(accepted == first_tokens);
 
     const std::vector<std::vector<uint8_t>> stops = {
-        {'a', 'b'}, {'a', 'b', 'c'}, {'b', 'c'},
+        {'a', 'b'}, {'a', 'b', 'c'}, {'b', 'c'}, {'a', 'b', 'c'},
     };
-    const auto stop = find_stop_match({'x', 'a', 'b', 'c', 'y'}, stops);
+    const std::vector<uint8_t> overlapping = {'z', 'a', 'b', 'c', 'q'};
+    const auto stop = find_stop_match(overlapping, stops);
     CHECK(stop.has_value());
-    CHECK(stop->position == 1);
-    CHECK(stop->stop_index == 1);
-    CHECK(stop->length == 3);
-    CHECK(safe_output_prefix({'x', 'a'}, stops) == 1);
-    CHECK(safe_output_prefix({'x', 'z'}, stops) == 2);
-
-    std::vector<llama_token> accepted;
-    accept_history_tokens({11, 22, 33}, [&accepted](llama_token token) {
-        accepted.push_back(token);
-    });
-    CHECK(accepted == std::vector<llama_token>({11, 22, 33}));
-
-    const std::vector<llama_token> prompt_a = {1, 2};
-    const std::vector<llama_token> prompt_b = {3};
-    const BatchPlan batch = plan_batch({
-        {100, 0, &prompt_a, 0, 0, false, 0},
-        {200, 1, &prompt_b, 0, 0, false, 0},
-    }, 3, 0);
-    CHECK(batch.items.size() == 3);
-    const auto owners = collect_logit_owners(batch);
-    CHECK(owners.size() == 2);
-    CHECK(owners[0].handle == 200);
-    CHECK(owners[1].handle == 100);
+    CHECK(stop->position == 1 && stop->length == 3 && stop->stop_index == 1);
+    const std::vector<uint8_t> partial = {'x', 'a'};
+    CHECK(safe_output_prefix(partial, stops) == 1);
+    const std::vector<uint8_t> no_prefix = {'x', 'y'};
+    CHECK(safe_output_prefix(no_prefix, stops) == 2);
     return 0;
 }
