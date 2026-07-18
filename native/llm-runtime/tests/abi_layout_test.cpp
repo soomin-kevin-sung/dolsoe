@@ -1,11 +1,17 @@
 #include "llw_runtime.h"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <future>
+#include <mutex>
+#include <string>
 #include <type_traits>
+#include <vector>
 
 #define LLW_ASSERT_LAYOUT(type, expected_size) \
     static_assert(sizeof(type) == expected_size); \
@@ -22,6 +28,203 @@
             return 1; \
         } \
     } while (false)
+
+int test_v11_exports() {
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 2;
+    create.scheduler.request_queue_capacity = 2;
+    create.scheduler.event_queue_capacity = 32;
+    llw_runtime_t* runtime{};
+    CHECK(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
+    CHECK(runtime != nullptr);
+
+    llw_buffer_t schema{};
+    schema.struct_size = sizeof(schema);
+    CHECK(llw_runtime_get_option_schema(runtime, &schema, &error) == LLW_ERR_BUFFER_TOO_SMALL);
+    CHECK(schema.len > 0);
+    std::vector<uint8_t> schema_bytes(static_cast<size_t>(schema.len));
+    schema.data = schema_bytes.data();
+    schema.capacity = schema_bytes.size();
+    CHECK(llw_runtime_get_option_schema(runtime, &schema, &error) == LLW_OK);
+    const std::string schema_text(schema_bytes.begin(), schema_bytes.end());
+    CHECK(schema_text.find("\"eventQueueCapacity\"") != std::string::npos);
+    CHECK(schema_text.find("\"nThreadsBatch\"") != std::string::npos);
+    CHECK(schema_text.find("\"maxTotalBytes\":2048") != std::string::npos);
+
+    llw_request_params_t request{};
+    request.struct_size = sizeof(request);
+    request.model_handle = 1;
+    const uint8_t prompt[] = {'x'};
+    request.prompt = prompt;
+    request.prompt_len = sizeof(prompt);
+    request.max_new_tokens = 1;
+    request.temperature = 0;
+    request.top_p = 1;
+    request.repeat_penalty = 1;
+    llw_handle_t request_handle{99};
+    CHECK(llw_request_submit(runtime, &request, &request_handle, &error) == LLW_ERR_INVALID_STATE);
+    CHECK(request_handle == 0);
+    CHECK(llw_model_unload(runtime, 1, &error) == LLW_ERR_NOT_FOUND);
+
+    const std::string missing_model = "llw-test-bad-alloc.gguf";
+    llw_model_load_params_t failing_model{};
+    failing_model.struct_size = sizeof(failing_model);
+    failing_model.path_utf8 = reinterpret_cast<const uint8_t*>(missing_model.data());
+    failing_model.path_len = missing_model.size();
+    failing_model.backend = LLW_BACKEND_CPU;
+    failing_model.context_tokens_per_slot = 512;
+    failing_model.logical_batch_tokens = 64;
+    failing_model.physical_batch_tokens = 64;
+    failing_model.n_threads = 1;
+    failing_model.n_threads_batch = 1;
+    failing_model.use_mmap = 1;
+    llw_handle_t failed_model{};
+    CHECK(llw_model_load(runtime, &failing_model, &failed_model, &error) != LLW_OK);
+    CHECK(failed_model == 0);
+    const llw_result_t retry = llw_model_load(runtime, &failing_model, &failed_model, &error);
+    CHECK(retry != LLW_ERR_BUSY);
+    CHECK(retry != LLW_OK);
+
+    llw_scheduler_config_t undersized{};
+    undersized.struct_size = sizeof(undersized) - 1;
+    create.scheduler = undersized;
+    llw_runtime_t* rejected{};
+    CHECK(llw_runtime_create(&create, &rejected, &error) == LLW_ERR_INVALID_ARGUMENT);
+    CHECK(rejected == nullptr);
+    llw_runtime_destroy(runtime);
+    llw_runtime_destroy(nullptr);
+    return 0;
+}
+
+int test_v11_reserved_validation() {
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    llw_abi_query_t query{};
+    query.struct_size = sizeof(query);
+    query.requested_major = LLW_ABI_MAJOR;
+    llw_abi_info_t info{};
+    info.struct_size = sizeof(info);
+    query.flags = 1;
+    CHECK(llw_get_abi_info(&query, &info, &error) == LLW_ERR_INVALID_ARGUMENT);
+    query.flags = 0;
+    query.reserved[0] = 1;
+    CHECK(llw_get_abi_info(&query, &info, &error) == LLW_ERR_INVALID_ARGUMENT);
+    query.reserved[0] = 0;
+    info.flags = 1;
+    CHECK(llw_get_abi_info(&query, &info, &error) == LLW_ERR_INVALID_ARGUMENT);
+
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 1;
+    create.scheduler.request_queue_capacity = 1;
+    create.scheduler.event_queue_capacity = 16;
+    llw_runtime_t* runtime{};
+    CHECK(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
+
+    llw_capabilities_t capabilities{};
+    capabilities.struct_size = sizeof(capabilities);
+    capabilities.reserved[0] = 1;
+    CHECK(llw_runtime_get_capabilities(runtime, &capabilities, &error) ==
+          LLW_ERR_INVALID_ARGUMENT);
+
+    llw_device_list_t devices{};
+    devices.struct_size = sizeof(devices);
+    devices.reserved0 = 1;
+    CHECK(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) ==
+          LLW_ERR_INVALID_ARGUMENT);
+
+    llw_buffer_t schema{};
+    schema.struct_size = sizeof(schema);
+    schema.reserved[0] = 1;
+    CHECK(llw_runtime_get_option_schema(runtime, &schema, &error) ==
+          LLW_ERR_INVALID_ARGUMENT);
+
+    llw_scheduler_snapshot_t snapshot{};
+    snapshot.struct_size = sizeof(snapshot);
+    snapshot.flags = 1;
+    CHECK(llw_get_scheduler_snapshot(runtime, &snapshot, &error) == LLW_ERR_INVALID_ARGUMENT);
+
+    llw_metrics_t metrics{};
+    metrics.struct_size = sizeof(metrics);
+    metrics.reserved[0] = 1;
+    CHECK(llw_get_metrics(runtime, &metrics, &error) == LLW_ERR_INVALID_ARGUMENT);
+
+    llw_runtime_destroy(runtime);
+    return 0;
+}
+
+struct BlockingProgressCallback {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered{};
+    bool released{};
+};
+
+void LLW_CALL block_model_progress(const llw_event_t* event, void* user_data) {
+    if (event->event_type != LLW_EVENT_MODEL_PROGRESS) return;
+    auto& callback = *static_cast<BlockingProgressCallback*>(user_data);
+    std::unique_lock lock(callback.mutex);
+    callback.entered = true;
+    callback.changed.notify_all();
+    callback.changed.wait(lock, [&callback] { return callback.released; });
+}
+
+int test_failed_load_callback_quiescence() {
+    using namespace std::chrono_literals;
+    BlockingProgressCallback callback;
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.callbacks.on_event = block_model_progress;
+    create.callbacks.user_data = &callback;
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 1;
+    create.scheduler.request_queue_capacity = 1;
+    create.scheduler.event_queue_capacity = 16;
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    llw_runtime_t* runtime{};
+    CHECK(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
+
+    const std::string path = "llw-test-progress-then-bad-alloc.gguf";
+    llw_model_load_params_t model{};
+    model.struct_size = sizeof(model);
+    model.path_utf8 = reinterpret_cast<const uint8_t*>(path.data());
+    model.path_len = path.size();
+    model.backend = LLW_BACKEND_CPU;
+    model.context_tokens_per_slot = 512;
+    model.logical_batch_tokens = 64;
+    model.physical_batch_tokens = 64;
+    model.n_threads = 1;
+    model.n_threads_batch = 1;
+    model.use_mmap = 1;
+    llw_handle_t handle{99};
+    auto load = std::async(std::launch::async, [&] {
+        return llw_model_load(runtime, &model, &handle, &error);
+    });
+    {
+        std::unique_lock lock(callback.mutex);
+        CHECK(callback.changed.wait_for(lock, 5s, [&callback] { return callback.entered; }));
+    }
+    const bool returned_early = load.wait_for(50ms) == std::future_status::ready;
+    {
+        std::lock_guard lock(callback.mutex);
+        callback.released = true;
+    }
+    callback.changed.notify_all();
+    CHECK(load.get() == LLW_ERR_INTERNAL);
+    CHECK(!returned_early);
+    CHECK(handle == 0);
+    llw_runtime_destroy(runtime);
+    return 0;
+}
 
 int main() {
     static_assert(sizeof(void*) == 8);
@@ -176,8 +379,8 @@ int main() {
         error.struct_size = sizeof(error);
     };
 
-    CHECK(std::strcmp(llw_runtime_version(), "0.1.0-fake") == 0);
-    CHECK(std::strcmp(llw_llama_cpp_commit(), "not-linked") == 0);
+    CHECK(std::strcmp(llw_runtime_version(), "0.2.0") == 0);
+    CHECK(std::strcmp(llw_llama_cpp_commit(), "6bdd77f13cf11b264b4231d320afc404f48d576e") == 0);
     CHECK(llw_get_abi_info(&query, &info, &error) == LLW_OK);
     CHECK(info.abi_major == LLW_ABI_MAJOR);
     CHECK(info.abi_minor == LLW_ABI_MINOR);
@@ -211,6 +414,11 @@ int main() {
 
     llw_runtime_create_params_t create{};
     create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 1;
+    create.scheduler.request_queue_capacity = 16;
+    create.scheduler.event_queue_capacity = 32;
     llw_runtime_t* runtime = reinterpret_cast<llw_runtime_t*>(std::uintptr_t{1u});
 
     reset_error();
@@ -227,7 +435,6 @@ int main() {
     reset_error();
     CHECK(llw_runtime_create(&create, nullptr, &error) == LLW_ERR_INVALID_ARGUMENT);
 
-    // Callback copying is not externally observable through the current opaque seven-export ABI.
     reset_error();
     CHECK(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
     CHECK(runtime != nullptr);
@@ -236,6 +443,8 @@ int main() {
     capabilities.struct_size = sizeof(capabilities);
     CHECK(llw_runtime_get_capabilities(runtime, &capabilities, &error) == LLW_OK);
     CHECK(capabilities.supports_cpu == 1u);
+    CHECK(capabilities.supports_streaming == 1u);
+    CHECK(capabilities.supports_cancellation == 1u);
     CHECK(capabilities.max_parallel_slots == 4u);
 
     reset_error();
@@ -253,12 +462,12 @@ int main() {
     CHECK(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) ==
           LLW_ERR_BUFFER_TOO_SMALL);
     CHECK(devices.count == 0u);
-    CHECK(devices.required_count == 1u);
+    CHECK(devices.required_count >= 1u);
 
-    llw_device_info_t storage[1]{};
-    storage[0].struct_size = sizeof(llw_device_info_t);
-    devices.capacity = 1u;
-    devices.devices = storage;
+    std::vector<llw_device_info_t> storage(static_cast<size_t>(devices.required_count));
+    for (auto& device : storage) device.struct_size = sizeof(device);
+    devices.capacity = static_cast<uint32_t>(storage.size());
+    devices.devices = storage.data();
     devices.element_size = sizeof(llw_device_info_t) - 1u;
     reset_error();
     CHECK(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) ==
@@ -270,6 +479,7 @@ int main() {
     undersized_device.struct_size = sizeof(std::uint32_t);
     llw_device_info_t original_undersized_device{};
     std::memcpy(&original_undersized_device, &undersized_device, sizeof(undersized_device));
+    devices.capacity = 1u;
     devices.devices = &undersized_device;
     devices.element_size = sizeof(llw_device_info_t);
     reset_error();
@@ -277,7 +487,7 @@ int main() {
           LLW_ERR_INVALID_ARGUMENT);
     CHECK(error.code == LLW_ERR_INVALID_ARGUMENT);
     CHECK(error.message[sizeof(error.message) - 1u] == '\0');
-    CHECK(std::strcmp(error.message, "device element struct_size is too small") == 0);
+    CHECK(std::strcmp(error.message, "device element is undersized") == 0);
     CHECK(std::memcmp(&undersized_device, &original_undersized_device, sizeof(undersized_device)) == 0);
     CHECK(devices.count == 0u);
 
@@ -290,15 +500,18 @@ int main() {
     CHECK(unsupported_devices.count == 0u);
     CHECK(unsupported_devices.required_count == 0u);
 
-    storage[0] = {};
-    storage[0].struct_size = sizeof(llw_device_info_t);
-    devices.devices = storage;
+    for (auto& device : storage) {
+        device = {};
+        device.struct_size = sizeof(device);
+    }
+    devices.capacity = static_cast<uint32_t>(storage.size());
+    devices.devices = storage.data();
     devices.element_size = sizeof(llw_device_info_t);
     reset_error();
     CHECK(llw_runtime_list_devices(runtime, LLW_BACKEND_CPU, &devices, &error) == LLW_OK);
-    CHECK(devices.count == 1u);
+    CHECK(devices.count >= 1u);
     CHECK(storage[0].backend == LLW_BACKEND_CPU);
-    CHECK(std::strcmp(storage[0].id, "cpu:0") == 0);
+    CHECK(storage[0].id[0] != '\0');
 
     std::uint8_t option_storage[1]{0xffu};
     llw_buffer_t option_schema{};
@@ -307,81 +520,53 @@ int main() {
     option_schema.capacity = sizeof(option_storage);
     option_schema.len = 1u;
     reset_error();
-    CHECK(llw_runtime_get_option_schema(runtime, &option_schema, &error) == LLW_ERR_UNSUPPORTED);
-    CHECK(option_schema.len == 0u);
-    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+    CHECK(llw_runtime_get_option_schema(runtime, &option_schema, &error) ==
+          LLW_ERR_BUFFER_TOO_SMALL);
+    CHECK(option_schema.len > option_schema.capacity);
+    CHECK(error.code == LLW_ERR_BUFFER_TOO_SMALL);
 
     llw_model_load_params_t load_params{};
     load_params.struct_size = sizeof(load_params);
     llw_handle_t model = 123u;
     reset_error();
-    CHECK(llw_model_load(runtime, &load_params, &model, &error) == LLW_ERR_UNSUPPORTED);
+    CHECK(llw_model_load(runtime, &load_params, &model, &error) == LLW_ERR_INVALID_ARGUMENT);
     CHECK(model == 0u);
-    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+    CHECK(error.code == LLW_ERR_INVALID_ARGUMENT);
 
     reset_error();
-    CHECK(llw_model_unload(runtime, 123u, &error) == LLW_ERR_UNSUPPORTED);
-    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+    CHECK(llw_model_unload(runtime, 123u, &error) == LLW_ERR_NOT_FOUND);
+    CHECK(error.code == LLW_ERR_NOT_FOUND);
 
     llw_request_params_t request_params{};
     request_params.struct_size = sizeof(request_params);
+    request_params.model_handle = 1;
+    const std::uint8_t prompt[] = {'x'};
+    request_params.prompt = prompt;
+    request_params.prompt_len = sizeof(prompt);
+    request_params.max_new_tokens = 1;
+    request_params.top_p = 1;
+    request_params.repeat_penalty = 1;
     llw_handle_t request = 456u;
     reset_error();
-    CHECK(llw_request_submit(runtime, &request_params, &request, &error) == LLW_ERR_UNSUPPORTED);
+    CHECK(llw_request_submit(runtime, &request_params, &request, &error) == LLW_ERR_INVALID_STATE);
     CHECK(request == 0u);
-    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+    CHECK(error.code == LLW_ERR_INVALID_STATE);
 
     reset_error();
-    CHECK(llw_request_cancel(runtime, 456u, &error) == LLW_ERR_UNSUPPORTED);
-    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+    CHECK(llw_request_cancel(runtime, 456u, &error) == LLW_ERR_INVALID_STATE);
+    CHECK(error.code == LLW_ERR_INVALID_STATE);
 
     llw_scheduler_snapshot_t snapshot{};
     snapshot.struct_size = sizeof(snapshot);
-    snapshot.flags = 1u;
-    snapshot.slot_count = 1u;
-    snapshot.active_count = 1u;
-    snapshot.queued_count = 1u;
-    snapshot.queue_capacity = 1u;
-    snapshot.accepted_requests = 1u;
-    snapshot.terminal_requests = 1u;
-    std::fill_n(snapshot.reserved, 8u, std::uint64_t{1u});
     reset_error();
-    CHECK(llw_get_scheduler_snapshot(runtime, &snapshot, &error) == LLW_ERR_UNSUPPORTED);
-    CHECK(snapshot.flags == 0u);
-    CHECK(snapshot.slot_count == 0u);
-    CHECK(snapshot.active_count == 0u);
-    CHECK(snapshot.queued_count == 0u);
-    CHECK(snapshot.queue_capacity == 0u);
-    CHECK(snapshot.accepted_requests == 0u);
-    CHECK(snapshot.terminal_requests == 0u);
-    CHECK(std::all_of(snapshot.reserved, snapshot.reserved + 8u,
-                      [](std::uint64_t value) { return value == 0u; }));
-    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+    CHECK(llw_get_scheduler_snapshot(runtime, &snapshot, &error) == LLW_ERR_INVALID_STATE);
+    CHECK(error.code == LLW_ERR_INVALID_STATE);
 
     llw_metrics_t metrics{};
     metrics.struct_size = sizeof(metrics);
-    metrics.flags = 1u;
-    metrics.prompt_tokens = 1u;
-    metrics.generated_tokens = 1u;
-    metrics.decode_calls = 1u;
-    metrics.cancelled_requests = 1u;
-    metrics.failed_requests = 1u;
-    metrics.queue_wait_ns = 1u;
-    metrics.decode_ns = 1u;
-    std::fill_n(metrics.reserved, 8u, std::uint64_t{1u});
     reset_error();
-    CHECK(llw_get_metrics(runtime, &metrics, &error) == LLW_ERR_UNSUPPORTED);
-    CHECK(metrics.flags == 0u);
-    CHECK(metrics.prompt_tokens == 0u);
-    CHECK(metrics.generated_tokens == 0u);
-    CHECK(metrics.decode_calls == 0u);
-    CHECK(metrics.cancelled_requests == 0u);
-    CHECK(metrics.failed_requests == 0u);
-    CHECK(metrics.queue_wait_ns == 0u);
-    CHECK(metrics.decode_ns == 0u);
-    CHECK(std::all_of(metrics.reserved, metrics.reserved + 8u,
-                      [](std::uint64_t value) { return value == 0u; }));
-    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+    CHECK(llw_get_metrics(runtime, &metrics, &error) == LLW_ERR_INVALID_STATE);
+    CHECK(error.code == LLW_ERR_INVALID_STATE);
 
     llw_runtime_destroy(runtime);
 
@@ -395,5 +580,8 @@ int main() {
     llw_runtime_destroy(legacy_runtime);
 
     llw_runtime_destroy(nullptr);
+    CHECK(test_v11_exports() == 0);
+    CHECK(test_v11_reserved_validation() == 0);
+    CHECK(test_failed_load_callback_quiescence() == 0);
     return 0;
 }

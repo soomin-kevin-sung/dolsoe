@@ -45,7 +45,12 @@ FetchContent_MakeAvailable(llama_cpp)
 
 enable_testing()
 
-add_library(local_llm_runtime SHARED src/fake_runtime.cpp)
+add_library(local_llm_runtime SHARED
+  src/event_dispatcher.cpp
+  src/llama_engine.cpp
+  src/runtime.cpp
+  src/scheduler.cpp
+)
 target_compile_definitions(local_llm_runtime PRIVATE
   LLW_RUNTIME_BUILD
   LLW_BACKEND_PACK_NAME="${LLW_BACKEND_PACK}"
@@ -53,13 +58,44 @@ target_compile_definitions(local_llm_runtime PRIVATE
   $<$<CONFIG:Debug>:LLW_RUNTIME_TESTING>
 )
 target_include_directories(local_llm_runtime PUBLIC include PRIVATE src)
-target_link_libraries(local_llm_runtime PRIVATE llama ggml)
+target_link_libraries(local_llm_runtime PRIVATE llama ggml Threads::Threads)
+
+set(LLW_RUNTIME_DEPENDENCY_TARGETS llama ggml ggml-base)
+foreach(backend_target IN ITEMS ggml-cpu ggml-cuda ggml-vulkan)
+  if(TARGET ${backend_target})
+    list(APPEND LLW_RUNTIME_DEPENDENCY_TARGETS ${backend_target})
+  endif()
+endforeach()
+foreach(dependency_target IN LISTS LLW_RUNTIME_DEPENDENCY_TARGETS)
+  add_custom_command(TARGET local_llm_runtime POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      $<TARGET_FILE:${dependency_target}>
+      $<TARGET_FILE_DIR:local_llm_runtime>
+  )
+endforeach()
+
+set(LLW_PACK_DESTINATION ".")
+install(TARGETS local_llm_runtime llama ggml ggml-base
+  RUNTIME DESTINATION "${LLW_PACK_DESTINATION}"
+  LIBRARY DESTINATION "${LLW_PACK_DESTINATION}"
+)
+foreach(backend_target IN ITEMS ggml-cpu ggml-cuda ggml-vulkan)
+  if(TARGET ${backend_target})
+    install(TARGETS ${backend_target}
+      RUNTIME DESTINATION "${LLW_PACK_DESTINATION}"
+      LIBRARY DESTINATION "${LLW_PACK_DESTINATION}"
+    )
+  endif()
+endforeach()
 
 add_executable(llw_abi_layout_test tests/abi_layout_test.cpp)
 target_include_directories(llw_abi_layout_test PRIVATE include)
 target_link_libraries(llw_abi_layout_test PRIVATE local_llm_runtime)
 add_test(NAME llw_abi_layout_test COMMAND llw_abi_layout_test)
-set_tests_properties(llw_abi_layout_test PROPERTIES TIMEOUT 30)
+set_tests_properties(llw_abi_layout_test PROPERTIES
+  TIMEOUT 30
+  ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:llama>"
+)
 
 find_package(Threads REQUIRED)
 add_executable(llw_scheduler_test
