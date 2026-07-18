@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   windows-contract:
-    runs-on: windows-latest
+    runs-on: windows-2025
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -20,7 +20,7 @@ jobs:
           components: rustfmt, clippy
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 24
+          node-version: 24.13.1
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
       - name: Install frontend dependencies
@@ -28,7 +28,7 @@ jobs:
       - name: Build frontend
         run: npm run build --prefix apps/desktop
       - name: Configure fake runtime
-        run: cmake -S native/llm-runtime -B .cmake-build/llm-runtime -A x64
+        run: cmake -S native/llm-runtime -B .cmake-build/llm-runtime -G "Visual Studio 17 2022" -A x64 -T v143
       - name: Build fake runtime
         run: cmake --build .cmake-build/llm-runtime --config Debug
       - name: Test native ABI
