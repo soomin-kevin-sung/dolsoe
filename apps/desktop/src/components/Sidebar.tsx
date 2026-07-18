@@ -1,11 +1,71 @@
-import { Activity, LoaderCircle, Search, SquarePen } from "lucide-react";
-import type { Ref } from "react";
+import { Activity, LoaderCircle, MoreHorizontal, Search, SquarePen } from "lucide-react";
+import { useState, type KeyboardEvent, type Ref } from "react";
 import type { Session } from "../services/runtime";
 import { IconButton } from "./IconButton";
 
-interface SidebarProps { sessions: Session[]; diagnosticsOpen: boolean; searchInputRef: Ref<HTMLInputElement>; onNew(): void; onDiagnostics(): void; onSelect(sessionId: string): void; }
+interface SidebarProps {
+  sessions: Session[];
+  diagnosticsOpen: boolean;
+  searchInputRef: Ref<HTMLInputElement>;
+  searchValue?: string;
+  onSearchChange?(value: string): void;
+  onNew(): void;
+  onDiagnostics(): void;
+  onSelect(sessionId: string): void;
+  onRename?(sessionId: string, title: string): void | Promise<void>;
+  onClear?(sessionId: string): void;
+  onDelete?(sessionId: string): void;
+}
 
-export function Sidebar({ sessions, diagnosticsOpen, searchInputRef, onNew, onDiagnostics, onSelect }: SidebarProps) {
+export function Sidebar({
+  sessions,
+  diagnosticsOpen,
+  searchInputRef,
+  searchValue,
+  onSearchChange,
+  onNew,
+  onDiagnostics,
+  onSelect,
+  onRename,
+  onClear,
+  onDelete,
+}: SidebarProps) {
+  const [localSearch, setLocalSearch] = useState("");
+  const [menuId, setMenuId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const query = (searchValue ?? localSearch).trim().toLocaleLowerCase();
+  const visible = query
+    ? sessions.filter((session) => session.title.toLocaleLowerCase().includes(query))
+    : sessions;
+
+  function changeSearch(value: string) {
+    setLocalSearch(value);
+    onSearchChange?.(value);
+  }
+
+  function beginRename(session: Session) {
+    setEditingId(session.id);
+    setDraftTitle(session.title);
+    setMenuId(null);
+  }
+
+  function commitRename(sessionId: string) {
+    const title = draftTitle.trim();
+    if (title) void onRename?.(sessionId, title);
+    setEditingId(null);
+  }
+
+  function renameKeyDown(event: KeyboardEvent<HTMLInputElement>, sessionId: string) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      commitRename(sessionId);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setEditingId(null);
+    }
+  }
+
   return (
     <nav className="sidebar" aria-label="대화 목록">
       <div className="sidebar-header">
@@ -15,18 +75,47 @@ export function Sidebar({ sessions, diagnosticsOpen, searchInputRef, onNew, onDi
       </div>
       <label className="search-wrap">
         <Search size={14} strokeWidth={2} aria-hidden="true" />
-        <input ref={searchInputRef} className="search-input" type="search" aria-label="대화 검색" placeholder="대화 검색" />
+        <input ref={searchInputRef} className="search-input" type="search" aria-label="대화 검색" placeholder="대화 검색" value={searchValue ?? localSearch} onChange={(event) => changeSearch(event.target.value)} />
       </label>
       <div className="session-list">
-        {sessions.map((session) => (
-          <button key={session.id} type="button" className={`session-item ${session.active ? "active" : ""}`} onClick={() => onSelect(session.id)}>
-            <div className="session-title">{session.title}</div>
-            <div className="session-meta">
-              {session.generating && <span className="generating"><LoaderCircle className="spin" size={14} />생성 중</span>}
-              {session.queued && <span className="queued">대기 중</span>}
-              <span>{session.meta}</span>
-            </div>
-          </button>
+        {visible.map((session) => (
+          <div className="session-row" key={session.id}>
+            <button type="button" className={`session-item ${session.active ? "active" : ""}`} onClick={() => onSelect(session.id)}>
+              {editingId === session.id ? (
+                <input
+                  autoFocus
+                  className="session-rename-input"
+                  aria-label="대화 이름"
+                  value={draftTitle}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => setDraftTitle(event.target.value)}
+                  onKeyDown={(event) => renameKeyDown(event, session.id)}
+                  onBlur={() => commitRename(session.id)}
+                />
+              ) : <div className="session-title">{session.title}</div>}
+              <div className="session-meta">
+                {session.generating && <span className="generating"><LoaderCircle className="spin" size={14} />생성 중</span>}
+                {session.queued && <span className="queued">대기 중</span>}
+                <span>{session.meta}</span>
+              </div>
+            </button>
+            <button
+              type="button"
+              className="session-menu-button"
+              aria-label={`${session.title} 대화 메뉴`}
+              aria-expanded={menuId === session.id}
+              onClick={() => setMenuId((current) => current === session.id ? null : session.id)}
+            >
+              <MoreHorizontal size={15} aria-hidden="true" />
+            </button>
+            {menuId === session.id && (
+              <div className="session-actions-menu" role="menu">
+                <button type="button" role="menuitem" onClick={() => beginRename(session)}>이름 변경</button>
+                <button type="button" role="menuitem" onClick={() => { setMenuId(null); onClear?.(session.id); }}>대화 초기화</button>
+                <button type="button" role="menuitem" className="danger" onClick={() => { setMenuId(null); onDelete?.(session.id); }}>삭제</button>
+              </div>
+            )}
+          </div>
         ))}
       </div>
       <div className="sidebar-footer">

@@ -177,7 +177,7 @@ test("keyboard conversation flow sends then stops generation", async ({ page }) 
 
 test("session selection returns from diagnostics", async ({ page }) => {
   await page.goto("/?state=diagnostics");
-  await page.getByRole("button", { name: /GGUF 양자화 비교/ }).click();
+  await page.locator(".session-item").filter({ hasText: "GGUF 양자화 비교" }).click();
   await expect(page.locator('[data-app-state="ready"]')).toBeVisible();
   await expect(page.getByRole("form", { name: "메시지 입력" })).toBeVisible();
 });
@@ -220,4 +220,24 @@ test("normal browser URL explains that the desktop app is required", async ({ pa
 
   await expect(page.getByRole("heading", { name: "데스크톱 앱에서 실행해야 합니다" })).toBeVisible();
   await expect(page.getByText("npm --prefix apps/desktop run tauri -- dev")).toBeVisible();
+});
+
+test("session search filters the persisted-style list", async ({ page }) => {
+  await page.goto("/?state=ready");
+  const search = page.getByRole("searchbox", { name: "대화 검색" });
+
+  await search.fill("CUDA");
+
+  await expect(page.locator(".session-item")).toHaveCount(1);
+  await expect(page.locator(".session-item")).toContainText("CUDA 오프로딩 설정 정리");
+});
+
+test("session actions expose rename clear and delete commands", async ({ page }) => {
+  await page.goto("/?state=ready");
+
+  await page.getByRole("button", { name: "GGUF 양자화 비교 대화 메뉴" }).click();
+
+  await expect(page.getByRole("menuitem", { name: "이름 변경" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "대화 초기화" })).toBeVisible();
+  await expect(page.getByRole("menuitem", { name: "삭제" })).toBeVisible();
 });
