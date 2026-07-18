@@ -703,8 +703,12 @@ git commit -m "feat: define scheduler ABI contract"
 
 Create `native/llm-runtime/tests/scheduler_test.cpp`. In addition to the ownership assertions below,
 use promise/future and condition-variable handshakes (never sleeps) to cover: immediate regular-event
-overflow while a callback blocks and the regular queue is full; terminal admission through the
-independent reserve with FIFO delivery; saturated and concurrent flush barriers; stop waking a flush
+overflow while a callback blocks and the regular queue is full; zero/duplicate/full reservation,
+acceptance rollback, and duplicate/unreserved terminal rejection; terminal admission through the
+independent reserve with FIFO delivery; request churn up to `LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS`
+while the first terminal callback is blocked; permit reuse only after callback return, including a
+throwing callback; saturated and concurrent flush barriers; stop draining published and reserved
+permits and waking a flush
 waiting for the control slot; a throwing C++ callback followed by a later event and successful flush;
 and callback-thread publish, rejected flush, and deferred stop join. Every async path must release its
 callback and join/get its thread or future before asserting so test failures cannot leak threads.
@@ -771,8 +775,10 @@ int main() {
     OwnedEvent second;
     second.type = LLW_EVENT_DONE;
     second.data_format = LLW_EVENT_DATA_JSON_UTF8;
+    second.request = 1;
     second.sequence = 42;
     second.data = {'{', '}'};
+    if (!dispatcher.reserve_terminal(second.request)) return 1;
     if (!dispatcher.publish(std::move(second))) return 1;
     dispatcher.drain_for_test();
     {
@@ -837,6 +843,7 @@ Create `native/llm-runtime/src/event_dispatcher.h`:
 #include <deque>
 #include <functional>
 #include <future>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -860,17 +867,22 @@ public:
     ~EventDispatcher();
     EventDispatcher(const EventDispatcher&) = delete;
     EventDispatcher& operator=(const EventDispatcher&) = delete;
+    // Reserve before accepting a native request; release only to roll back acceptance.
+    bool reserve_terminal(llw_handle_t request);
+    bool release_terminal(llw_handle_t request);
     bool publish(OwnedEvent event);
     void flush();
 #ifdef LLW_RUNTIME_TESTING
     void flush_for_test(std::function<void()> barrier_enqueued,
                         std::function<void()> waiting_for_control = {});
     void fail_next_publish_of_type_for_test(int32_t event_type);
+    size_t terminal_permit_count_for_test();
 #endif
     void stop();
     void drain_for_test();
 private:
     enum class Admission { Regular, Terminal, Control };
+    enum class TerminalPermitState { Reserved, Published };
     struct DispatchItem {
         OwnedEvent event;
         std::shared_ptr<std::promise<void>> barrier;
@@ -880,8 +892,8 @@ private:
                     std::function<void()> waiting_for_control);
     void run();
     llw_callback_table_t callbacks_{};
-    // At most regular_capacity_ + terminal_capacity_ + one barrier are queued.
-    // The worker can own one additional event while invoking its callback.
+    // Terminal permits bound reserved, queued, and callback-active request lifetimes together.
+    // The deque holds at most regular_capacity_ + terminal_capacity_ + one barrier.
     const size_t regular_capacity_;
     static constexpr size_t terminal_capacity_ = LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS;
     std::mutex mutex_;
@@ -891,7 +903,7 @@ private:
     std::condition_variable joined_;
     std::deque<DispatchItem> queue_;
     size_t regular_queued_{};
-    size_t terminal_queued_{};
+    std::map<llw_handle_t, TerminalPermitState> terminal_permits_;
     bool barrier_queued_{};
     bool stopping_{};
     bool join_started_{};
@@ -947,6 +959,24 @@ EventDispatcher::EventDispatcher(llw_callback_table_t callbacks, uint32_t capaci
 
 EventDispatcher::~EventDispatcher() { stop(); }
 
+bool EventDispatcher::reserve_terminal(llw_handle_t request) {
+    std::lock_guard lock(mutex_);
+    if (stopping_ || request == 0 || terminal_permits_.size() >= terminal_capacity_ ||
+        terminal_permits_.count(request) != 0)
+        return false;
+    terminal_permits_.emplace(request, TerminalPermitState::Reserved);
+    return true;
+}
+
+bool EventDispatcher::release_terminal(llw_handle_t request) {
+    std::lock_guard lock(mutex_);
+    const auto found = terminal_permits_.find(request);
+    if (found == terminal_permits_.end() || found->second != TerminalPermitState::Reserved)
+        return false;
+    terminal_permits_.erase(found);
+    return true;
+}
+
 bool EventDispatcher::publish(OwnedEvent event) {
     const bool terminal = event.request != 0 &&
         (event.type == LLW_EVENT_DONE || event.type == LLW_EVENT_ERROR ||
@@ -959,14 +989,18 @@ bool EventDispatcher::publish(OwnedEvent event) {
     }
 #endif
     if (stopping_) return false;
+    auto terminal_permit = terminal_permits_.end();
     if (terminal) {
-        if (terminal_queued_ >= terminal_capacity_) return false;
+        terminal_permit = terminal_permits_.find(event.request);
+        if (terminal_permit == terminal_permits_.end() ||
+            terminal_permit->second != TerminalPermitState::Reserved)
+            return false;
     } else if (regular_queued_ >= regular_capacity_) {
         return false;
     }
     const Admission admission = terminal ? Admission::Terminal : Admission::Regular;
     queue_.push_back(DispatchItem{std::move(event), {}, admission});
-    if (terminal) ++terminal_queued_;
+    if (terminal) terminal_permit->second = TerminalPermitState::Published;
     else ++regular_queued_;
     readable_.notify_one();
     return true;
@@ -983,6 +1017,11 @@ void EventDispatcher::flush_for_test(std::function<void()> barrier_enqueued,
 void EventDispatcher::fail_next_publish_of_type_for_test(int32_t event_type) {
     std::lock_guard lock(mutex_);
     fail_next_type_ = event_type;
+}
+
+size_t EventDispatcher::terminal_permit_count_for_test() {
+    std::lock_guard lock(mutex_);
+    return terminal_permits_.size();
 }
 #endif
 
@@ -1030,6 +1069,7 @@ void EventDispatcher::stop() {
     if (thread_.joinable()) thread_.join();
     {
         std::lock_guard lock(mutex_);
+        terminal_permits_.clear();
         join_finished_ = true;
     }
     joined_.notify_all();
@@ -1056,8 +1096,7 @@ void EventDispatcher::run() {
             item = std::move(queue_.front());
             queue_.pop_front();
             if (item.admission == Admission::Regular) --regular_queued_;
-            else if (item.admission == Admission::Terminal) --terminal_queued_;
-            else {
+            else if (item.admission == Admission::Control) {
                 barrier_queued_ = false;
                 control_writable_.notify_one();
             }
@@ -1069,8 +1108,11 @@ void EventDispatcher::run() {
             if (queue_.empty() && in_callback_ == 0) drained_.notify_all();
             continue;
         }
-        auto callback_done = make_scope_exit([this] {
+        const llw_handle_t terminal_request =
+            item.admission == Admission::Terminal ? item.event.request : 0;
+        auto callback_done = make_scope_exit([this, terminal_request] {
             std::lock_guard lock(mutex_);
+            if (terminal_request != 0) terminal_permits_.erase(terminal_request);
             --in_callback_;
             if (queue_.empty() && in_callback_ == 0) drained_.notify_all();
         });
@@ -1099,12 +1141,15 @@ void EventDispatcher::run() {
 }
 ```
 
-The dispatcher remains bounded by `event_queue_capacity` regular items, an independent
-`LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS` terminal reserve (one terminal for every possible outstanding
-native request), one queued barrier, and at most one worker-owned event. All classes append to one FIFO
-deque. Regular `publish` never waits and returns false on regular saturation or after stop. Terminal
-request events use only the terminal reserve; reserve exhaustion is an internal
-invariant violation. A flush caller may wait for the independent single control slot; regular payloads
+The dispatcher remains bounded by `event_queue_capacity` regular items, at most
+`LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS` keyed terminal permits, one queued barrier, and one worker-owned
+event. A permit is reserved before native request acceptance, transitions from `Reserved` to `Published`
+only when that request's single terminal is appended, and remains owned through queued and callback-active
+states until callback return. Scheduler rollback can release only an unpublished permit. Thus scheduler-side
+request erasure and churn cannot reuse terminal capacity while an older terminal callback is pending.
+All event classes append to one FIFO deque. Regular `publish` never waits and returns false on regular
+saturation or after stop. A terminal request publish requires its nonzero handle's reserved permit;
+duplicate and unreserved terminals return false deterministically. A flush caller may wait for the independent single control slot; regular payloads
 cannot consume that slot, stop wakes control waiters, and the barrier remains FIFO. `flush()` completion
 means every earlier callback returned. Because control admission has its own slot, regular events cannot
 consume it or prevent a waiting flush from appending its FIFO marker. Callback invocation and test observers happen outside dispatcher
@@ -1121,8 +1166,9 @@ ctest --test-dir .cmake-build/llm-cpu -C Debug -R llw_scheduler_test --output-on
 ```
 
 Expected: dispatcher payload ownership, sequence, single callback thread, immediate regular overflow,
-reserved terminal FIFO admission, bounded control barriers, stop wakeup, callback exception containment,
-and callback-thread publish/flush/stop assertions pass without sleeps.
+keyed permit validation/rollback/churn, callback-complete permit release, reserved terminal FIFO admission,
+bounded control barriers, stop wakeup and permit cleanup, callback exception containment, and callback-
+thread publish/flush/stop assertions pass without sleeps.
 
 - [ ] **Step 5: Commit the dispatcher**
 
@@ -1595,6 +1641,7 @@ Create `native/llm-runtime/src/scheduler.cpp` with this complete implementation.
 #include <exception>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 
 namespace {
@@ -1682,14 +1729,30 @@ llw_result_t Scheduler::submit(const llw_request_params_t& params, llw_handle_t&
     request.handle = next_handle_++;
     if (request.handle == 0) request.handle = next_handle_++;
     const llw_handle_t handle = request.handle;
-    auto [it, inserted] = requests_.emplace(handle, std::move(request));
-    if (!inserted) throw std::runtime_error("request handle collision");
-    queued_.push_back(handle);
+    auto payload = bytes("{\"state\":\"queued\",\"queuePosition\":" +
+                         std::to_string(queued_.size() + 1) + "}");
+    if (!events_.reserve_terminal(handle)) {
+        error = "request terminal capacity is full";
+        return LLW_ERR_QUEUE_FULL;
+    }
+    decltype(requests_)::iterator it;
+    try {
+        bool inserted = false;
+        std::tie(it, inserted) = requests_.emplace(handle, std::move(request));
+        if (!inserted) throw std::runtime_error("request handle collision");
+        try {
+            queued_.push_back(handle);
+        } catch (...) {
+            requests_.erase(it);
+            throw;
+        }
+    } catch (...) {
+        events_.release_terminal(handle);
+        throw;
+    }
     ++accepted_;
     out = handle;
-    const auto payload = bytes("{\"state\":\"queued\",\"queuePosition\":" +
-                               std::to_string(queued_.size()) + "}");
-    if (!publish_locked(it->second, LLW_EVENT_QUEUED, UINT32_MAX, 0, payload,
+    if (!publish_locked(it->second, LLW_EVENT_QUEUED, UINT32_MAX, 0, std::move(payload),
                         LLW_EVENT_DATA_JSON_UTF8)) {
         queued_.erase(std::remove(queued_.begin(), queued_.end(), handle), queued_.end());
         finish_locked(handle, RequestState::Error, LLW_ERR_INTERNAL,
@@ -1852,11 +1915,11 @@ void Scheduler::finish_locked(llw_handle_t handle, RequestState state, int32_t e
     }
     if (!publish_locked(request, event_type, request.slot_id, error_code, bytes(payload),
                         LLW_EVENT_DATA_JSON_UTF8)) {
-        // Runtime shutdown orders scheduler completion before dispatcher stop. With one reserved
-        // terminal slot per possible outstanding request, failure here is an invariant breach,
-        // not ordinary backpressure. Fail fast instead of throwing through the worker while
-        // mutex_ is held or erasing a request whose terminal callback was never admitted.
-        std::terminate();
+        // A valid accepted request owns a Reserved permit and dispatcher stop occurs only after
+        // scheduler shutdown, so normal terminal publication cannot fail. Do not erase the request
+        // or terminate if an injected lifecycle/invariant failure violates that precondition.
+        request.terminal_emitted = false;
+        return;
     }
     for (Slot& slot : slots_) {
         if (slot.request == handle) slot.request = 0;
@@ -2094,8 +2157,12 @@ accepted counts, and three sampled tokens are metered even when the fake engine 
 Add a saturated dispatcher case: regular QUEUED/TOKEN overflow must never block or throw from the
 scheduler worker while `mutex_` is held; it deterministically finishes that accepted request with a
 reserved ERROR (or CANCELLED when cancellation already owns the terminal transition). Metrics overflow
-drops only that telemetry sample. Dispatcher shutdown occurs only after scheduler shutdown, so terminal
-reserve admission remains available until every accepted request has emitted exactly one terminal.
+drops only that telemetry sample. Add acceptance tests proving the scheduler reserves a permit before
+inserting request/queue state, releases it on every pre-acceptance rollback, and returns
+`LLW_ERR_QUEUE_FULL` when callback-active terminal permits exhaust the native outstanding-request bound.
+After acceptance, scheduler erasure never releases the permit: dispatcher callback completion does,
+including callback exceptions. Dispatcher shutdown occurs only after scheduler shutdown, so every valid
+accepted request retains its terminal permit until exactly one terminal callback returns.
 
 - [ ] **Step 7: Commit the scheduler core**
 

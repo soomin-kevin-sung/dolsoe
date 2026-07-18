@@ -153,6 +153,7 @@ void ownership_and_callback_thread_test() {
     source.assign(4, 0);
     OwnedEvent second = make_event(LLW_EVENT_DONE, 42, 1);
     second.data = {'{', '}'};
+    CHECK(dispatcher.reserve_terminal(1));
     CHECK(dispatcher.publish(std::move(second)));
     dispatcher.flush();
 
@@ -177,6 +178,7 @@ void saturation_and_terminal_reserve_test() {
     auto overflow = std::async(std::launch::async, [&dispatcher] {
         return dispatcher.publish(make_event(LLW_EVENT_LOG, 99));
     });
+    CHECK(dispatcher.reserve_terminal(7));
     auto terminal = std::async(std::launch::async, [&dispatcher] {
         return dispatcher.publish(make_event(LLW_EVENT_DONE, 4, 7));
     });
@@ -197,6 +199,83 @@ void saturation_and_terminal_reserve_test() {
     CHECK(collector.events[1].sequence == 2);
     CHECK(collector.events[2].sequence == 3);
     CHECK(collector.events[3].sequence == 4);
+}
+
+void terminal_permit_validation_and_rollback_test() {
+    Collector collector;
+    EventDispatcher dispatcher(callbacks_for(collector), 1);
+    CHECK(!dispatcher.reserve_terminal(0));
+    CHECK(dispatcher.reserve_terminal(11));
+    CHECK(!dispatcher.reserve_terminal(11));
+    CHECK(dispatcher.release_terminal(11));
+    CHECK(!dispatcher.release_terminal(11));
+
+    CHECK(dispatcher.reserve_terminal(11));
+    CHECK(!dispatcher.publish(make_event(LLW_EVENT_DONE, 1, 12)));
+    CHECK(dispatcher.publish(make_event(LLW_EVENT_DONE, 2, 11)));
+    CHECK(!dispatcher.release_terminal(11));
+    CHECK(!dispatcher.publish(make_event(LLW_EVENT_ERROR, 3, 11)));
+    dispatcher.flush();
+    CHECK(dispatcher.terminal_permit_count_for_test() == 0);
+
+    CHECK(dispatcher.reserve_terminal(13));
+    dispatcher.fail_next_publish_of_type_for_test(LLW_EVENT_CANCELLED);
+    CHECK(!dispatcher.publish(make_event(LLW_EVENT_CANCELLED, 4, 13)));
+    CHECK(dispatcher.release_terminal(13));
+}
+
+void terminal_permit_churn_test() {
+    Collector collector;
+    collector.block = true;
+    EventDispatcher dispatcher(callbacks_for(collector), 1);
+    constexpr uint64_t max_outstanding = LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS;
+
+    CHECK(dispatcher.reserve_terminal(1));
+    CHECK(dispatcher.publish(make_event(LLW_EVENT_DONE, 1, 1)));
+    wait_until_entered(collector);
+    ReleaseCallbackOnExit release_on_exit(collector);
+    for (uint64_t handle = 2; handle <= max_outstanding; ++handle) {
+        CHECK(dispatcher.reserve_terminal(handle));
+        CHECK(dispatcher.publish(make_event(LLW_EVENT_DONE, handle, handle)));
+    }
+    CHECK(dispatcher.terminal_permit_count_for_test() == max_outstanding);
+    CHECK(!dispatcher.reserve_terminal(max_outstanding + 1));
+
+    release_callback(collector);
+    dispatcher.drain_for_test();
+    CHECK(dispatcher.terminal_permit_count_for_test() == 0);
+    CHECK(dispatcher.reserve_terminal(max_outstanding + 1));
+    CHECK(dispatcher.release_terminal(max_outstanding + 1));
+}
+
+void throwing_terminal_callback_releases_permit_test() {
+    Collector collector;
+    collector.throw_next = true;
+    EventDispatcher dispatcher(callbacks_for(collector), 1);
+    CHECK(dispatcher.reserve_terminal(77));
+    CHECK(dispatcher.publish(make_event(LLW_EVENT_ERROR, 1, 77)));
+    dispatcher.flush();
+    CHECK(dispatcher.terminal_permit_count_for_test() == 0);
+    CHECK(dispatcher.reserve_terminal(77));
+    CHECK(dispatcher.release_terminal(77));
+}
+
+void stop_drains_terminal_permits_test() {
+    Collector collector;
+    collector.block = true;
+    EventDispatcher dispatcher(callbacks_for(collector), 1);
+    CHECK(dispatcher.reserve_terminal(81));
+    CHECK(dispatcher.publish(make_event(LLW_EVENT_CANCELLED, 1, 81)));
+    wait_until_entered(collector);
+    ReleaseCallbackOnExit release_on_exit(collector);
+    CHECK(dispatcher.reserve_terminal(82));
+
+    auto stopper = std::async(std::launch::async, [&dispatcher] { dispatcher.stop(); });
+    release_callback(collector);
+    stopper.get();
+    CHECK(dispatcher.terminal_permit_count_for_test() == 0);
+    CHECK(!dispatcher.reserve_terminal(83));
+    CHECK(!dispatcher.release_terminal(82));
 }
 
 void saturated_flush_and_stop_wakeup_test() {
@@ -315,6 +394,10 @@ int main() {
     try {
         ownership_and_callback_thread_test();
         saturation_and_terminal_reserve_test();
+        terminal_permit_validation_and_rollback_test();
+        terminal_permit_churn_test();
+        throwing_terminal_callback_releases_permit_test();
+        stop_drains_terminal_permits_test();
         saturated_flush_and_stop_wakeup_test();
         callback_exception_does_not_stop_worker_test();
         callback_reentrancy_and_deferred_join_test();

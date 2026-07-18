@@ -28,6 +28,24 @@ EventDispatcher::EventDispatcher(llw_callback_table_t callbacks, uint32_t capaci
 
 EventDispatcher::~EventDispatcher() { stop(); }
 
+bool EventDispatcher::reserve_terminal(llw_handle_t request) {
+    std::lock_guard lock(mutex_);
+    if (stopping_ || request == 0 || terminal_permits_.size() >= terminal_capacity_ ||
+        terminal_permits_.count(request) != 0)
+        return false;
+    terminal_permits_.emplace(request, TerminalPermitState::Reserved);
+    return true;
+}
+
+bool EventDispatcher::release_terminal(llw_handle_t request) {
+    std::lock_guard lock(mutex_);
+    const auto found = terminal_permits_.find(request);
+    if (found == terminal_permits_.end() || found->second != TerminalPermitState::Reserved)
+        return false;
+    terminal_permits_.erase(found);
+    return true;
+}
+
 bool EventDispatcher::publish(OwnedEvent event) {
     const bool terminal = event.request != 0 &&
         (event.type == LLW_EVENT_DONE || event.type == LLW_EVENT_ERROR ||
@@ -40,14 +58,18 @@ bool EventDispatcher::publish(OwnedEvent event) {
     }
 #endif
     if (stopping_) return false;
+    auto terminal_permit = terminal_permits_.end();
     if (terminal) {
-        if (terminal_queued_ >= terminal_capacity_) return false;
+        terminal_permit = terminal_permits_.find(event.request);
+        if (terminal_permit == terminal_permits_.end() ||
+            terminal_permit->second != TerminalPermitState::Reserved)
+            return false;
     } else if (regular_queued_ >= regular_capacity_) {
         return false;
     }
     const Admission admission = terminal ? Admission::Terminal : Admission::Regular;
     queue_.push_back(DispatchItem{std::move(event), {}, admission});
-    if (terminal) ++terminal_queued_;
+    if (terminal) terminal_permit->second = TerminalPermitState::Published;
     else ++regular_queued_;
     readable_.notify_one();
     return true;
@@ -64,6 +86,11 @@ void EventDispatcher::flush_for_test(std::function<void()> barrier_enqueued,
 void EventDispatcher::fail_next_publish_of_type_for_test(int32_t event_type) {
     std::lock_guard lock(mutex_);
     fail_next_type_ = event_type;
+}
+
+size_t EventDispatcher::terminal_permit_count_for_test() {
+    std::lock_guard lock(mutex_);
+    return terminal_permits_.size();
 }
 #endif
 
@@ -111,6 +138,7 @@ void EventDispatcher::stop() {
     if (thread_.joinable()) thread_.join();
     {
         std::lock_guard lock(mutex_);
+        terminal_permits_.clear();
         join_finished_ = true;
     }
     joined_.notify_all();
@@ -137,8 +165,7 @@ void EventDispatcher::run() {
             item = std::move(queue_.front());
             queue_.pop_front();
             if (item.admission == Admission::Regular) --regular_queued_;
-            else if (item.admission == Admission::Terminal) --terminal_queued_;
-            else {
+            else if (item.admission == Admission::Control) {
                 barrier_queued_ = false;
                 control_writable_.notify_one();
             }
@@ -150,8 +177,11 @@ void EventDispatcher::run() {
             if (queue_.empty() && in_callback_ == 0) drained_.notify_all();
             continue;
         }
-        auto callback_done = make_scope_exit([this] {
+        const llw_handle_t terminal_request =
+            item.admission == Admission::Terminal ? item.event.request : 0;
+        auto callback_done = make_scope_exit([this, terminal_request] {
             std::lock_guard lock(mutex_);
+            if (terminal_request != 0) terminal_permits_.erase(terminal_request);
             --in_callback_;
             if (queue_.empty() && in_callback_ == 0) drained_.notify_all();
         });
