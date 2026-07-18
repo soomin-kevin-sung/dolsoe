@@ -63,10 +63,11 @@ export function useConversationWorkspace() {
     const status: TerminalMessageStatus = event.kind === "done" ? "complete" : event.kind;
     const content = assistant.content + tail;
     apply({ type: "terminal", requestHandle: handle, status, tail });
-    void service.finishTurn(active.assistantMessageId, content, status)
-      .catch((error) => apply({ type: "storage-error", error: errorText(error) }));
-    terminalWaiter.current?.();
+    const waiter = terminalWaiter.current;
     terminalWaiter.current = null;
+    void service.finishTurn(active.assistantMessageId, content, status)
+      .catch((error) => apply({ type: "storage-error", error: errorText(error) }))
+      .finally(() => waiter?.());
   }, [apply, service]);
 
   const runtime = useNativeRuntime(onNativeEvent);
