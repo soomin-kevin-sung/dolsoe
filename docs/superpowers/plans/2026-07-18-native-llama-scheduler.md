@@ -701,7 +701,13 @@ git commit -m "feat: define scheduler ABI contract"
 
 - [ ] **Step 1: Write a failing dispatcher ownership test**
 
-Create `native/llm-runtime/tests/scheduler_test.cpp`:
+Create `native/llm-runtime/tests/scheduler_test.cpp`. In addition to the ownership assertions below,
+use promise/future and condition-variable handshakes (never sleeps) to cover: immediate regular-event
+overflow while a callback blocks and the regular queue is full; terminal admission through the
+independent reserve with FIFO delivery; saturated and concurrent flush barriers; stop waking a flush
+waiting for the control slot; a throwing C++ callback followed by a later event and successful flush;
+and callback-thread publish, rejected flush, and deferred stop join. Every async path must release its
+callback and join/get its thread or future before asserting so test failures cannot leak threads.
 
 ```cpp
 #include "event_dispatcher.h"
@@ -857,26 +863,39 @@ public:
     bool publish(OwnedEvent event);
     void flush();
 #ifdef LLW_RUNTIME_TESTING
-    void flush_for_test(std::function<void()> barrier_enqueued);
+    void flush_for_test(std::function<void()> barrier_enqueued,
+                        std::function<void()> waiting_for_control = {});
     void fail_next_publish_of_type_for_test(int32_t event_type);
 #endif
     void stop();
     void drain_for_test();
 private:
+    enum class Admission { Regular, Terminal, Control };
     struct DispatchItem {
         OwnedEvent event;
         std::shared_ptr<std::promise<void>> barrier;
+        Admission admission{Admission::Regular};
     };
-    void flush_impl(std::function<void()> barrier_enqueued);
+    void flush_impl(std::function<void()> barrier_enqueued,
+                    std::function<void()> waiting_for_control);
     void run();
     llw_callback_table_t callbacks_{};
-    const size_t capacity_;
+    // At most regular_capacity_ + terminal_capacity_ + one barrier are queued.
+    // The worker can own one additional event while invoking its callback.
+    const size_t regular_capacity_;
+    static constexpr size_t terminal_capacity_ = LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS;
     std::mutex mutex_;
     std::condition_variable readable_;
-    std::condition_variable writable_;
+    std::condition_variable control_writable_;
     std::condition_variable drained_;
+    std::condition_variable joined_;
     std::deque<DispatchItem> queue_;
+    size_t regular_queued_{};
+    size_t terminal_queued_{};
+    bool barrier_queued_{};
     bool stopping_{};
+    bool join_started_{};
+    bool join_finished_{};
     size_t in_callback_{};
     std::thread::id callback_thread_{};
 #ifdef LLW_RUNTIME_TESTING
@@ -908,31 +927,57 @@ Create `native/llm-runtime/src/event_dispatcher.cpp`:
 #include <stdexcept>
 #include <utility>
 
+namespace {
+template <typename Function> class ScopeExit {
+public:
+    explicit ScopeExit(Function function) : function_(std::move(function)) {}
+    ~ScopeExit() noexcept { function_(); }
+    ScopeExit(const ScopeExit&) = delete;
+    ScopeExit& operator=(const ScopeExit&) = delete;
+private:
+    Function function_;
+};
+template <typename Function> ScopeExit<Function> make_scope_exit(Function function) {
+    return ScopeExit<Function>(std::move(function));
+}
+} // namespace
+
 EventDispatcher::EventDispatcher(llw_callback_table_t callbacks, uint32_t capacity)
-    : callbacks_(callbacks), capacity_(capacity), thread_([this] { run(); }) {}
+    : callbacks_(callbacks), regular_capacity_(capacity), thread_([this] { run(); }) {}
 
 EventDispatcher::~EventDispatcher() { stop(); }
 
 bool EventDispatcher::publish(OwnedEvent event) {
-    std::unique_lock lock(mutex_);
+    const bool terminal = event.request != 0 &&
+        (event.type == LLW_EVENT_DONE || event.type == LLW_EVENT_ERROR ||
+         event.type == LLW_EVENT_CANCELLED);
+    std::lock_guard lock(mutex_);
 #ifdef LLW_RUNTIME_TESTING
     if (fail_next_type_ == event.type) {
         fail_next_type_ = 0;
         return false;
     }
 #endif
-    writable_.wait(lock, [this] { return stopping_ || queue_.size() < capacity_; });
     if (stopping_) return false;
-    queue_.push_back(DispatchItem{std::move(event), {}});
+    if (terminal) {
+        if (terminal_queued_ >= terminal_capacity_) return false;
+    } else if (regular_queued_ >= regular_capacity_) {
+        return false;
+    }
+    const Admission admission = terminal ? Admission::Terminal : Admission::Regular;
+    queue_.push_back(DispatchItem{std::move(event), {}, admission});
+    if (terminal) ++terminal_queued_;
+    else ++regular_queued_;
     readable_.notify_one();
     return true;
 }
 
-void EventDispatcher::flush() { flush_impl({}); }
+void EventDispatcher::flush() { flush_impl({}, {}); }
 
 #ifdef LLW_RUNTIME_TESTING
-void EventDispatcher::flush_for_test(std::function<void()> barrier_enqueued) {
-    flush_impl(std::move(barrier_enqueued));
+void EventDispatcher::flush_for_test(std::function<void()> barrier_enqueued,
+                                     std::function<void()> waiting_for_control) {
+    flush_impl(std::move(barrier_enqueued), std::move(waiting_for_control));
 }
 
 void EventDispatcher::fail_next_publish_of_type_for_test(int32_t event_type) {
@@ -941,16 +986,23 @@ void EventDispatcher::fail_next_publish_of_type_for_test(int32_t event_type) {
 }
 #endif
 
-void EventDispatcher::flush_impl(std::function<void()> barrier_enqueued) {
+void EventDispatcher::flush_impl(std::function<void()> barrier_enqueued,
+                                 std::function<void()> waiting_for_control) {
     auto barrier = std::make_shared<std::promise<void>>();
     std::future<void> completed = barrier->get_future();
     {
         std::unique_lock lock(mutex_);
         if (std::this_thread::get_id() == callback_thread_)
             throw std::logic_error("event dispatcher flush is not callback-reentrant");
-        writable_.wait(lock, [this] { return stopping_ || queue_.size() < capacity_; });
+        if (barrier_queued_ && waiting_for_control) {
+            lock.unlock();
+            waiting_for_control();
+            lock.lock();
+        }
+        control_writable_.wait(lock, [this] { return stopping_ || !barrier_queued_; });
         if (stopping_) throw std::runtime_error("event dispatcher is stopping");
-        queue_.push_back(DispatchItem{{}, std::move(barrier)});
+        queue_.push_back(DispatchItem{{}, std::move(barrier), Admission::Control});
+        barrier_queued_ = true;
         readable_.notify_one();
     }
     if (barrier_enqueued) barrier_enqueued();
@@ -958,14 +1010,29 @@ void EventDispatcher::flush_impl(std::function<void()> barrier_enqueued) {
 }
 
 void EventDispatcher::stop() {
+    bool join_worker = false;
     {
-        std::lock_guard lock(mutex_);
-        if (stopping_) return;
+        std::unique_lock lock(mutex_);
         stopping_ = true;
+        if (std::this_thread::get_id() != callback_thread_) {
+            if (!join_started_) {
+                join_started_ = true;
+                join_worker = true;
+            } else {
+                joined_.wait(lock, [this] { return join_finished_; });
+                return;
+            }
+        }
     }
     readable_.notify_all();
-    writable_.notify_all();
+    control_writable_.notify_all();
+    if (!join_worker) return;
     if (thread_.joinable()) thread_.join();
+    {
+        std::lock_guard lock(mutex_);
+        join_finished_ = true;
+    }
+    joined_.notify_all();
 }
 
 void EventDispatcher::drain_for_test() {
@@ -988,13 +1055,25 @@ void EventDispatcher::run() {
             if (queue_.empty() && stopping_) break;
             item = std::move(queue_.front());
             queue_.pop_front();
+            if (item.admission == Admission::Regular) --regular_queued_;
+            else if (item.admission == Admission::Terminal) --terminal_queued_;
+            else {
+                barrier_queued_ = false;
+                control_writable_.notify_one();
+            }
             if (!item.barrier) ++in_callback_;
-            writable_.notify_one();
         }
         if (item.barrier) {
             item.barrier->set_value();
+            std::lock_guard lock(mutex_);
+            if (queue_.empty() && in_callback_ == 0) drained_.notify_all();
             continue;
         }
+        auto callback_done = make_scope_exit([this] {
+            std::lock_guard lock(mutex_);
+            --in_callback_;
+            if (queue_.empty() && in_callback_ == 0) drained_.notify_all();
+        });
         OwnedEvent& owned = item.event;
         if (callbacks_.on_event) {
             llw_event_t event{};
@@ -1009,12 +1088,10 @@ void EventDispatcher::run() {
             event.data = owned.data.empty() ? nullptr : owned.data.data();
             event.data_len = owned.data.size();
             event.request_user_data = owned.request_user_data;
-            callbacks_.on_event(&event, callbacks_.user_data);
-        }
-        {
-            std::lock_guard lock(mutex_);
-            --in_callback_;
-            if (queue_.empty() && in_callback_ == 0) drained_.notify_all();
+            try { callbacks_.on_event(&event, callbacks_.user_data); }
+            catch (...) {
+                // ABI callbacks must not unwind through the runtime worker.
+            }
         }
     }
     std::lock_guard lock(mutex_);
@@ -1022,11 +1099,19 @@ void EventDispatcher::run() {
 }
 ```
 
-`flush()` is a production FIFO barrier: completion means every event published before the barrier
-has returned from `on_event`. Debug tests compile `flush_for_test`, whose observer runs synchronously
-after the barrier is in the queue. Release builds expose only `flush()`. Runtime lifecycle code calls
-it only after scheduler and engine shutdown. Calling either form from `on_event` violates the ABI
-callback non-reentrancy rule; the explicit callback-thread guard throws instead of deadlocking.
+The dispatcher remains bounded by `event_queue_capacity` regular items, an independent
+`LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS` terminal reserve (one terminal for every possible outstanding
+native request), one queued barrier, and at most one worker-owned event. All classes append to one FIFO
+deque. Regular `publish` never waits and returns false on regular saturation or after stop. Terminal
+request events use only the terminal reserve; reserve exhaustion is an internal
+invariant violation. A flush caller may wait for the independent single control slot; regular payloads
+cannot consume that slot, stop wakes control waiters, and the barrier remains FIFO. `flush()` completion
+means every earlier callback returned. Because control admission has its own slot, regular events cannot
+consume it or prevent a waiting flush from appending its FIFO marker. Callback invocation and test observers happen outside dispatcher
+locks. Callback exceptions are caught, bookkeeping is restored by scope guard, and later work continues,
+but the public ABI still requires callbacks to return normally without throwing or unwinding. Callback-
+thread flush throws; callback-thread publish is nonblocking; callback-thread stop requests shutdown
+without self-joining, and a later external stop/destructor performs the serialized join.
 
 - [ ] **Step 4: Run the focused test**
 
@@ -1035,7 +1120,9 @@ cmake --build .cmake-build/llm-cpu --config Debug --target llw_scheduler_test
 ctest --test-dir .cmake-build/llm-cpu -C Debug -R llw_scheduler_test --output-on-failure
 ```
 
-Expected: dispatcher payload, sequence, callback-thread, and barrier-enqueued handshake assertions pass.
+Expected: dispatcher payload ownership, sequence, single callback thread, immediate regular overflow,
+reserved terminal FIFO admission, bounded control barriers, stop wakeup, callback exception containment,
+and callback-thread publish/flush/stop assertions pass without sleeps.
 
 - [ ] **Step 5: Commit the dispatcher**
 
@@ -1406,6 +1493,7 @@ add_executable(llw_scheduler_test
   src/scheduler.cpp
 )
 target_include_directories(llw_scheduler_test PRIVATE include src tests)
+target_compile_definitions(llw_scheduler_test PRIVATE LLW_RUNTIME_TESTING)
 target_link_libraries(llw_scheduler_test PRIVATE Threads::Threads)
 add_test(NAME llw_scheduler_test COMMAND llw_scheduler_test)
 set_tests_properties(llw_scheduler_test PROPERTIES TIMEOUT 30)
@@ -1473,7 +1561,7 @@ private:
     void run();
     void promote_locked();
     void finish_locked(llw_handle_t, RequestState, int32_t, std::string);
-    void publish_locked(Request&, int32_t, uint32_t, int32_t, std::vector<uint8_t>, uint32_t);
+    bool publish_locked(Request&, int32_t, uint32_t, int32_t, std::vector<uint8_t>, uint32_t);
     bool has_work_locked() const;
     uint32_t slots_count_{};
     uint32_t queue_capacity_{};
@@ -1504,6 +1592,7 @@ Create `native/llm-runtime/src/scheduler.cpp` with this complete implementation.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <exception>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -1600,8 +1689,13 @@ llw_result_t Scheduler::submit(const llw_request_params_t& params, llw_handle_t&
     out = handle;
     const auto payload = bytes("{\"state\":\"queued\",\"queuePosition\":" +
                                std::to_string(queued_.size()) + "}");
-    publish_locked(it->second, LLW_EVENT_QUEUED, UINT32_MAX, 0, payload,
-                   LLW_EVENT_DATA_JSON_UTF8);
+    if (!publish_locked(it->second, LLW_EVENT_QUEUED, UINT32_MAX, 0, payload,
+                        LLW_EVENT_DATA_JSON_UTF8)) {
+        queued_.erase(std::remove(queued_.begin(), queued_.end(), handle), queued_.end());
+        finish_locked(handle, RequestState::Error, LLW_ERR_INTERNAL,
+                      "event queue capacity exceeded");
+        return LLW_OK;
+    }
     wake_.notify_one();
     return LLW_OK;
 }
@@ -1704,7 +1798,7 @@ void Scheduler::promote_locked() {
     }
 }
 
-void Scheduler::publish_locked(Request& request, int32_t type, uint32_t slot,
+bool Scheduler::publish_locked(Request& request, int32_t type, uint32_t slot,
                                int32_t error_code, std::vector<uint8_t> payload,
                                uint32_t data_format) {
     OwnedEvent event;
@@ -1717,7 +1811,7 @@ void Scheduler::publish_locked(Request& request, int32_t type, uint32_t slot,
     event.sequence = request.next_sequence++;
     event.request_user_data = request.user_data;
     event.data = std::move(payload);
-    if (!events_.publish(std::move(event))) throw std::runtime_error("event dispatcher stopped");
+    return events_.publish(std::move(event));
 }
 
 void Scheduler::finish_locked(llw_handle_t handle, RequestState state, int32_t error_code,
@@ -1756,8 +1850,14 @@ void Scheduler::finish_locked(llw_handle_t handle, RequestState state, int32_t e
         payload = "{\"state\":\"error\",\"message\":\"" + json_escape(message) + "\"}";
         ++metrics_.failed_requests;
     }
-    publish_locked(request, event_type, request.slot_id, error_code, bytes(payload),
-                   LLW_EVENT_DATA_JSON_UTF8);
+    if (!publish_locked(request, event_type, request.slot_id, error_code, bytes(payload),
+                        LLW_EVENT_DATA_JSON_UTF8)) {
+        // Runtime shutdown orders scheduler completion before dispatcher stop. With one reserved
+        // terminal slot per possible outstanding request, failure here is an invariant breach,
+        // not ordinary backpressure. Fail fast instead of throwing through the worker while
+        // mutex_ is held or erasing a request whose terminal callback was never admitted.
+        std::terminate();
+    }
     for (Slot& slot : slots_) {
         if (slot.request == handle) slot.request = 0;
     }
@@ -1817,8 +1917,12 @@ void Scheduler::run() {
                 continue;
             }
             if (!step.token_bytes.empty()) {
-                publish_locked(request, LLW_EVENT_TOKEN, request.slot_id, 0,
-                               std::move(step.token_bytes), LLW_EVENT_DATA_BYTES);
+                if (!publish_locked(request, LLW_EVENT_TOKEN, request.slot_id, 0,
+                                    std::move(step.token_bytes), LLW_EVENT_DATA_BYTES)) {
+                    finish_locked(request.handle, RequestState::Error, LLW_ERR_INTERNAL,
+                                  "event queue capacity exceeded");
+                    continue;
+                }
             }
             if (step.failed) finish_locked(request.handle, RequestState::Error,
                                            LLW_ERR_INTERNAL, step.error);
@@ -1835,7 +1939,10 @@ void Scheduler::run() {
             ",\"decodeCalls\":" + std::to_string(metrics_.decode_calls) +
             ",\"queueWaitNanoseconds\":" + std::to_string(metrics_.queue_wait_ns) +
             ",\"decodeNanoseconds\":" + std::to_string(metrics_.decode_ns) + "}");
-        if (!events_.publish(std::move(metrics_event))) stopping_ = true;
+        // Metrics are regular telemetry. Saturation drops this sample without blocking or
+        // stopping request execution; request-scoped regular overflow is converted above into
+        // a reserved terminal ERROR.
+        events_.publish(std::move(metrics_event));
     }
 }
 ```
@@ -1984,6 +2091,11 @@ cmake --build .cmake-build/llm-cpu --config Debug --target llw_scheduler_test
 Expected: all 20 runs pass; the two-request test proves at least one fake `decode` call contains both
 handles, queue-full is deterministic, active and queued cancellation pass, terminal counts equal
 accepted counts, and three sampled tokens are metered even when the fake engine emits zero token bytes.
+Add a saturated dispatcher case: regular QUEUED/TOKEN overflow must never block or throw from the
+scheduler worker while `mutex_` is held; it deterministically finishes that accepted request with a
+reserved ERROR (or CANCELLED when cancellation already owns the terminal transition). Metrics overflow
+drops only that telemetry sample. Dispatcher shutdown occurs only after scheduler shutdown, so terminal
+reserve admission remains available until every accepted request has emitted exactly one terminal.
 
 - [ ] **Step 7: Commit the scheduler core**
 

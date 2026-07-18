@@ -32,26 +32,39 @@ public:
     bool publish(OwnedEvent event);
     void flush();
 #ifdef LLW_RUNTIME_TESTING
-    void flush_for_test(std::function<void()> barrier_enqueued);
+    void flush_for_test(std::function<void()> barrier_enqueued,
+                        std::function<void()> waiting_for_control = {});
     void fail_next_publish_of_type_for_test(int32_t event_type);
 #endif
     void stop();
     void drain_for_test();
 private:
+    enum class Admission { Regular, Terminal, Control };
     struct DispatchItem {
         OwnedEvent event;
         std::shared_ptr<std::promise<void>> barrier;
+        Admission admission{Admission::Regular};
     };
-    void flush_impl(std::function<void()> barrier_enqueued);
+    void flush_impl(std::function<void()> barrier_enqueued,
+                    std::function<void()> waiting_for_control);
     void run();
     llw_callback_table_t callbacks_{};
-    const size_t capacity_;
+    // The deque holds at most regular_capacity_ + terminal_capacity_ + one barrier.
+    // The worker owns at most one additional event payload while invoking a callback.
+    const size_t regular_capacity_;
+    static constexpr size_t terminal_capacity_ = LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS;
     std::mutex mutex_;
     std::condition_variable readable_;
-    std::condition_variable writable_;
+    std::condition_variable control_writable_;
     std::condition_variable drained_;
+    std::condition_variable joined_;
     std::deque<DispatchItem> queue_;
+    size_t regular_queued_{};
+    size_t terminal_queued_{};
+    bool barrier_queued_{};
     bool stopping_{};
+    bool join_started_{};
+    bool join_finished_{};
     size_t in_callback_{};
     std::thread::id callback_thread_{};
 #ifdef LLW_RUNTIME_TESTING

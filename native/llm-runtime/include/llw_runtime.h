@@ -168,6 +168,7 @@ typedef struct llw_device_list_t {
  * copy data before returning to retain it. Callbacks may run on
  * runtime-managed threads, so consumers must be thread-safe. Do not call
  * runtime functions reentrantly from a callback unless explicitly documented.
+ * Callbacks must return normally and must not throw or unwind across this ABI boundary.
  */
 typedef struct llw_event_t {
     uint32_t struct_size;
@@ -332,7 +333,8 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_list_devices(
  * TOKEN is BYTES; LOG is UTF8; QUEUED, MODEL_PROGRESS, METRICS, DONE, CANCELLED, and ERROR are
  * JSON_UTF8. event and data are valid only during the callback and must be copied before return.
  * Only the dispatcher thread invokes on_event; callbacks are serialized, may not call llw_* reentrantly,
- * and must not block indefinitely. Each accepted request emits increasing sequence_number values and
+ * must not throw or unwind, and must not block indefinitely. Each accepted request emits
+ * increasing sequence_number values and
  * exactly one of DONE, CANCELLED, or ERROR. After that terminal event is copied into the bounded event
  * queue and sequence cleanup completes, the scheduler erases the request and later
  * llw_request_cancel calls for that handle deterministically return LLW_ERR_NOT_FOUND.
