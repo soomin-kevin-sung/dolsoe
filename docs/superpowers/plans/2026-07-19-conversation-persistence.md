@@ -6,7 +6,7 @@
 
 **Architecture:** A cloneable `ConversationStore` wraps one `rusqlite::Connection` in a mutex and exposes transaction-oriented domain methods through Tauri commands. React uses a typed `ConversationService` and reducer-driven `useConversationWorkspace` hook; native request events are bound to persisted assistant message IDs so switching sessions cannot redirect output.
 
-**Tech Stack:** Rust 1.93, rusqlite 0.40 with bundled SQLite, uuid 1.24, Tauri 2, React 19, TypeScript, Vitest, Playwright.
+**Tech Stack:** Rust 1.93, rusqlite 0.39 with bundled SQLite, uuid 1.24, Tauri 2, React 19, TypeScript, Vitest, Playwright.
 
 ---
 
@@ -78,7 +78,7 @@ Expected: compilation fails because `ConversationStore` and its domain records d
 Add:
 
 ```toml
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.39.0", features = ["bundled"] }
 uuid = { version = "1.24.0", features = ["v4"] }
 ```
 

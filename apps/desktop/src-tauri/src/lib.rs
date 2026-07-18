@@ -1,3 +1,4 @@
+mod conversation_store;
 mod llm_commands;
 mod llm_dto;
 mod llm_worker;
