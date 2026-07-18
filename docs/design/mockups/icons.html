@@ -1,0 +1,138 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>Local LLM Wiki — 앱 아이콘 컨셉</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: "Pretendard Variable", Pretendard, "Segoe UI", "Malgun Gothic", sans-serif;
+  background: #FFFFFF; color: #1A1D21; padding: 40px 48px;
+}
+h1 { font-size: 18px; font-weight: 600; }
+.sub { font-size: 12px; color: #878E97; margin-top: 4px; }
+.row { display: flex; gap: 40px; margin-top: 28px; align-items: flex-start; }
+.card { text-align: center; }
+.card .frame {
+  width: 220px; height: 220px; display: flex; align-items: center; justify-content: center;
+  background: #F4F5F6; border: 1px solid #D8DCE0; border-radius: 8px;
+}
+.card svg { width: 176px; height: 176px; }
+.card h3 { font-size: 13px; font-weight: 600; margin-top: 10px; }
+.card h3 .rec { color: #0F766E; }
+.card p { font-size: 11px; color: #555C64; margin-top: 3px; width: 220px; line-height: 1.5; }
+.divider { height: 1px; background: #D8DCE0; margin: 36px 0 28px; }
+.variants { display: flex; gap: 28px; align-items: flex-end; }
+.v { text-align: center; }
+.v .label { font-size: 10px; color: #878E97; margin-top: 6px; }
+.tile {
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 8px; border: 1px solid #D8DCE0;
+}
+.tile.light { background: #F4F5F6; }
+.tile.dark { background: #17191D; }
+</style>
+</head>
+<body>
+
+<h1>Local LLM Wiki — 앱 아이콘 컨셉</h1>
+<p class="sub">공통 조건: 텍스트 없음 · 투명 배경 · 16px 식별 가능 · 굵은 실루엣 · Windows/macOS 변환 가능</p>
+
+<div class="row">
+  <!-- 개념 1: 칩 속의 책 (추천) -->
+  <div class="card">
+    <div class="frame">
+      <svg viewBox="0 0 1024 1024">
+        <rect x="104" y="336" width="96" height="120" rx="48" fill="#0E7C71"/>
+        <rect x="104" y="568" width="96" height="120" rx="48" fill="#0E7C71"/>
+        <rect x="824" y="336" width="96" height="120" rx="48" fill="#0E7C71"/>
+        <rect x="824" y="568" width="96" height="120" rx="48" fill="#0E7C71"/>
+        <rect x="192" y="192" width="640" height="640" rx="120" fill="#0E7C71"/>
+        <path d="M512 400 C458 362 382 350 310 350 L310 642 C382 642 458 652 512 694 C566 652 642 642 714 642 L714 350 C642 350 566 362 512 400 Z" fill="#F2F7F5"/>
+      </svg>
+    </div>
+    <h3>개념 1 · 칩 속의 책 <span class="rec">— 추천</span></h3>
+    <p>로컬 연산(칩 실루엣)이 지식(열린 책)을 담는 구조. 두 형상 모두 굵고 의미가 직독됩니다.</p>
+  </div>
+
+  <!-- 개념 2: 북마크 코어 -->
+  <div class="card">
+    <div class="frame">
+      <svg viewBox="0 0 1024 1024">
+        <path d="M352 160 H672 A48 48 0 0 1 720 208 V836 L512 716 L304 836 V208 A48 48 0 0 1 352 160 Z" fill="#0E7C71"/>
+        <circle cx="512" cy="408" r="96" fill="#F2F7F5"/>
+      </svg>
+    </div>
+    <h3>개념 2 · 북마크 코어</h3>
+    <p>지식의 표시(북마크)와 추론 코어(원점)의 결합. 가장 단순하지만 "로컬 실행" 의미가 약합니다.</p>
+  </div>
+
+  <!-- 개념 3: 페이지 스택과 전원 -->
+  <div class="card">
+    <div class="frame">
+      <svg viewBox="0 0 1024 1024">
+        <rect x="300" y="196" width="560" height="560" rx="72" fill="#0A5A52"/>
+        <rect x="220" y="276" width="560" height="560" rx="72" fill="#0E7C71"/>
+        <path d="M410 500 A128 128 0 1 0 590 500" stroke="#F2F7F5" stroke-width="58" fill="none" stroke-linecap="round"/>
+        <rect x="471" y="416" width="58" height="180" rx="29" fill="#F2F7F5"/>
+      </svg>
+    </div>
+    <h3>개념 3 · 페이지 스택과 전원</h3>
+    <p>쌓인 문서(위키)와 실행(전원 기호). 전원 기호의 획이 16px에서 가늘어지는 것이 약점입니다.</p>
+  </div>
+</div>
+
+<div class="divider"></div>
+
+<h1 style="font-size:15px">개념 1 — 크기·배경·단색 검증</h1>
+<div class="row" style="margin-top:20px">
+  <div class="variants">
+    <div class="v"><div class="tile light" style="width:140px;height:140px">
+      <svg viewBox="0 0 1024 1024" width="128" height="128"><use href="#c1"/></svg>
+    </div><div class="label">128px</div></div>
+    <div class="v"><div class="tile light" style="width:76px;height:76px">
+      <svg viewBox="0 0 1024 1024" width="64" height="64"><use href="#c1"/></svg>
+    </div><div class="label">64px</div></div>
+    <div class="v"><div class="tile light" style="width:44px;height:44px">
+      <svg viewBox="0 0 1024 1024" width="32" height="32"><use href="#c1"/></svg>
+    </div><div class="label">32px</div></div>
+    <div class="v"><div class="tile light" style="width:28px;height:28px">
+      <svg viewBox="0 0 1024 1024" width="16" height="16"><use href="#c1"/></svg>
+    </div><div class="label">16px</div></div>
+    <div class="v"><div class="tile dark" style="width:140px;height:140px">
+      <svg viewBox="0 0 1024 1024" width="128" height="128"><use href="#c1"/></svg>
+    </div><div class="label">어두운 배경</div></div>
+    <div class="v"><div class="tile light" style="width:140px;height:140px">
+      <svg viewBox="0 0 1024 1024" width="128" height="128">
+        <mask id="mcut">
+          <rect width="1024" height="1024" fill="white"/>
+          <path d="M512 400 C458 362 382 350 310 350 L310 642 C382 642 458 652 512 694 C566 652 642 642 714 642 L714 350 C642 350 566 362 512 400 Z" fill="black"/>
+        </mask>
+        <g fill="#1A1D21" mask="url(#mcut)">
+          <rect x="104" y="336" width="96" height="120" rx="48"/>
+          <rect x="104" y="568" width="96" height="120" rx="48"/>
+          <rect x="824" y="336" width="96" height="120" rx="48"/>
+          <rect x="824" y="568" width="96" height="120" rx="48"/>
+          <rect x="192" y="192" width="640" height="640" rx="120"/>
+        </g>
+      </svg>
+    </div><div class="label">단색 변형</div></div>
+  </div>
+</div>
+
+<!-- 개념 1 심볼 정의 -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <g id="c1">
+      <rect x="104" y="336" width="96" height="120" rx="48" fill="#0E7C71"/>
+      <rect x="104" y="568" width="96" height="120" rx="48" fill="#0E7C71"/>
+      <rect x="824" y="336" width="96" height="120" rx="48" fill="#0E7C71"/>
+      <rect x="824" y="568" width="96" height="120" rx="48" fill="#0E7C71"/>
+      <rect x="192" y="192" width="640" height="640" rx="120" fill="#0E7C71"/>
+      <path d="M512 400 C458 362 382 350 310 350 L310 642 C382 642 458 652 512 694 C566 652 642 642 714 642 L714 350 C642 350 566 362 512 400 Z" fill="#F2F7F5"/>
+    </g>
+  </defs>
+</svg>
+
+</body>
+</html>

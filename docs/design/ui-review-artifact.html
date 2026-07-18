@@ -1,0 +1,898 @@
+<title>Local LLM Wiki — UI 디자인</title>
+<style>
+/* ============ 페이지 크롬 (뷰어 테마 연동) ============ */
+:root {
+  --pg-bg: #F7F8F9; --pg-surface: #FFFFFF; --pg-text: #1A1D21; --pg-text2: #555C64;
+  --pg-text3: #6B737C; --pg-border: #D8DCE0; --pg-accent: #0F766E; --pg-accent-subtle: #E3F0EE;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --pg-bg: #151719; --pg-surface: #1E2226; --pg-text: #E7EAED; --pg-text2: #A6ADB5;
+    --pg-text3: #8F97A1; --pg-border: #33383F; --pg-accent: #3ECBBA; --pg-accent-subtle: #1C3330;
+  }
+}
+:root[data-theme="dark"] {
+  --pg-bg: #151719; --pg-surface: #1E2226; --pg-text: #E7EAED; --pg-text2: #A6ADB5;
+  --pg-text3: #8F97A1; --pg-border: #33383F; --pg-accent: #3ECBBA; --pg-accent-subtle: #1C3330;
+}
+:root[data-theme="light"] {
+  --pg-bg: #F7F8F9; --pg-surface: #FFFFFF; --pg-text: #1A1D21; --pg-text2: #555C64;
+  --pg-text3: #6B737C; --pg-border: #D8DCE0; --pg-accent: #0F766E; --pg-accent-subtle: #E3F0EE;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: "Pretendard Variable", Pretendard, "Segoe UI Variable Text", "Segoe UI",
+               "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  background: var(--pg-bg); color: var(--pg-text);
+  font-size: 14px; line-height: 1.55;
+}
+.page { max-width: 1200px; margin: 0 auto; padding: 32px 24px 64px; }
+.page h1 { font-size: 20px; font-weight: 600; letter-spacing: -0.01em; }
+.page .sub { font-size: 13px; color: var(--pg-text2); margin-top: 4px; }
+.toolbar { margin-top: 20px; display: flex; flex-direction: column; gap: 10px; }
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.chip-row .lbl {
+  font-size: 11px; color: var(--pg-text3); letter-spacing: .05em; text-transform: uppercase;
+  margin-right: 4px; min-width: 34px;
+}
+.chip {
+  font: inherit; font-size: 12px; font-weight: 500; color: var(--pg-text2);
+  background: var(--pg-surface); border: 1px solid var(--pg-border); border-radius: 4px;
+  padding: 4px 10px; cursor: pointer;
+}
+.chip:hover { border-color: var(--pg-text3); color: var(--pg-text); }
+.chip.on { background: var(--pg-accent-subtle); color: var(--pg-accent); border-color: transparent; font-weight: 600; }
+.chip:focus-visible { outline: 2px solid var(--pg-accent); outline-offset: 1px; }
+.stage-wrap { margin-top: 16px; border: 1px solid var(--pg-border); border-radius: 6px; overflow: hidden; position: relative; }
+.section { margin-top: 36px; }
+.section h2 { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+.section p { font-size: 13px; color: var(--pg-text2); max-width: 70ch; }
+.section table { border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+.section th, .section td { text-align: left; padding: 5px 14px 5px 0; border-bottom: 1px solid var(--pg-border); vertical-align: top; }
+.section th { color: var(--pg-text3); font-weight: 500; }
+.section code, .mono { font-family: "Cascadia Mono", "SF Mono", Consolas, monospace; font-size: 11.5px; }
+.swatch { display: inline-block; width: 11px; height: 11px; border-radius: 2px; border: 1px solid var(--pg-border); vertical-align: -1px; margin-right: 6px; }
+.cols { display: flex; gap: 40px; flex-wrap: wrap; }
+.tbl-scroll { overflow-x: auto; }
+ul.files { font-size: 13px; color: var(--pg-text2); padding-left: 18px; }
+ul.files li { margin: 3px 0; }
+
+/* ============ 목업 스테이지 (스코프드 토큰) ============ */
+.stage {
+  --bg-app: #F4F5F6; --bg-surface: #FFFFFF; --bg-inset: #ECEEF0; --bg-hover: #E8EAEC;
+  --bg-active: #E1E4E7; --bg-statusbar: #F4F5F6;
+  --border: #D8DCE0; --border-strong: #B8BEC5;
+  --text-1: #1A1D21; --text-2: #555C64; --text-3: #6B737C;
+  --accent: #0F766E; --accent-solid: #0F766E; --accent-solid-hover: #0C5F59;
+  --on-accent: #FFFFFF; --accent-subtle: #E3F0EE;
+  --amber: #8A5C00; --amber-bg: #FAF2DC;
+  --red: #B42318; --red-hover: #932015; --on-red: #FFFFFF; --red-bg: #FBEBE9;
+  --shadow-overlay: 0 4px 16px rgba(15,20,25,.14), 0 0 0 1px rgba(15,20,25,.04);
+  --font-ui: "Pretendard Variable", Pretendard, "Segoe UI Variable Text", "Segoe UI",
+             "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --font-mono: "Cascadia Mono", "SF Mono", Consolas, "D2Coding", monospace;
+  --fs-11: 11px; --fs-12: 12px; --fs-13: 13px; --fs-14: 14px; --fs-16: 16px; --fs-20: 20px;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-8: 32px;
+  --r-control: 4px; --r-container: 6px;
+  --w-sidebar: 264px; --w-panel: 320px; --h-header: 48px; --h-statusbar: 28px; --w-column: 760px;
+
+  width: 1440px; height: 900px;
+  font-family: var(--font-ui); font-size: var(--fs-13); line-height: 1.45;
+  color: var(--text-1); background: var(--bg-app);
+  display: grid; grid-template-rows: minmax(0,1fr) var(--h-statusbar);
+  overflow: hidden; position: relative;
+  transform-origin: top left; text-align: left;
+}
+.stage[data-mock-theme="dark"] {
+  --bg-app: #17191D; --bg-surface: #1E2226; --bg-inset: #272C31; --bg-hover: #2A2F35;
+  --bg-active: #31373E; --bg-statusbar: #14161A;
+  --border: #33383F; --border-strong: #4A515A;
+  --text-1: #E7EAED; --text-2: #A6ADB5; --text-3: #8F97A1;
+  --accent: #3ECBBA; --accent-solid: #3ECBBA; --accent-solid-hover: #5AD6C7;
+  --on-accent: #0B2B27; --accent-subtle: #1C3330;
+  --amber: #E3B45E; --amber-bg: #37301E;
+  --red: #F28B82; --red-hover: #F5A39C; --on-red: #331512; --red-bg: #3B2523;
+  --shadow-overlay: 0 8px 24px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.06);
+}
+.stage.compact { width: 1024px; height: 700px; --w-sidebar: 224px; }
+
+.stage button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; }
+.stage [hidden] { display: none !important; }
+.stage input, .stage textarea { font: inherit; color: inherit; }
+.stage :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: var(--r-control); }
+.stage .icon { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.stage .icon-sm { width: 14px; height: 14px; }
+.stage .icon-lg { width: 28px; height: 28px; stroke-width: 1.5; }
+
+.stage .app { display: flex; min-height: 0; min-width: 0; height: 100%; }
+.stage .sidebar { width: var(--w-sidebar); flex: none; background: var(--bg-app);
+  border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+.stage .sidebar-head { height: var(--h-header); flex: none; display: flex; align-items: center;
+  gap: var(--sp-2); padding: 0 var(--sp-3); }
+.stage .app-mark { width: 20px; height: 20px; flex: none; }
+.stage .app-name { font-size: var(--fs-13); font-weight: 600; letter-spacing: -0.01em; }
+.stage .sidebar-head .spacer { flex: 1; }
+.stage .icon-btn { width: 30px; height: 30px; flex: none; display: inline-flex; align-items: center;
+  justify-content: center; border-radius: var(--r-control); color: var(--text-2); }
+.stage .icon-btn:hover { background: var(--bg-hover); color: var(--text-1); }
+.stage .icon-btn[aria-pressed="true"] { background: var(--bg-active); color: var(--text-1); }
+.stage .sidebar-search { padding: 0 var(--sp-3) var(--sp-2); }
+.stage .search-field { display: flex; align-items: center; gap: var(--sp-2); height: 28px;
+  padding: 0 var(--sp-2); background: var(--bg-inset); border: 1px solid transparent;
+  border-radius: var(--r-control); color: var(--text-3); }
+.stage .search-field input { flex: 1; min-width: 0; border: none; background: none; outline: none;
+  font-size: var(--fs-12); color: var(--text-1); }
+.stage .search-field input::placeholder { color: var(--text-3); }
+.stage .search-field:focus-within { border-color: var(--accent); background: var(--bg-surface); }
+.stage .session-list { flex: 1; overflow-y: auto; padding: var(--sp-1) var(--sp-2); }
+.stage .session-item { display: block; width: 100%; text-align: left;
+  padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3); border-radius: var(--r-control);
+  border-left: 2px solid transparent; margin-bottom: 2px; }
+.stage .session-item:hover { background: var(--bg-hover); }
+.stage .session-item.active { background: var(--bg-active); border-left-color: var(--accent); }
+.stage .session-title { font-size: var(--fs-13); font-weight: 500; color: var(--text-1);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage .session-meta { display: flex; align-items: center; gap: var(--sp-1); margin-top: 2px;
+  font-size: var(--fs-11); color: var(--text-3); }
+.stage .session-meta .gen { display: inline-flex; align-items: center; gap: 4px; color: var(--accent); font-weight: 500; }
+.stage .sidebar-foot { flex: none; height: 36px; border-top: 1px solid var(--border);
+  display: flex; align-items: center; padding: 0 var(--sp-2); }
+.stage .sidebar-foot button { display: inline-flex; align-items: center; gap: var(--sp-2);
+  height: 28px; padding: 0 var(--sp-2); border-radius: var(--r-control); font-size: var(--fs-12); color: var(--text-2); }
+.stage .sidebar-foot button:hover { background: var(--bg-hover); color: var(--text-1); }
+.stage .sidebar-foot button.active { background: var(--bg-active); color: var(--text-1); }
+
+.stage .main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-surface); }
+.stage .chat-header { height: var(--h-header); flex: none; display: flex; align-items: center;
+  gap: var(--sp-2); padding: 0 var(--sp-4); border-bottom: 1px solid var(--border); }
+.stage .chat-title { font-size: var(--fs-14); font-weight: 600; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage .chat-header .spacer { flex: 1; min-width: var(--sp-4); }
+.stage .model-chip { display: inline-flex; align-items: center; gap: var(--sp-2); height: 30px;
+  max-width: 300px; padding: 0 var(--sp-2) 0 var(--sp-3); border: 1px solid var(--border);
+  border-radius: var(--r-control); font-size: var(--fs-12); color: var(--text-2); }
+.stage.compact .model-chip { max-width: 200px; }
+.stage .model-chip:hover { background: var(--bg-hover); border-color: var(--border-strong); }
+.stage .model-chip .name { min-width: 0; white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; color: var(--text-1); font-weight: 500; }
+.stage .model-chip.empty .name { color: var(--text-2); font-weight: 400; }
+.stage .model-chip.error { border-color: var(--red); }
+.stage .model-chip.loading { pointer-events: none; }
+.stage .model-chip .pct { font-family: var(--font-mono); font-size: var(--fs-11); color: var(--accent); }
+.stage .header-divider { width: 1px; height: 16px; background: var(--border); margin: 0 var(--sp-1); }
+
+.stage .messages { flex: 1; min-height: 0; overflow-y: auto; }
+.stage .msg-col { max-width: var(--w-column); margin: 0 auto; padding: var(--sp-6) var(--sp-8);
+  display: flex; flex-direction: column; gap: var(--sp-6); }
+.stage.compact .msg-col, .stage.compact .composer-wrap, .stage.compact .diag-col {
+  padding-left: var(--sp-5); padding-right: var(--sp-5); }
+.stage .msg { display: flex; flex-direction: column; min-width: 0; }
+.stage .msg.user { align-items: flex-end; }
+.stage .msg.user .bubble { max-width: 640px; background: var(--bg-inset);
+  border-radius: var(--r-container); padding: 10px 14px; font-size: var(--fs-14); line-height: 1.6;
+  overflow-wrap: break-word; word-break: break-word; white-space: pre-wrap; }
+.stage .msg.assistant .body { font-size: var(--fs-14); line-height: 1.65; color: var(--text-1);
+  overflow-wrap: break-word; word-break: break-word; white-space: pre-wrap; }
+.stage .msg .stamp { margin-top: var(--sp-1); font-size: var(--fs-11); color: var(--text-3); }
+.stage .metrics-line { margin-top: var(--sp-2); display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap; font-family: var(--font-mono); font-size: var(--fs-11); color: var(--text-2);
+  font-variant-numeric: tabular-nums; }
+.stage .metrics-line.live { color: var(--accent); }
+.stage .metrics-line .sep { color: var(--border-strong); }
+.stage .cursor { display: inline-block; width: 7px; height: 15px; margin-left: 1px;
+  vertical-align: -2px; background: var(--accent); animation: blink 1s step-end infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.stage .stopped-line { margin-top: var(--sp-2); display: inline-flex; align-items: center;
+  gap: var(--sp-2); font-size: var(--fs-12); color: var(--text-2); }
+.stage .stopped-line .icon { width: 12px; height: 12px; }
+.stage .error-block { border-left: 2px solid var(--red); background: var(--red-bg);
+  border-radius: 0 var(--r-container) var(--r-container) 0; padding: var(--sp-3) var(--sp-4); max-width: 640px; }
+.stage .error-block h4 { display: flex; align-items: center; gap: var(--sp-2);
+  font-size: var(--fs-13); font-weight: 600; color: var(--red); }
+.stage .error-block p { margin-top: var(--sp-1); font-size: var(--fs-12); color: var(--text-2); line-height: 1.55; }
+.stage .error-block .actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-3); }
+.stage .empty-state { flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; text-align: center; padding: var(--sp-8); gap: var(--sp-2); }
+.stage .empty-state .icon-lg { color: var(--text-3); margin-bottom: var(--sp-2); }
+.stage .empty-state h2 { font-size: var(--fs-20); font-weight: 600; letter-spacing: -0.01em; line-height: 1.4; }
+.stage .empty-state p { font-size: var(--fs-13); color: var(--text-2); max-width: 380px; line-height: 1.6; }
+.stage .empty-state .caption { font-size: var(--fs-11); color: var(--text-3); }
+.stage .empty-state .btn-primary { margin-top: var(--sp-3); }
+.stage .empty-state .ready-line { display: inline-flex; align-items: center; gap: var(--sp-2);
+  font-size: var(--fs-12); color: var(--text-2); font-family: var(--font-mono); }
+.stage .loading-card { width: 400px; max-width: 100%; text-align: left; }
+.stage .loading-card .file { font-size: var(--fs-13); font-weight: 500;
+  overflow-wrap: break-word; word-break: break-all; }
+.stage .progress-track { margin-top: var(--sp-3); height: 4px; border-radius: 2px;
+  background: var(--bg-inset); overflow: hidden; }
+.stage .progress-fill { height: 100%; background: var(--accent); border-radius: 2px; }
+.stage .loading-card .row { margin-top: var(--sp-2); display: flex; justify-content: space-between;
+  font-family: var(--font-mono); font-size: var(--fs-11); color: var(--text-2);
+  font-variant-numeric: tabular-nums; }
+.stage .loading-card .cancel-row { margin-top: var(--sp-4); text-align: center; }
+.stage .diag-col { max-width: var(--w-column); margin: 0 auto; padding: var(--sp-6) var(--sp-8); }
+.stage .diag-section { padding: var(--sp-4) 0; }
+.stage .diag-section + .diag-section { border-top: 1px solid var(--border); }
+.stage .diag-section h4 { font-size: var(--fs-11); font-weight: 600; letter-spacing: .06em;
+  color: var(--text-3); text-transform: uppercase; margin-bottom: var(--sp-2); }
+.stage .diag-row { display: grid; grid-template-columns: 200px 1fr; gap: var(--sp-3);
+  min-height: 26px; align-items: baseline; }
+.stage .diag-row .k { font-size: var(--fs-12); color: var(--text-2); }
+.stage .diag-row .v { font-family: var(--font-mono); font-size: var(--fs-12); color: var(--text-1);
+  font-variant-numeric: tabular-nums; overflow-wrap: break-word; word-break: break-all; }
+
+.stage .btn-primary { display: inline-flex; align-items: center; gap: var(--sp-2); height: 32px;
+  padding: 0 var(--sp-4); background: var(--accent-solid); color: var(--on-accent);
+  border-radius: var(--r-control); font-size: var(--fs-13); font-weight: 500; }
+.stage .btn-primary:hover { background: var(--accent-solid-hover); }
+.stage .btn-secondary { display: inline-flex; align-items: center; gap: var(--sp-2); height: 28px;
+  padding: 0 var(--sp-3); border: 1px solid var(--border-strong); border-radius: var(--r-control);
+  font-size: var(--fs-12); font-weight: 500; color: var(--text-1); background: var(--bg-surface); }
+.stage .btn-secondary:hover { background: var(--bg-hover); }
+.stage .btn-danger { display: inline-flex; align-items: center; height: 32px; padding: 0 var(--sp-4);
+  background: var(--red); color: var(--on-red); border-radius: var(--r-control);
+  font-size: var(--fs-13); font-weight: 500; }
+.stage .btn-danger:hover { background: var(--red-hover); }
+
+.stage .composer-wrap { flex: none; padding: 0 var(--sp-8) var(--sp-4); }
+.stage .composer { max-width: var(--w-column); margin: 0 auto; border: 1px solid var(--border-strong);
+  border-radius: var(--r-container); background: var(--bg-surface); display: flex;
+  align-items: flex-end; gap: var(--sp-2); padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-3); }
+.stage .composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.stage .composer.disabled { background: var(--bg-inset); border-color: var(--border); }
+.stage .composer.disabled textarea::placeholder { color: var(--text-2); }
+.stage .composer textarea { flex: 1; min-width: 0; resize: none; border: none; background: none;
+  outline: none; min-height: 28px; max-height: 160px; padding: 4px 0;
+  font-size: var(--fs-14); line-height: 1.5; }
+.stage .composer textarea::placeholder { color: var(--text-3); }
+.stage .composer textarea:disabled { cursor: not-allowed; }
+.stage .send-btn { width: 32px; height: 32px; flex: none; display: inline-flex; align-items: center;
+  justify-content: center; border-radius: var(--r-control); background: var(--accent-solid); color: var(--on-accent); }
+.stage .send-btn:hover { background: var(--accent-solid-hover); }
+.stage .send-btn:disabled { background: var(--bg-active); color: var(--text-3); cursor: not-allowed; }
+.stage .stop-btn { width: 32px; height: 32px; flex: none; display: inline-flex; align-items: center;
+  justify-content: center; border-radius: var(--r-control); border: 1px solid var(--border-strong);
+  color: var(--text-1); background: var(--bg-surface); }
+.stage .stop-btn:hover { background: var(--bg-hover); border-color: var(--text-2); }
+.stage .stop-btn .icon { width: 12px; height: 12px; fill: currentColor; stroke: none; }
+.stage .composer-hint { max-width: var(--w-column); margin: var(--sp-1) auto 0;
+  font-size: var(--fs-11); color: var(--text-3); }
+
+.stage .statusbar { height: var(--h-statusbar); background: var(--bg-statusbar);
+  border-top: 1px solid var(--border); display: flex; align-items: center; padding: 0 var(--sp-3);
+  gap: var(--sp-4); font-variant-numeric: tabular-nums; min-width: 0; }
+.stage .sb-status { display: flex; align-items: center; gap: var(--sp-2); min-width: 0; }
+.stage .status-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.stage .status-dot.none { background: none; border: 1.5px solid var(--text-3); }
+.stage .status-dot.ok { background: var(--accent); }
+.stage .status-dot.busy { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.stage .status-dot.warn { background: var(--amber); }
+.stage .status-dot.err { background: var(--red); }
+@keyframes pulse { 50% { opacity: .35; } }
+.stage .sb-state-text { font-size: var(--fs-12); font-weight: 500; white-space: nowrap; }
+.stage .sb-model { font-size: var(--fs-12); color: var(--text-2); min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; }
+.stage.compact .sb-model { max-width: 180px; }
+.stage .sb-progress { width: 60px; height: 3px; border-radius: 2px; background: var(--bg-inset);
+  overflow: hidden; flex: none; }
+.stage .sb-progress i { display: block; height: 100%; background: var(--accent); }
+.stage .statusbar .spacer { flex: 1; min-width: var(--sp-2); }
+.stage .sb-metrics { display: flex; align-items: center; min-width: 0; }
+.stage .sb-item { display: flex; align-items: baseline; gap: 6px; padding: 0 var(--sp-3); white-space: nowrap; }
+.stage .sb-item + .sb-item { border-left: 1px solid var(--border); }
+.stage.compact .sb-item.optional { display: none; }
+.stage .sb-label { font-size: 10px; letter-spacing: .05em; color: var(--text-3); text-transform: uppercase; }
+.stage .sb-value { font-family: var(--font-mono); font-size: var(--fs-11); color: var(--text-2); }
+.stage .sb-value.live { color: var(--accent); font-weight: 600; }
+.stage .sb-value .dim { color: var(--text-3); }
+
+.stage .panel { width: 0; flex: none; overflow: hidden; background: var(--bg-surface);
+  border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0;
+  transition: width 160ms ease-out; visibility: hidden; }
+.stage .panel.open { width: var(--w-panel); visibility: visible; }
+.stage.compact .panel { position: absolute; right: 0; top: 0; bottom: var(--h-statusbar);
+  width: var(--w-panel); transform: translateX(100%);
+  transition: transform 160ms ease-out, visibility 160ms;
+  box-shadow: var(--shadow-overlay); z-index: 30; border-left: 1px solid var(--border); }
+.stage.compact .panel.open { transform: none; }
+.stage .panel-inner { width: var(--w-panel); display: flex; flex-direction: column; min-height: 0; height: 100%; }
+.stage .panel-head { height: var(--h-header); flex: none; display: flex; align-items: center;
+  justify-content: space-between; padding: 0 var(--sp-3) 0 var(--sp-4); border-bottom: 1px solid var(--border); }
+.stage .panel-head h3 { font-size: var(--fs-16); font-weight: 600; }
+.stage .panel-body { flex: 1; overflow-y: auto; padding: var(--sp-4) var(--sp-4) var(--sp-6); }
+.stage .panel-section + .panel-section { margin-top: var(--sp-5); padding-top: var(--sp-4);
+  border-top: 1px solid var(--border); }
+.stage .panel-section h4 { font-size: var(--fs-11); font-weight: 600; letter-spacing: .06em;
+  color: var(--text-3); text-transform: uppercase; margin-bottom: var(--sp-3); }
+.stage .model-file { font-size: var(--fs-13); font-weight: 500; line-height: 1.5;
+  overflow-wrap: break-word; word-break: break-all; }
+.stage .model-meta { margin-top: var(--sp-1); font-size: var(--fs-12); color: var(--text-2); line-height: 1.6; }
+.stage .panel-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-3); flex-wrap: wrap; }
+.stage .segmented { display: flex; border: 1px solid var(--border-strong);
+  border-radius: var(--r-control); overflow: hidden; }
+.stage .segmented button { flex: 1; height: 28px; font-size: var(--fs-12); font-weight: 500;
+  color: var(--text-2); background: var(--bg-surface); }
+.stage .segmented button + button { border-left: 1px solid var(--border-strong); }
+.stage .segmented button:hover { background: var(--bg-hover); }
+.stage .segmented button[aria-pressed="true"] { background: var(--accent-subtle);
+  color: var(--accent); font-weight: 600; }
+.stage .segmented button:disabled { color: var(--text-3); background: var(--bg-inset); cursor: not-allowed; }
+.stage .device-line { margin-top: var(--sp-2); font-size: var(--fs-12); color: var(--text-2);
+  display: flex; align-items: center; gap: var(--sp-2); }
+.stage .panel-note { margin-top: var(--sp-2); font-size: var(--fs-11); color: var(--text-3); line-height: 1.5; }
+.stage .pack-row { margin-top: var(--sp-3); padding: var(--sp-3); border: 1px solid var(--border);
+  border-radius: var(--r-container); }
+.stage .pack-row .head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.stage .pack-row .name { font-size: var(--fs-12); font-weight: 500; }
+.stage .pack-row .size { font-family: var(--font-mono); font-size: var(--fs-11); color: var(--text-2); }
+.stage .pack-row .state-line { margin-top: var(--sp-2); display: flex; justify-content: space-between;
+  font-family: var(--font-mono); font-size: var(--fs-11); color: var(--text-2); }
+.stage .pack-row .progress-track { margin-top: var(--sp-2); }
+.stage .opt-row { display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3); min-height: 32px; padding: 2px 0; }
+.stage .opt-label { font-size: var(--fs-12); color: var(--text-1); }
+.stage .opt-flag { display: block; font-family: var(--font-mono); font-size: 10px;
+  color: var(--text-3); margin-top: 1px; }
+.stage .opt-input { width: 88px; height: 28px; flex: none; border: 1px solid var(--border-strong);
+  border-radius: var(--r-control); background: var(--bg-surface); padding: 0 var(--sp-2);
+  font-family: var(--font-mono); font-size: var(--fs-12); text-align: right;
+  font-variant-numeric: tabular-nums; }
+.stage .opt-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.stage .badge-reload { display: inline-block; margin-left: var(--sp-1); padding: 1px 5px;
+  border-radius: 2px; background: var(--amber-bg); color: var(--amber); font-size: 10px;
+  font-weight: 600; vertical-align: 1px; }
+.stage .adv-search { margin-bottom: var(--sp-2); }
+.stage .panel-foot { flex: none; padding: var(--sp-3) var(--sp-4); border-top: 1px solid var(--border); }
+.stage .panel-foot .btn-primary { width: 100%; justify-content: center; }
+.stage .panel-foot .note { margin-top: var(--sp-2); font-size: var(--fs-11); color: var(--amber); text-align: center; }
+.stage .modal-scrim { position: absolute; inset: 0; background: rgba(15,20,25,.32);
+  display: none; align-items: center; justify-content: center; z-index: 40; }
+.stage .modal-scrim.open { display: flex; }
+.stage[data-mock-theme="dark"] .modal-scrim { background: rgba(0,0,0,.5); }
+.stage .modal { width: 380px; max-width: calc(100% - 48px); background: var(--bg-surface);
+  border-radius: var(--r-container); box-shadow: var(--shadow-overlay); padding: var(--sp-5); }
+.stage .modal h3 { font-size: var(--fs-14); font-weight: 600; }
+.stage .modal p { margin-top: var(--sp-2); font-size: var(--fs-13); color: var(--text-2); line-height: 1.6; }
+.stage .modal .actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-5); }
+.stage .modal .btn-secondary { height: 32px; padding: 0 var(--sp-4); font-size: var(--fs-13); }
+@media (prefers-reduced-motion: reduce) {
+  .stage .cursor, .stage .status-dot.busy, .stage .spin { animation: none !important; }
+  .stage .panel { transition: none !important; }
+}
+.stage .spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+
+<div class="page">
+  <h1>Local LLM Wiki — UI 디자인 검토</h1>
+  <p class="sub">방향 A "계기판(Instrument)" · 1440×900 기준 · 모든 문구 한국어 · 라이트/다크 토큰 병행 ·
+  상세 스펙: <span class="mono">docs/design/claude-ui-spec.md</span></p>
+  <p class="sub">아래 상태·테마·창 크기 컨트롤은 목업을 넘겨보기 위한 <strong>검토용 장치</strong>이며 앱 UI가 아닙니다.
+  앱 안의 테마 설정은 설정 패널의 "화면" 섹션(라이트/다크/시스템)에 있습니다.</p>
+
+  <div class="toolbar">
+    <div class="chip-row" id="stateRow"><span class="lbl">상태</span></div>
+    <div class="chip-row">
+      <span class="lbl">테마</span>
+      <button class="chip on" data-mock-theme="light">라이트</button>
+      <button class="chip" data-mock-theme="dark">다크</button>
+      <span class="lbl" style="margin-left:16px">창 크기</span>
+      <button class="chip on" data-size="full">1440×900</button>
+      <button class="chip" data-size="compact">1024×700 (최소)</button>
+    </div>
+  </div>
+
+  <div class="stage-wrap" id="stageWrap">
+    <div class="stage" id="stage" data-mock-theme="light">
+      <div class="app">
+        <aside class="sidebar">
+          <div class="sidebar-head">
+            <svg class="app-mark" viewBox="0 0 48 48" aria-hidden="true">
+              <rect x="9" y="9" width="30" height="30" rx="5" fill="var(--accent)"/>
+              <path d="M24 18.5c-2.2-1.6-4.8-2.1-7-2.1v12.4c2.2 0 4.8.5 7 2.1 2.2-1.6 4.8-2.1 7-2.1V16.4c-2.2 0-4.8.5-7 2.1z" fill="var(--bg-surface)"/>
+              <rect x="3" y="15" width="4" height="6" rx="2" fill="var(--accent)"/>
+              <rect x="3" y="27" width="4" height="6" rx="2" fill="var(--accent)"/>
+              <rect x="41" y="15" width="4" height="6" rx="2" fill="var(--accent)"/>
+              <rect x="41" y="27" width="4" height="6" rx="2" fill="var(--accent)"/>
+            </svg>
+            <span class="app-name">Local LLM Wiki</span>
+            <span class="spacer"></span>
+            <button class="icon-btn" title="새 대화" aria-label="새 대화">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12.4 14.6l-4 1 1-4z"/></svg>
+            </button>
+          </div>
+          <div class="sidebar-search">
+            <div class="search-field">
+              <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+              <input type="text" placeholder="대화 검색" aria-label="대화 검색">
+            </div>
+          </div>
+          <nav class="session-list" data-id="sessionList" aria-label="대화 목록"></nav>
+          <div class="sidebar-foot">
+            <button data-id="btnDiag">
+              <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M22 12h-2.5a2 2 0 0 0-1.9 1.5l-2.4 8.3a.25.25 0 0 1-.5 0L9.2 2.2a.25.25 0 0 0-.5 0L6.4 10.5A2 2 0 0 1 4.5 12H2"/></svg>
+              진단
+            </button>
+          </div>
+        </aside>
+
+        <main class="main">
+          <header class="chat-header">
+            <h1 class="chat-title" data-id="chatTitle">GGUF 양자화 비교</h1>
+            <span class="spacer"></span>
+            <button class="model-chip" data-id="modelChip" title="GGUF 모델 선택…">
+              <svg class="icon icon-sm chip-icon-box" viewBox="0 0 24 24"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+              <svg class="icon icon-sm spin chip-icon-spin" viewBox="0 0 24 24" hidden><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg>
+              <span class="name" data-id="modelChipName">GGUF 모델 선택…</span>
+              <span class="pct" data-id="modelChipPct" hidden></span>
+              <svg class="icon icon-sm" viewBox="0 0 24 24" style="color: var(--text-3)"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <span class="header-divider"></span>
+            <button class="icon-btn" title="대화 초기화" aria-label="대화 초기화">
+              <svg class="icon" viewBox="0 0 24 24"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg>
+            </button>
+            <button class="icon-btn" data-id="btnPanel" title="설정" aria-label="설정">
+              <svg class="icon" viewBox="0 0 24 24"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg>
+            </button>
+          </header>
+
+          <div class="messages" data-id="messages">
+            <div class="msg-col" data-id="msgCol"></div>
+          </div>
+
+          <div class="composer-wrap" data-id="composerWrap">
+            <div class="composer" data-id="composer">
+              <textarea data-id="promptInput" rows="1" placeholder="메시지를 입력하세요" aria-label="메시지 입력"></textarea>
+              <button class="send-btn" data-id="sendBtn" title="전송" aria-label="전송">
+                <svg class="icon" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+              </button>
+              <button class="stop-btn" data-id="stopBtn" title="생성 중지" aria-label="생성 중지" hidden>
+                <svg class="icon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></svg>
+              </button>
+            </div>
+            <p class="composer-hint" data-id="composerHint">Enter 전송 · Shift+Enter 줄바꿈</p>
+          </div>
+        </main>
+
+        <aside class="panel" data-id="panel" aria-label="설정">
+          <div class="panel-inner">
+          <div class="panel-head">
+            <h3>설정</h3>
+            <button class="icon-btn" title="닫기" aria-label="설정 닫기">
+              <svg class="icon" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+            </button>
+          </div>
+          <div class="panel-body">
+            <section class="panel-section">
+              <h4>모델</h4>
+              <p class="model-file">Qwen2.5-7B-Instruct-Q4_K_M.gguf</p>
+              <p class="model-meta">llama · Q4_K_M · 4.36 GB · 최대 컨텍스트 32,768</p>
+              <div class="panel-actions">
+                <button class="btn-secondary">다른 모델 선택…</button>
+                <button class="btn-secondary">모델 언로드</button>
+              </div>
+            </section>
+            <section class="panel-section">
+              <h4>런타임</h4>
+              <div class="segmented" role="group" aria-label="런타임 백엔드 선택">
+                <button aria-pressed="false">CPU</button>
+                <button aria-pressed="true">CUDA</button>
+                <button disabled title="Vulkan 런타임 팩이 설치되지 않았습니다">Vulkan</button>
+              </div>
+              <p class="device-line">
+                <svg class="icon icon-sm" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+                NVIDIA GeForce RTX 4070 · 12 GB
+              </p>
+              <div class="pack-row">
+                <div class="head">
+                  <span class="name">Vulkan 런타임 팩</span>
+                  <span class="size">118 MB</span>
+                  <button class="btn-secondary" data-id="packInstallBtn">설치</button>
+                </div>
+                <div data-id="packProgress" hidden>
+                  <div class="progress-track"><div class="progress-fill" style="width:42%"></div></div>
+                  <div class="state-line"><span>다운로드 중</span><span>42% · 49.6 / 118 MB</span></div>
+                </div>
+                <p class="panel-note" data-id="packNote">서명과 체크섬을 검증한 뒤 다음 시작 시 활성화됩니다.</p>
+              </div>
+              <p class="panel-note">런타임을 변경하면 현재 모델을 다시 로드합니다.</p>
+            </section>
+            <section class="panel-section">
+              <h4>추론 옵션</h4>
+              <div class="opt-row"><span class="opt-label">컨텍스트 길이<span class="badge-reload">재로드</span><span class="opt-flag">--ctx-size</span></span><input class="opt-input" value="8192" aria-label="컨텍스트 길이"></div>
+              <div class="opt-row"><span class="opt-label">GPU 레이어<span class="badge-reload">재로드</span><span class="opt-flag">--n-gpu-layers</span></span><input class="opt-input" value="32" aria-label="GPU 레이어"></div>
+              <div class="opt-row"><span class="opt-label">Temperature<span class="opt-flag">--temp</span></span><input class="opt-input" value="0.7" aria-label="Temperature"></div>
+              <div class="opt-row"><span class="opt-label">Top-P<span class="opt-flag">--top-p</span></span><input class="opt-input" value="0.9" aria-label="Top-P"></div>
+              <div class="opt-row"><span class="opt-label">최대 생성 토큰<span class="opt-flag">--n-predict</span></span><input class="opt-input" value="1024" aria-label="최대 생성 토큰"></div>
+              <div class="opt-row"><span class="opt-label">Seed<span class="opt-flag">--seed</span></span><input class="opt-input" value="-1" aria-label="Seed"></div>
+            </section>
+            <section class="panel-section">
+              <h4>고급 설정</h4>
+              <div class="search-field adv-search">
+                <svg class="icon icon-sm" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+                <input type="text" placeholder="옵션 검색" aria-label="고급 옵션 검색">
+              </div>
+              <div class="opt-row"><span class="opt-label">배치 크기<span class="badge-reload">재로드</span><span class="opt-flag">--batch-size</span></span><input class="opt-input" value="512" aria-label="배치 크기"></div>
+              <div class="opt-row"><span class="opt-label">스레드 수<span class="badge-reload">재로드</span><span class="opt-flag">--threads</span></span><input class="opt-input" value="8" aria-label="스레드 수"></div>
+              <div class="opt-row"><span class="opt-label">반복 페널티<span class="opt-flag">--repeat-penalty</span></span><input class="opt-input" value="1.1" aria-label="반복 페널티"></div>
+              <p class="panel-note">런타임이 제공하는 옵션 스키마를 기준으로 표시됩니다. 지원하지 않는 값은 저장 시 오류로 표시됩니다.</p>
+            </section>
+            <section class="panel-section">
+              <h4>화면</h4>
+              <div class="segmented" role="group" aria-label="테마 선택">
+                <button aria-pressed="false">라이트</button>
+                <button aria-pressed="false">다크</button>
+                <button aria-pressed="true">시스템</button>
+              </div>
+            </section>
+          </div>
+          <div class="panel-foot" data-id="panelFoot" hidden>
+            <button class="btn-primary">적용하고 모델 다시 로드</button>
+            <p class="note">변경한 옵션은 모델을 다시 로드해야 적용됩니다.</p>
+          </div>
+          </div>
+        </aside>
+      </div>
+
+      <footer class="statusbar" aria-label="런타임 상태">
+        <div class="sb-status">
+          <span class="status-dot ok" data-id="sbDot"></span>
+          <span class="sb-state-text" data-id="sbState">준비됨</span>
+          <span class="sb-model" data-id="sbModel">Qwen2.5-7B-Instruct-Q4_K_M.gguf</span>
+          <span class="sb-progress" data-id="sbProgress" hidden><i style="width:64%"></i></span>
+        </div>
+        <span class="spacer"></span>
+        <div class="sb-metrics" data-id="sbMetrics"></div>
+      </footer>
+
+      <div class="modal-scrim" data-id="modalScrim">
+        <div class="modal" role="alertdialog">
+          <h3 data-id="modalTitle">대화를 초기화할까요?</h3>
+          <p data-id="modalBody"></p>
+          <div class="actions">
+            <button class="btn-secondary">취소</button>
+            <button class="btn-danger" data-id="modalConfirm">초기화</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>디자인 방향</h2>
+    <p><strong>A안 "계기판(Instrument)"</strong> — 하단 28px 상태바를 런타임 계기판으로 만든 것이
+    시그니처입니다. 모델 상태점 · 백엔드 · tok/s · 토큰 · 컨텍스트를 모노스페이스 수치로 상시 표시하고,
+    생성 중에는 속도 값이 강조색으로 갱신됩니다. 넓은 면적은 뉴트럴로 유지하고 teal(정상·주 동작),
+    amber(재로드·주의), red(오류·삭제)를 기능적으로만 배분합니다. 중첩 카드·그라데이션·8px 초과
+    라운드·장식 그림자는 쓰지 않습니다.</p>
+  </div>
+
+  <div class="cols">
+    <div class="section">
+      <h2>핵심 토큰 (라이트 / 다크)</h2>
+      <div class="tbl-scroll"><table>
+        <tr><th>토큰</th><th>라이트</th><th>다크</th></tr>
+        <tr><td class="mono">--bg-app</td><td><span class="swatch" style="background:#F4F5F6"></span><span class="mono">#F4F5F6</span></td><td><span class="swatch" style="background:#17191D"></span><span class="mono">#17191D</span></td></tr>
+        <tr><td class="mono">--bg-surface</td><td><span class="swatch" style="background:#FFFFFF"></span><span class="mono">#FFFFFF</span></td><td><span class="swatch" style="background:#1E2226"></span><span class="mono">#1E2226</span></td></tr>
+        <tr><td class="mono">--bg-inset</td><td><span class="swatch" style="background:#ECEEF0"></span><span class="mono">#ECEEF0</span></td><td><span class="swatch" style="background:#272C31"></span><span class="mono">#272C31</span></td></tr>
+        <tr><td class="mono">--text-1</td><td><span class="swatch" style="background:#1A1D21"></span><span class="mono">#1A1D21</span></td><td><span class="swatch" style="background:#E7EAED"></span><span class="mono">#E7EAED</span></td></tr>
+        <tr><td class="mono">--text-2</td><td><span class="swatch" style="background:#555C64"></span><span class="mono">#555C64</span></td><td><span class="swatch" style="background:#A6ADB5"></span><span class="mono">#A6ADB5</span></td></tr>
+        <tr><td class="mono">--text-3</td><td><span class="swatch" style="background:#6B737C"></span><span class="mono">#6B737C</span></td><td><span class="swatch" style="background:#8F97A1"></span><span class="mono">#8F97A1</span></td></tr>
+        <tr><td class="mono">--accent</td><td><span class="swatch" style="background:#0F766E"></span><span class="mono">#0F766E</span></td><td><span class="swatch" style="background:#3ECBBA"></span><span class="mono">#3ECBBA</span></td></tr>
+        <tr><td class="mono">--amber</td><td><span class="swatch" style="background:#8A5C00"></span><span class="mono">#8A5C00</span></td><td><span class="swatch" style="background:#E3B45E"></span><span class="mono">#E3B45E</span></td></tr>
+        <tr><td class="mono">--red</td><td><span class="swatch" style="background:#B42318"></span><span class="mono">#B42318</span></td><td><span class="swatch" style="background:#F28B82"></span><span class="mono">#F28B82</span></td></tr>
+      </table></div>
+    </div>
+    <div class="section">
+      <h2>핵심 치수</h2>
+      <div class="tbl-scroll"><table>
+        <tr><th>요소</th><th>값</th></tr>
+        <tr><td>사이드바</td><td>264px (1180px 미만 224px)</td></tr>
+        <tr><td>설정 패널</td><td>320px · 1280px 이상 도킹 / 미만 오버레이</td></tr>
+        <tr><td>헤더 / 상태바</td><td>48px / 28px</td></tr>
+        <tr><td>메시지·입력 칼럼</td><td>max 760px 중앙</td></tr>
+        <tr><td>UI 폰트 / 본문</td><td>13px / 14px (행간 1.65)</td></tr>
+        <tr><td>수치 표기</td><td>Cascadia Mono · tabular-nums</td></tr>
+        <tr><td>반경</td><td>컨트롤 4px · 컨테이너 6px</td></tr>
+        <tr><td>최소 창</td><td>1024×700</td></tr>
+      </table></div>
+    </div>
+  </div>
+
+  <div class="section">
+    <h2>저장소 산출물</h2>
+    <ul class="files">
+      <li><span class="mono">docs/design/claude-ui-spec.md</span> — 전체 핸드오프 명세 (토큰·상태표·상호작용·구현 지침)</li>
+      <li><span class="mono">docs/design/mockups/mockup.html</span> — 이 목업의 원본 (14개 상태 × 라이트/다크)</li>
+      <li><span class="mono">docs/design/mockups/*.png</span> — 상태별 2배 해상도 스크린샷 17장</li>
+      <li><span class="mono">docs/design/icon-concepts.png</span> — 앱 아이콘 3개 컨셉 + 크기·배경·단색 검증</li>
+      <li><span class="mono">design/app-icon-1024.png</span> — 최종 아이콘 (투명 1024×1024, tauri icon 입력)</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+(function () {
+  const stage = document.getElementById('stage');
+  const wrap = document.getElementById('stageWrap');
+  const $ = (id) => stage.querySelector('[data-id="' + id + '"]');
+
+  const MODEL = 'Qwen2.5-7B-Instruct-Q4_K_M.gguf';
+  const spinner = '<svg class="icon icon-sm spin" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-6.2-8.6"/></svg>';
+  const SLASH = '<span class="dim">/</span>';
+
+  const SESSIONS_BASE = [
+    { title: 'GGUF 양자화 비교', meta: '14:06', active: true },
+    { title: 'llama.cpp 빌드 오류 분석', meta: '어제' },
+    { title: 'CUDA 오프로딩 설정 정리', meta: '2일 전' },
+    { title: '주간 회의록 요약', meta: '7월 11일' },
+  ];
+  const Q1 = 'GGUF 양자화 방식 중 Q4_K_M과 Q5_K_M의 차이를 설명해줘. 7B 모델을 12GB VRAM에서 돌릴 건데 어느 쪽이 나아?';
+  const A1 = 'Q4_K_M과 Q5_K_M은 모두 k-quant 계열의 혼합 정밀도 양자화입니다. 핵심 차이는 가중치당 평균 비트 수입니다.\n\nQ4_K_M은 평균 약 4.8bpw로 7B 모델 기준 파일 크기가 약 4.4GB이고, Q5_K_M은 평균 약 5.7bpw로 약 5.1GB입니다. 품질은 Q5_K_M이 퍼플렉시티 기준으로 조금 더 원본에 가깝지만, 실사용 체감 차이는 크지 않습니다.\n\n12GB VRAM이라면 두 방식 모두 전체 레이어를 GPU에 올릴 수 있습니다. 컨텍스트를 8K 이상 길게 쓸 계획이면 KV 캐시 여유가 있는 Q4_K_M을, 품질을 조금이라도 높이고 싶다면 Q5_K_M을 권합니다.';
+  const Q2 = '그럼 Q4_K_M 기준으로 컨텍스트를 16K까지 늘리면 VRAM이 얼마나 더 필요해?';
+  const A2 = 'KV 캐시 크기는 대략 2 × 레이어 수 × 컨텍스트 길이 × KV 헤드 수 × 헤드 차원 × 정밀도(byte)로 계산합니다.\n\nQwen2.5-7B는 28개 레이어, GQA 구조로 KV 헤드가 4개입니다. FP16 KV 캐시 기준으로 8K 컨텍스트는 약 0.9GB, 16K는 약 1.8GB를 사용합니다. 즉 16K로 늘리면 KV 캐시가 약 0.9GB 더 필요합니다.\n\n모델 가중치 4.4GB에 KV 캐시 1.8GB, 연산 버퍼를 더해도 12GB 안에 여유 있게 들어갑니다.';
+  const A2P = 'KV 캐시 크기는 대략 2 × 레이어 수 × 컨텍스트 길이 × KV 헤드 수 × 헤드 차원 × 정밀도(byte)로 계산합니다.\n\nQwen2.5-7B는 28개 레이어, GQA 구조로 KV 헤드가 4개입니다. FP16 KV 캐시 기준으로 8K 컨텍스트는 약 0.9GB,';
+
+  const M1 = '41.8 tok/s<span class="sep">·</span>프롬프트 96<span class="sep">·</span>생성 187 토큰<span class="sep">·</span>4.5s';
+  const M2 = '42.1 tok/s<span class="sep">·</span>프롬프트 214<span class="sep">·</span>생성 164 토큰<span class="sep">·</span>3.9s';
+  const ML = '38.6 tok/s<span class="sep">·</span>프롬프트 214<span class="sep">·</span>생성 118 토큰<span class="sep">·</span>3.1s';
+
+  const sessionItem = (s) => '<button class="session-item' + (s.active ? ' active' : '') + '">'
+    + '<div class="session-title">' + s.title + '</div>'
+    + '<div class="session-meta">' + (s.generating ? '<span class="gen">' + spinner + '생성 중</span><span>·</span>' : '')
+    + '<span>' + s.meta + '</span></div></button>';
+  const userMsg = (t, time) => '<div class="msg user"><div class="bubble">' + t + '</div><div class="stamp">' + time + '</div></div>';
+  const stopIcon = '<svg class="icon" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1" fill="currentColor" stroke="none"/></svg>';
+  function assistantMsg(t, metrics, o) {
+    o = o || {};
+    let extra = '';
+    if (o.stopped) extra = '<div class="stopped-line">' + stopIcon + '생성이 중지되었습니다 · 토큰 87개 생성됨</div>';
+    if (o.interrupted) extra = '<div class="stopped-line">' + stopIcon + '생성이 중단되었습니다 · 토큰 87개 생성됨</div>';
+    const m = metrics ? '<div class="metrics-line' + (o.streaming ? ' live' : '') + '">' + metrics + '</div>' : '';
+    return '<div class="msg assistant"><div class="body">' + t + (o.streaming ? '<span class="cursor"></span>' : '') + '</div>' + extra + m + '</div>';
+  }
+  const sbItem = (l, v, o) => '<div class="sb-item' + ((o && o.optional) ? ' optional' : '') + '">'
+    + '<span class="sb-label">' + l + '</span><span class="sb-value' + ((o && o.live) ? ' live' : '') + '">' + v + '</span></div>';
+
+  const convFull = userMsg(Q1, '14:02') + assistantMsg(A1, M1) + userMsg(Q2, '14:06') + assistantMsg(A2, M2);
+  const convStream = userMsg(Q1, '14:02') + assistantMsg(A1, M1) + userMsg(Q2, '14:06') + assistantMsg(A2P, ML, { streaming: true });
+  const convCancel = userMsg(Q1, '14:02') + assistantMsg(A1, M1) + userMsg(Q2, '14:06') + assistantMsg(A2P, null, { stopped: true });
+  const convInterrupt = userMsg(Q1, '14:02') + assistantMsg(A1, M1) + userMsg(Q2, '14:06') + assistantMsg(A2P, null, { interrupted: true });
+  const errBlock = '<div class="msg assistant"><div class="error-block">'
+    + '<h4><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="m21.7 18-8-14a2 2 0 0 0-3.4 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>'
+    + 'CUDA 백엔드를 초기화하지 못했습니다</h4>'
+    + '<p>NVIDIA 드라이버에서 CUDA 12 런타임을 찾을 수 없습니다 (오류 코드 LLW_E_BACKEND_INIT). 드라이버를 업데이트하거나 CPU 런타임으로 전환한 뒤 다시 시도하세요.</p>'
+    + '<div class="actions"><button class="btn-secondary">CPU로 전환 후 다시 로드</button><button class="btn-secondary">다시 시도</button></div></div></div>';
+  const convError = userMsg(Q1, '14:02') + errBlock;
+
+  const emptyReady = '<div class="empty-state">'
+    + '<svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/></svg>'
+    + '<h2>새 대화를 시작하세요</h2><p>메시지를 입력하면 이 PC에서 바로 추론이 실행됩니다. 대화 내용은 외부로 전송되지 않습니다.</p>'
+    + '<span class="ready-line"><span class="status-dot ok"></span>Qwen2.5-7B-Instruct · CUDA · 준비됨</span></div>';
+  const emptyNoModel = '<div class="empty-state">'
+    + '<svg class="icon icon-lg" viewBox="0 0 24 24"><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>'
+    + '<h2>선택된 모델이 없습니다</h2><p>로컬 GGUF 파일을 선택하면 대화를 시작할 수 있습니다. 모든 추론은 이 PC에서만 실행됩니다.</p>'
+    + '<button class="btn-primary">GGUF 모델 선택…</button><span class="caption">지원 형식: .gguf</span></div>';
+  const loadingCard = '<div class="empty-state"><div class="loading-card">'
+    + '<p class="file">' + MODEL + '</p>'
+    + '<div class="progress-track"><div class="progress-fill" style="width:64%"></div></div>'
+    + '<div class="row"><span>모델 로딩 중 · CUDA</span><span>64% · 2.8 / 4.4 GB</span></div>'
+    + '<div class="cancel-row"><button class="btn-secondary">로드 취소</button></div></div></div>';
+
+  const dRow = (k, v) => '<div class="diag-row"><span class="k">' + k + '</span><span class="v">' + v + '</span></div>';
+  const diagView = '<div class="diag-col">'
+    + '<div class="diag-section"><h4>앱</h4>' + dRow('앱 버전', '0.1.0') + dRow('Bridge ABI', '1.2') + dRow('llama.cpp', 'b4123 · 커밋 8f3a21c') + '</div>'
+    + '<div class="diag-section"><h4>런타임 팩</h4>' + dRow('활성 버전', '2026.07.1 (CPU · CUDA)') + dRow('검증 상태', '서명·SHA-256 통과') + dRow('롤백 가능 버전', '2026.06.3') + '</div>'
+    + '<div class="diag-section"><h4>장치</h4>' + dRow('백엔드', 'CUDA') + dRow('장치', 'NVIDIA GeForce RTX 4070 · 12 GB') + dRow('드라이버', '566.14 · CUDA 12.6') + '</div>'
+    + '<div class="diag-section"><h4>모델</h4>' + dRow('파일', MODEL) + dRow('아키텍처', 'llama · Q4_K_M') + dRow('로딩 시간', '6.2s') + '</div>'
+    + '<div class="diag-section"><h4>최근 추론</h4>' + dRow('프롬프트', '214 토큰 · 1,542 tok/s') + dRow('생성', '164 토큰 · 42.1 tok/s') + dRow('첫 토큰 시간', '0.42s') + dRow('전체 시간', '3.9s · 완료') + '</div>'
+    + '<div class="diag-section"><h4>자원·스케줄러</h4>' + dRow('RAM / VRAM', '2.1 GB / 6.8 GB (12 GB 중)') + dRow('컨텍스트', '1,847 / 8,192') + dRow('활성 슬롯', '1 / 2 · 큐 대기 0') + dRow('취소 지연', '평균 18 ms') + '</div>'
+    + '</div>';
+
+  const IDLE = (ctx) => [
+    ['백엔드', 'CUDA · RTX 4070'], ['속도', '—'], ['토큰', '—', { optional: true }],
+    ['컨텍스트', ctx], ['시간', '—', { optional: true }],
+  ];
+
+  function buildCfg(state) {
+    const cfg = {
+      sessions: SESSIONS_BASE, title: 'GGUF 양자화 비교',
+      chip: { name: MODEL, mode: 'ready', pct: null },
+      messages: convFull,
+      composer: { enabled: true, stop: false, draft: '그럼 속도가 제일 빠른 양자화는 뭐야?', placeholder: '메시지를 입력하세요', hint: 'Enter 전송 · Shift+Enter 줄바꿈' },
+      dot: 'ok', stateText: '준비됨', model: MODEL, progress: null,
+      metrics: [
+        ['백엔드', 'CUDA · RTX 4070'], ['속도', '42.1 tok/s'],
+        ['토큰', '프롬프트 214 ' + SLASH + ' 생성 164', { optional: true }],
+        ['컨텍스트', '1,847 ' + SLASH + ' 8,192'], ['시간', '3.9s', { optional: true }],
+      ],
+      panel: false, panelFoot: false, packProgress: false, modal: null, diagnostics: false, showComposer: true,
+    };
+    switch (state) {
+      case 'no-model':
+        cfg.sessions = [{ title: '새 대화', meta: '방금', active: true }];
+        cfg.title = '새 대화';
+        cfg.chip = { name: 'GGUF 모델 선택…', mode: 'empty', pct: null };
+        cfg.messages = emptyNoModel;
+        cfg.composer = { enabled: false, stop: false, placeholder: '모델을 선택하면 대화를 시작할 수 있습니다', hint: 'GGUF 모델을 먼저 선택하세요' };
+        cfg.dot = 'none'; cfg.stateText = '모델 없음'; cfg.model = '';
+        cfg.metrics = [['백엔드', '—'], ['속도', '—'], ['토큰', '—', { optional: true }], ['컨텍스트', '—'], ['시간', '—', { optional: true }]];
+        break;
+      case 'loading':
+        cfg.sessions = [{ title: '새 대화', meta: '방금', active: true }].concat(SESSIONS_BASE.slice(1));
+        cfg.title = '새 대화';
+        cfg.chip = { name: MODEL, mode: 'loading', pct: '64%' };
+        cfg.messages = loadingCard;
+        cfg.composer = { enabled: false, stop: false, placeholder: '모델 로딩이 끝나면 보낼 수 있습니다', hint: '모델을 메모리에 올리는 중입니다' };
+        cfg.dot = 'busy'; cfg.stateText = '모델 로딩 중'; cfg.progress = 64;
+        cfg.metrics = IDLE('— ' + SLASH + ' 8,192');
+        break;
+      case 'empty':
+        cfg.sessions = [{ title: '새 대화', meta: '방금', active: true }].concat(SESSIONS_BASE.slice(1));
+        cfg.title = '새 대화'; cfg.messages = emptyReady; cfg.composer.draft = '';
+        cfg.metrics = IDLE('0 ' + SLASH + ' 8,192');
+        break;
+      case 'streaming':
+      case 'multi':
+        cfg.messages = convStream;
+        cfg.composer = { enabled: true, stop: true, placeholder: '메시지를 입력하세요', hint: '생성이 끝나면 보낼 수 있습니다 · Esc 생성 중지' };
+        cfg.dot = 'busy'; cfg.stateText = '생성 중';
+        cfg.metrics = [
+          ['백엔드', 'CUDA · RTX 4070'], ['속도', '38.6 tok/s', { live: true }],
+          ['토큰', '프롬프트 214 ' + SLASH + ' 생성 118', { optional: true }],
+          ['컨텍스트', '2,134 ' + SLASH + ' 8,192'], ['시간', '3.1s', { optional: true }],
+        ];
+        cfg.sessions = state === 'multi'
+          ? [{ title: 'GGUF 양자화 비교', meta: '14:06', active: true, generating: true },
+             { title: '논문 초록 번역', meta: '14:05', generating: true },
+             { title: '회의 안건 정리', meta: '대기 중' }].concat(SESSIONS_BASE.slice(1))
+          : [{ title: 'GGUF 양자화 비교', meta: '14:06', active: true, generating: true }].concat(SESSIONS_BASE.slice(1));
+        if (state === 'multi') cfg.stateText = '생성 중 · 2';
+        break;
+      case 'cancelled':
+      case 'interrupted':
+        cfg.messages = state === 'cancelled' ? convCancel : convInterrupt;
+        cfg.composer.draft = '';
+        cfg.metrics = [
+          ['백엔드', 'CUDA · RTX 4070'], ['속도', '—'],
+          ['토큰', '프롬프트 214 ' + SLASH + ' 생성 87', { optional: true }],
+          ['컨텍스트', '2,103 ' + SLASH + ' 8,192'], ['시간', '2.3s', { optional: true }],
+        ];
+        break;
+      case 'error':
+        cfg.messages = convError;
+        cfg.chip = { name: MODEL, mode: 'error', pct: null };
+        cfg.composer = { enabled: false, stop: false, placeholder: '모델이 로드되지 않았습니다', hint: 'CPU로 전환 후 다시 로드하면 대화할 수 있습니다' };
+        cfg.dot = 'err'; cfg.stateText = '백엔드 오류';
+        cfg.metrics = [
+          ['백엔드', 'CUDA <span class="dim">→</span> 실패'], ['속도', '—'],
+          ['토큰', '—', { optional: true }], ['컨텍스트', '— ' + SLASH + ' 8,192'], ['시간', '—', { optional: true }],
+        ];
+        break;
+      case 'settings': cfg.panel = true; cfg.panelFoot = true; cfg.composer.draft = ''; break;
+      case 'pack-install': cfg.panel = true; cfg.packProgress = true; cfg.composer.draft = ''; break;
+      case 'diagnostics':
+        cfg.diagnostics = true; cfg.title = '진단'; cfg.messages = diagView; cfg.showComposer = false;
+        break;
+      case 'reset-confirm':
+        cfg.modal = { title: '대화를 초기화할까요?', body: '이 대화의 메시지 4개가 모두 삭제됩니다. 대화와 설정은 유지됩니다. 이 작업은 되돌릴 수 없습니다.', confirm: '초기화' };
+        cfg.composer.draft = '';
+        break;
+      case 'reload-confirm':
+        cfg.panel = true; cfg.panelFoot = true; cfg.composer.draft = '';
+        cfg.modal = { title: '모델을 다시 로드할까요?', body: '진행 중인 생성 1건이 취소되고, 변경한 옵션으로 모델을 다시 로드합니다.', confirm: '다시 로드' };
+        break;
+    }
+    return cfg;
+  }
+
+  function render(state) {
+    const cfg = buildCfg(state);
+    $('sessionList').innerHTML = cfg.sessions.map(sessionItem).join('');
+    $('chatTitle').textContent = cfg.title;
+    const chip = $('modelChip');
+    chip.className = 'model-chip' + (cfg.chip.mode !== 'ready' ? ' ' + cfg.chip.mode : '');
+    stage.querySelector('.chip-icon-box').hidden = cfg.chip.mode === 'loading';
+    stage.querySelector('.chip-icon-spin').hidden = cfg.chip.mode !== 'loading';
+    $('modelChipName').textContent = cfg.chip.name;
+    $('modelChipPct').hidden = !cfg.chip.pct;
+    $('modelChipPct').textContent = cfg.chip.pct || '';
+    const msgCol = $('msgCol'), messages = $('messages');
+    msgCol.innerHTML = cfg.messages;
+    const isCentered = cfg.messages.indexOf('empty-state') >= 0;
+    messages.style.display = isCentered ? 'flex' : '';
+    messages.style.flexDirection = isCentered ? 'column' : '';
+    msgCol.style.height = isCentered ? '100%' : '';
+    msgCol.style.justifyContent = isCentered ? 'center' : '';
+    msgCol.style.flex = isCentered ? '1' : '';
+
+    $('composerWrap').hidden = !cfg.showComposer;
+    const input = $('promptInput');
+    input.disabled = !cfg.composer.enabled;
+    input.placeholder = cfg.composer.placeholder || '';
+    input.value = cfg.composer.draft || '';
+    $('composer').classList.toggle('disabled', !cfg.composer.enabled);
+    $('sendBtn').hidden = !!cfg.composer.stop;
+    $('sendBtn').disabled = !cfg.composer.enabled || !input.value;
+    $('stopBtn').hidden = !cfg.composer.stop;
+    $('composerHint').textContent = cfg.composer.hint || '';
+
+    $('sbDot').className = 'status-dot ' + cfg.dot;
+    $('sbState').textContent = cfg.stateText;
+    $('sbModel').textContent = cfg.model;
+    $('sbProgress').hidden = cfg.progress == null;
+    if (cfg.progress != null) $('sbProgress').firstElementChild.style.width = cfg.progress + '%';
+    $('sbMetrics').innerHTML = cfg.metrics.map(function (m) { return sbItem(m[0], m[1], m[2]); }).join('');
+
+    $('panel').classList.toggle('open', cfg.panel);
+    $('btnPanel').setAttribute('aria-pressed', String(cfg.panel));
+    $('panelFoot').hidden = !cfg.panelFoot;
+    $('packInstallBtn').hidden = cfg.packProgress;
+    $('packProgress').hidden = !cfg.packProgress;
+    $('packNote').textContent = cfg.packProgress
+      ? '검증 후 다음 시작 시 활성화됩니다. 창을 닫아도 설치는 계속됩니다.'
+      : '서명과 체크섬을 검증한 뒤 다음 시작 시 활성화됩니다.';
+    $('btnDiag').classList.toggle('active', cfg.diagnostics);
+
+    if (cfg.modal) {
+      $('modalTitle').textContent = cfg.modal.title;
+      $('modalBody').textContent = cfg.modal.body;
+      $('modalConfirm').textContent = cfg.modal.confirm;
+      $('modalConfirm').className = cfg.modal.confirm === '다시 로드' ? 'btn-primary' : 'btn-danger';
+      $('modalScrim').classList.add('open');
+    } else {
+      $('modalScrim').classList.remove('open');
+    }
+    if (!isCentered && !cfg.diagnostics) messages.scrollTop = messages.scrollHeight;
+  }
+
+  /* ---------- 툴바 ---------- */
+  const STATES = [
+    ['ready', '준비 완료'], ['no-model', '모델 미선택'], ['loading', '모델 로딩'],
+    ['empty', '빈 대화'], ['streaming', '생성 중'], ['cancelled', '생성 취소'],
+    ['error', '백엔드 오류'], ['multi', '동시 생성'], ['settings', '설정 패널'],
+    ['pack-install', '팩 설치'], ['diagnostics', '진단'], ['reset-confirm', '초기화 확인'],
+    ['reload-confirm', '재로드 확인'], ['interrupted', '중단됨'],
+  ];
+  const stateRow = document.getElementById('stateRow');
+  let curState = 'ready';
+  STATES.forEach(function (s) {
+    const b = document.createElement('button');
+    b.className = 'chip' + (s[0] === curState ? ' on' : '');
+    b.textContent = s[1];
+    b.dataset.state = s[0];
+    b.addEventListener('click', function () {
+      curState = s[0];
+      stateRow.querySelectorAll('.chip').forEach(function (c) { c.classList.toggle('on', c === b); });
+      render(curState);
+    });
+    stateRow.appendChild(b);
+  });
+  document.querySelectorAll('.chip[data-mock-theme]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.chip[data-mock-theme]').forEach(function (c) { c.classList.toggle('on', c === b); });
+      stage.dataset.mockTheme = b.dataset.mockTheme;
+    });
+  });
+  document.querySelectorAll('.chip[data-size]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.chip[data-size]').forEach(function (c) { c.classList.toggle('on', c === b); });
+      stage.classList.toggle('compact', b.dataset.size === 'compact');
+      fit();
+    });
+  });
+
+  /* ---------- 스케일 ---------- */
+  function fit() {
+    const w = stage.classList.contains('compact') ? 1024 : 1440;
+    const h = stage.classList.contains('compact') ? 700 : 900;
+    const s = Math.min(1, wrap.clientWidth / w);
+    stage.style.transform = 'scale(' + s + ')';
+    wrap.style.height = (h * s) + 'px';
+  }
+  window.addEventListener('resize', fit);
+  render(curState);
+  fit();
+})();
+</script>

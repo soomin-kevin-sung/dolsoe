@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <!-- Local LLM Wiki 앱 아이콘 — 단색 변형 (책은 투명 컷아웃)
+       fill 색상 하나만 바꾸면 어떤 단색 컨텍스트에도 대응. -->
+  <mask id="book-cutout">
+    <rect width="1024" height="1024" fill="white"/>
+    <path d="M512 400 C458 362 382 350 310 350 L310 642 C382 642 458 652 512 694 C566 652 642 642 714 642 L714 350 C642 350 566 362 512 400 Z" fill="black"/>
+  </mask>
+  <g fill="#1A1D21" mask="url(#book-cutout)">
+    <rect x="104" y="336" width="96" height="120" rx="48"/>
+    <rect x="104" y="568" width="96" height="120" rx="48"/>
+    <rect x="824" y="336" width="96" height="120" rx="48"/>
+    <rect x="824" y="568" width="96" height="120" rx="48"/>
+    <rect x="192" y="192" width="640" height="640" rx="120"/>
+  </g>
+</svg>
