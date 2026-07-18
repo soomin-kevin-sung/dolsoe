@@ -1,5 +1,6 @@
 #include "scheduler.h"
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <exception>
@@ -9,6 +10,14 @@
 #include <utility>
 
 namespace {
+std::atomic<llw_handle_t> next_request_handle{1};
+
+llw_handle_t allocate_request_handle() {
+    llw_handle_t handle = next_request_handle.fetch_add(1, std::memory_order_relaxed);
+    if (handle == 0) handle = next_request_handle.fetch_add(1, std::memory_order_relaxed);
+    return handle;
+}
+
 std::vector<uint8_t> bytes(std::string value) {
     return {value.begin(), value.end()};
 }
@@ -90,8 +99,7 @@ llw_result_t Scheduler::submit(const llw_request_params_t& params, llw_handle_t&
         error = "request queue is full";
         return LLW_ERR_QUEUE_FULL;
     }
-    request.handle = next_handle_++;
-    if (request.handle == 0) request.handle = next_handle_++;
+    request.handle = allocate_request_handle();
     const llw_handle_t handle = request.handle;
     auto payload = bytes("{\"state\":\"queued\",\"queuePosition\":" +
                          std::to_string(queued_.size() + 1) + "}");

@@ -1,0 +1,12 @@
+{
+  "name": "tiny-random-f16.gguf",
+  "repository": "amakhov/tiny-random-llama",
+  "repositoryCommit": "fbf68d33cf68a9d1d4b71b3d098ae82c8c14443b",
+  "repositoryPath": "gguf/tiny-random-f16.gguf",
+  "url": "https://huggingface.co/amakhov/tiny-random-llama/resolve/fbf68d33cf68a9d1d4b71b3d098ae82c8c14443b/gguf/tiny-random-f16.gguf",
+  "sha256": "1010fc48b2a1880a01fa5e267eb35bf586e3e3ad5539ff5b0e025e4f63616a82",
+  "size": 9083072,
+  "license": "Apache-2.0",
+  "licenseSource": "https://huggingface.co/api/models/amakhov/tiny-random-llama/revision/fbf68d33cf68a9d1d4b71b3d098ae82c8c14443b",
+  "redistribution": "not committed; checksum-acquired by tests"
+}

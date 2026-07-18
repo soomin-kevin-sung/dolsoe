@@ -121,3 +121,15 @@ set_tests_properties(llw_llama_engine_test PROPERTIES
   TIMEOUT 30
   ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:llama>"
 )
+
+add_executable(llw_runtime_backend_test tests/runtime_backend_test.cpp)
+target_include_directories(llw_runtime_backend_test PRIVATE include)
+target_compile_definitions(llw_runtime_backend_test PRIVATE
+  $<$<CONFIG:Debug>:LLW_RUNTIME_TESTING>
+)
+target_link_libraries(llw_runtime_backend_test PRIVATE local_llm_runtime Threads::Threads)
+install(TARGETS llw_runtime_backend_test RUNTIME DESTINATION ".")
+if(DEFINED ENV{LLW_TEST_GGUF} AND EXISTS "$ENV{LLW_TEST_GGUF}")
+  add_test(NAME llw_runtime_backend_test COMMAND llw_runtime_backend_test "$ENV{LLW_TEST_GGUF}")
+  set_tests_properties(llw_runtime_backend_test PROPERTIES TIMEOUT 180 LABELS "model;required-ci")
+endif()

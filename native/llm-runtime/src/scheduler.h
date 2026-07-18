@@ -79,7 +79,6 @@ private:
     std::deque<llw_handle_t> queued_;
     std::map<llw_handle_t, Request> requests_;
     std::vector<Slot> slots_;
-    llw_handle_t next_handle_{1};
     bool stopping_{};
     std::thread worker_;
     llw_metrics_t metrics_{};

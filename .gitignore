@@ -25,3 +25,5 @@ build/
 target/
 .cmake-build/
 native/llm-runtime/out/
+.test-models/
+.runtime-packs/
