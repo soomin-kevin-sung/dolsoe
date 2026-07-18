@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useRef, type KeyboardEvent, type RefObject } from "react";
 
 const copy = {
   reset: { title: "대화를 초기화할까요?", body: "이 대화의 메시지 4개가 모두 삭제됩니다. 대화와 설정은 유지됩니다. 이 작업은 되돌릴 수 없습니다.", confirm: "초기화" },
@@ -6,7 +6,8 @@ const copy = {
 } as const;
 
 export function ConfirmDialog({ type, onClose, returnFocusRef }: { type: keyof typeof copy; onClose(): void; returnFocusRef: RefObject<HTMLButtonElement | null> }) {
-  const cancelRef = useRef<HTMLButtonElement>(null); const value = copy[type];
+  const cancelRef = useRef<HTMLButtonElement>(null); const dialogRef = useRef<HTMLDivElement>(null); const value = copy[type];
   useEffect(() => { cancelRef.current?.focus(); return () => returnFocusRef.current?.focus(); }, [returnFocusRef]);
-  return <div className="dialog-scrim"><div role="dialog" aria-modal="true" aria-labelledby="dialog-title" className="confirm-dialog"><h2 id="dialog-title">{value.title}</h2><p>{value.body}</p><div className="dialog-actions"><button ref={cancelRef} className="button-secondary" type="button" onClick={onClose}>취소</button><button className={type === "reset" ? "button-danger" : "button-primary"} type="button" onClick={onClose}>{value.confirm}</button></div></div></div>;
+  function trapFocus(event: KeyboardEvent<HTMLDivElement>) { if (event.key !== "Tab") return; const buttons = dialogRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"); if (!buttons?.length) return; const first = buttons[0]; const last = buttons[buttons.length - 1]; if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); } }
+  return <div className="dialog-scrim"><div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="dialog-title" className="confirm-dialog" onKeyDown={trapFocus}><h2 id="dialog-title">{value.title}</h2><p>{value.body}</p><div className="dialog-actions"><button ref={cancelRef} className="button-secondary" type="button" onClick={onClose}>취소</button><button className={type === "reset" ? "button-danger" : "button-primary"} type="button" onClick={onClose}>{value.confirm}</button></div></div></div>;
 }

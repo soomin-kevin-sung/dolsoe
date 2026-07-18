@@ -24,6 +24,8 @@ export default function App() {
   const [dialog, setDialog] = useState<"reset" | "reload" | null>(mockRuntime.getSnapshot(initialState).dialog);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const resetButtonRef = useRef<HTMLButtonElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const snapshot = useMemo(() => mockRuntime.getSnapshot(state), [state]);
   const longModel = queryValue("longModel") === "1";
   const longMessage = queryValue("longMessage") === "1";
@@ -48,13 +50,16 @@ export default function App() {
         event.preventDefault();
         setState("empty");
         setExtraMessages([]);
+      } else if (event.ctrlKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
       } else if (event.ctrlKey && event.key === ",") {
         event.preventDefault();
         setSettingsOpen((open) => !open);
       } else if (event.key === "Escape" && dialog) {
         setDialog(null);
       } else if (event.key === "Escape" && ["streaming", "multi"].includes(state)) {
-        setState("cancelled");
+        stopGeneration();
       } else if (event.key === "Escape" && settingsOpen) {
         setSettingsOpen(false);
         settingsButtonRef.current?.focus();
@@ -64,11 +69,19 @@ export default function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [dialog, settingsOpen, state]);
 
-  function sendPrompt(prompt: string) {
+  async function sendPrompt(prompt: string) {
+    await mockRuntime.sendPrompt("quant", prompt);
     setExtraMessages((current) => [
       ...current,
       { id: `local-${current.length}`, role: "user", content: prompt, time: "방금" },
     ]);
+    setState("streaming");
+  }
+
+  async function stopGeneration() {
+    await mockRuntime.cancel("quant");
+    setState("cancelled");
+    requestAnimationFrame(() => composerInputRef.current?.focus());
   }
 
   return (
@@ -77,8 +90,10 @@ export default function App() {
         <Sidebar
           sessions={snapshot.sessions}
           diagnosticsOpen={state === "diagnostics"}
+          searchInputRef={searchInputRef}
           onNew={() => setState("empty")}
           onDiagnostics={() => setState("diagnostics")}
+          onSelect={() => setState("ready")}
         />
         <section className="conversation-shell">
           <ChatHeader
@@ -99,7 +114,9 @@ export default function App() {
               disabled={["no-model", "loading", "error"].includes(state)}
               streaming={["streaming", "multi"].includes(state)}
               state={state}
+              inputRef={composerInputRef}
               onSend={sendPrompt}
+              onStop={stopGeneration}
             />
           )}
         </section>

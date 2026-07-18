@@ -7,12 +7,12 @@ export const mockStates = [
 ] as const;
 
 const landmarks: Record<(typeof mockStates)[number], string> = {
-  "no-model": "선택한 모델이 없습니다",
+  "no-model": "선택된 모델이 없습니다",
   loading: "모델 로딩 중",
   empty: "새 대화를 시작하세요",
   ready: "GGUF 양자화 비교",
   streaming: "생성 중",
-  cancelled: "생성을 중지했습니다",
+  cancelled: "생성이 중지되었습니다",
   error: "CUDA 백엔드를 초기화하지 못했습니다",
   multi: "생성 중 · 2",
   settings: "설정",
@@ -162,4 +162,55 @@ test("system theme follows the operating system on first load", async ({ page })
   await page.emulateMedia({ colorScheme: "dark" });
   await page.goto("/?state=ready");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
+test("keyboard conversation flow sends then stops generation", async ({ page }) => {
+  await page.goto("/?state=empty&theme=light");
+  const input = page.getByRole("textbox", { name: "메시지" });
+  await input.fill("테스트 질문");
+  await page.keyboard.press("Enter");
+  await expect(page.locator('[data-app-state="streaming"]')).toBeVisible();
+  await page.getByRole("button", { name: "생성 중지" }).click();
+  await expect(page.locator('[data-app-state="cancelled"]')).toBeVisible();
+  await expect(input).toBeFocused();
+});
+
+test("session selection returns from diagnostics", async ({ page }) => {
+  await page.goto("/?state=diagnostics");
+  await page.getByRole("button", { name: /GGUF 양자화 비교/ }).click();
+  await expect(page.locator('[data-app-state="ready"]')).toBeVisible();
+  await expect(page.getByRole("form", { name: "메시지 입력" })).toBeVisible();
+});
+
+test("multi state distinguishes queued work", async ({ page }) => {
+  await page.goto("/?state=multi");
+  await expect(page.locator(".session-item").nth(2)).toContainText("대기 중");
+});
+
+test("no-model telemetry contains no stale inference values", async ({ page }) => {
+  await page.goto("/?state=no-model");
+  const values = page.locator(".status-metric-value");
+  await expect(values).toHaveCount(5);
+  for (let index = 0; index < 5; index += 1) await expect(values.nth(index)).toHaveText("—");
+});
+
+test("Ctrl+F focuses search and modal focus remains trapped", async ({ page }) => {
+  await page.goto("/?state=ready");
+  await page.keyboard.press("Control+f");
+  await expect(page.getByRole("searchbox", { name: "대화 검색" })).toBeFocused();
+  await page.goto("/?state=reset-confirm");
+  const dialog = page.getByRole("dialog");
+  for (let index = 0; index < 4; index += 1) {
+    await page.keyboard.press("Tab");
+    await expect(dialog.locator(":focus")).toHaveCount(1);
+  }
+});
+
+test("approved Korean copy is preserved", async ({ page }) => {
+  await page.goto("/?state=ready");
+  await expect(page.getByText(/파일 크기가 약 4\.4GB/)).toBeVisible();
+  await expect(page.getByText(/KV 캐시가 약 0\.9GB 더 필요합니다/)).toBeVisible();
+  await expect(page.locator("svg.app-mark")).toBeVisible();
+  await page.goto("/?state=no-model");
+  await expect(page.getByRole("heading", { name: "선택된 모델이 없습니다" })).toBeVisible();
 });

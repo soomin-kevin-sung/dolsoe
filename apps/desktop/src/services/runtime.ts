@@ -14,6 +14,7 @@ export interface Session {
   meta: string;
   active?: boolean;
   generating?: boolean;
+  queued?: boolean;
 }
 
 export interface Message {
