@@ -74,4 +74,25 @@ describe("nativeState", () => {
     expect(state.messages[state.messages.length - 1]?.status).toBe("error");
     expect(state.error).toBe("runtime is busy");
   });
+
+  it("uses actual metrics in the cancelled message detail", () => {
+    const decoders = new TokenDecoders();
+    let state = nativeReducer(readyState(), { type: "submit-started", prompt: "질문" });
+    state = applyNativeEvent(state, event("cancelled", "15"), decoders);
+
+    state = nativeReducer(state, {
+      type: "metrics",
+      metrics: {
+        promptTokens: "47",
+        generatedTokens: "20",
+        cancelledRequests: "1",
+        failedRequests: "0",
+        queueWaitNanoseconds: "0",
+        decodeNanoseconds: "300000000",
+        tokensPerSecond: 66.1,
+      },
+    });
+
+    expect(state.messages[state.messages.length - 1]?.stopDetail).toBe("토큰 20개 생성됨");
+  });
 });

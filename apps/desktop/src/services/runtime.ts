@@ -24,6 +24,7 @@ export interface Message {
   time?: string;
   status?: "complete" | "streaming" | "cancelled" | "interrupted" | "error";
   metrics?: string;
+  stopDetail?: string;
 }
 
 export interface RuntimeTelemetry {

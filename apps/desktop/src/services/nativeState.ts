@@ -149,8 +149,12 @@ export function nativeReducer(state: NativeState, action: NativeAction): NativeS
           context: "—",
           elapsed: Number.isFinite(elapsedSeconds) ? `${elapsedSeconds.toFixed(1)}s` : "—",
         },
-        messages: state.phase === "streaming" && Number.isFinite(generated)
-          ? updateAssistant(state, (message) => ({ ...message, metrics: `${action.metrics.tokensPerSecond.toFixed(1)} tok/s · 생성 ${generated} 토큰` }))
+        messages: Number.isFinite(generated)
+          ? updateAssistant(state, (message) => ({
+              ...message,
+              metrics: `${action.metrics.tokensPerSecond.toFixed(1)} tok/s · 생성 ${generated} 토큰`,
+              stopDetail: `토큰 ${generated}개 생성됨`,
+            }))
           : state.messages,
       };
     }
