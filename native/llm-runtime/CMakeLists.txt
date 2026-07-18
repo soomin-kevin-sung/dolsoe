@@ -72,3 +72,15 @@ target_compile_definitions(llw_scheduler_test PRIVATE LLW_RUNTIME_TESTING)
 target_link_libraries(llw_scheduler_test PRIVATE Threads::Threads)
 add_test(NAME llw_scheduler_test COMMAND llw_scheduler_test)
 set_tests_properties(llw_scheduler_test PROPERTIES TIMEOUT 30)
+
+add_executable(llw_llama_engine_test tests/llama_engine_test.cpp src/llama_engine.cpp)
+target_include_directories(llw_llama_engine_test PRIVATE include src)
+target_compile_definitions(llw_llama_engine_test PRIVATE
+  LLW_BACKEND_PACK_NAME="${LLW_BACKEND_PACK}"
+)
+target_link_libraries(llw_llama_engine_test PRIVATE llama ggml Threads::Threads)
+add_test(NAME llw_llama_engine_test COMMAND llw_llama_engine_test)
+set_tests_properties(llw_llama_engine_test PROPERTIES
+  TIMEOUT 30
+  ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:llama>"
+)
