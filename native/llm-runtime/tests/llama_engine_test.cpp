@@ -25,6 +25,17 @@ ModelConfig valid_config() {
 }
 
 int main() {
+    bool progress_exception_escaped = false;
+    bool progress_result = true;
+    try {
+        progress_result = invoke_progress_callback_noexcept(
+            [](float) -> bool { throw std::runtime_error("injected progress failure"); }, 0.5f);
+    } catch (...) {
+        progress_exception_escaped = true;
+    }
+    CHECK(!progress_exception_escaped);
+    CHECK(!progress_result);
+
     std::string error;
     ModelConfig config = valid_config();
     CHECK(validate_model_config(config, error) == LLW_OK);

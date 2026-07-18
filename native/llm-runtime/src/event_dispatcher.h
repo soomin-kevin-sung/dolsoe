@@ -39,6 +39,7 @@ public:
     void flush_for_test(std::function<void()> barrier_enqueued,
                         std::function<void()> waiting_for_control = {});
     void fail_next_publish_of_type_for_test(int32_t event_type);
+    void throw_next_publish_of_type_for_test(int32_t event_type);
     size_t terminal_permit_count_for_test();
 #endif
     void stop();
@@ -75,6 +76,7 @@ private:
     std::thread::id callback_thread_{};
 #ifdef LLW_RUNTIME_TESTING
     int32_t fail_next_type_{};
+    int32_t throw_next_type_{};
 #endif
     std::thread thread_;
 };

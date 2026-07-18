@@ -29,6 +29,9 @@
         } \
     } while (false)
 
+LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestSetEngineDestroyHook(
+    llw_runtime_t* runtime, void (LLW_CALL *hook)(void*), void* user_data);
+
 int test_v11_exports() {
     llw_error_t error{};
     error.struct_size = sizeof(error);
@@ -222,6 +225,202 @@ int test_failed_load_callback_quiescence() {
     CHECK(load.get() == LLW_ERR_INTERNAL);
     CHECK(!returned_early);
     CHECK(handle == 0);
+    llw_runtime_destroy(runtime);
+    return 0;
+}
+
+struct SaturatedProgressCallback {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool log_entered{};
+    bool release_log{};
+    size_t progress_count{};
+};
+
+void LLW_CALL saturate_progress_events(const llw_event_t* event, void* user_data) {
+    auto& callback = *static_cast<SaturatedProgressCallback*>(user_data);
+    std::unique_lock lock(callback.mutex);
+    if (event->event_type == LLW_EVENT_LOG && !callback.log_entered) {
+        callback.log_entered = true;
+        callback.changed.notify_all();
+        callback.changed.wait(lock, [&callback] { return callback.release_log; });
+    } else if (event->event_type == LLW_EVENT_MODEL_PROGRESS) {
+        ++callback.progress_count;
+    }
+}
+
+int test_progress_saturation_is_bounded() {
+    using namespace std::chrono_literals;
+    SaturatedProgressCallback callback;
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.callbacks.on_event = saturate_progress_events;
+    create.callbacks.user_data = &callback;
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 1;
+    create.scheduler.request_queue_capacity = 1;
+    create.scheduler.event_queue_capacity = 16;
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    llw_runtime_t* runtime{};
+    CHECK(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
+    {
+        std::unique_lock lock(callback.mutex);
+        CHECK(callback.changed.wait_for(lock, 5s, [&callback] { return callback.log_entered; }));
+    }
+
+    const std::string path = "llw-test-saturate-progress.gguf";
+    llw_model_load_params_t model{};
+    model.struct_size = sizeof(model);
+    model.path_utf8 = reinterpret_cast<const uint8_t*>(path.data());
+    model.path_len = path.size();
+    model.backend = LLW_BACKEND_CPU;
+    model.context_tokens_per_slot = 512;
+    model.logical_batch_tokens = 64;
+    model.physical_batch_tokens = 64;
+    model.n_threads = 1;
+    model.n_threads_batch = 1;
+    model.use_mmap = 1;
+    llw_handle_t handle{99};
+    auto load = std::async(std::launch::async, [&] {
+        return llw_model_load(runtime, &model, &handle, &error);
+    });
+    CHECK(load.wait_for(50ms) == std::future_status::timeout);
+    {
+        std::lock_guard lock(callback.mutex);
+        callback.release_log = true;
+    }
+    callback.changed.notify_all();
+    CHECK(load.get() == LLW_ERR_INTERNAL);
+    CHECK(handle == 0);
+    {
+        std::lock_guard lock(callback.mutex);
+        CHECK(callback.progress_count == 16);
+    }
+    llw_runtime_destroy(runtime);
+    return 0;
+}
+
+int test_debug_model_fixture_loads() {
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 1;
+    create.scheduler.request_queue_capacity = 1;
+    create.scheduler.event_queue_capacity = 16;
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    llw_runtime_t* runtime{};
+    CHECK(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
+    const std::string path = "llw-test-model.gguf";
+    llw_model_load_params_t model{};
+    model.struct_size = sizeof(model);
+    model.path_utf8 = reinterpret_cast<const uint8_t*>(path.data());
+    model.path_len = path.size();
+    model.backend = LLW_BACKEND_CPU;
+    model.context_tokens_per_slot = 512;
+    model.logical_batch_tokens = 64;
+    model.physical_batch_tokens = 64;
+    model.n_threads = 1;
+    model.n_threads_batch = 1;
+    model.use_mmap = 1;
+    llw_handle_t handle{};
+    CHECK(llw_model_load(runtime, &model, &handle, &error) == LLW_OK);
+    CHECK(handle != 0);
+    CHECK(llw_model_unload(runtime, handle, &error) == LLW_OK);
+    llw_runtime_destroy(runtime);
+    return 0;
+}
+
+struct LifecycleBarrier {
+    llw_runtime_t* runtime{};
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered{};
+    bool released{};
+    llw_result_t snapshot_result{LLW_OK};
+};
+
+void LLW_CALL block_engine_destruction(void* user_data) {
+    auto& barrier = *static_cast<LifecycleBarrier*>(user_data);
+    llw_scheduler_snapshot_t snapshot{};
+    snapshot.struct_size = sizeof(snapshot);
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    const llw_result_t snapshot_result =
+        llw_get_scheduler_snapshot(barrier.runtime, &snapshot, &error);
+    std::unique_lock lock(barrier.mutex);
+    barrier.snapshot_result = snapshot_result;
+    barrier.entered = true;
+    barrier.changed.notify_all();
+    barrier.changed.wait(lock, [&barrier] { return barrier.released; });
+}
+
+int test_unload_serializes_concurrent_load() {
+    using namespace std::chrono_literals;
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 1;
+    create.scheduler.request_queue_capacity = 1;
+    create.scheduler.event_queue_capacity = 16;
+    llw_error_t create_error{};
+    create_error.struct_size = sizeof(create_error);
+    llw_runtime_t* runtime{};
+    CHECK(llw_runtime_create(&create, &runtime, &create_error) == LLW_OK);
+    const std::string path = "llw-test-model.gguf";
+    llw_model_load_params_t model{};
+    model.struct_size = sizeof(model);
+    model.path_utf8 = reinterpret_cast<const uint8_t*>(path.data());
+    model.path_len = path.size();
+    model.backend = LLW_BACKEND_CPU;
+    model.context_tokens_per_slot = 512;
+    model.logical_batch_tokens = 64;
+    model.physical_batch_tokens = 64;
+    model.n_threads = 1;
+    model.n_threads_batch = 1;
+    model.use_mmap = 1;
+    llw_error_t first_load_error{};
+    first_load_error.struct_size = sizeof(first_load_error);
+    llw_handle_t first_model{};
+    CHECK(llw_model_load(runtime, &model, &first_model, &first_load_error) == LLW_OK);
+
+    LifecycleBarrier barrier;
+    barrier.runtime = runtime;
+    LLWTestSetEngineDestroyHook(runtime, block_engine_destruction, &barrier);
+    llw_error_t unload_error{};
+    unload_error.struct_size = sizeof(unload_error);
+    auto unload = std::async(std::launch::async, [&] {
+        return llw_model_unload(runtime, first_model, &unload_error);
+    });
+    {
+        std::unique_lock lock(barrier.mutex);
+        CHECK(barrier.changed.wait_for(lock, 5s, [&barrier] { return barrier.entered; }));
+    }
+
+    llw_error_t second_load_error{};
+    second_load_error.struct_size = sizeof(second_load_error);
+    llw_handle_t second_model{};
+    auto load = std::async(std::launch::async, [&] {
+        return llw_model_load(runtime, &model, &second_model, &second_load_error);
+    });
+    const bool returned_while_old_engine_alive =
+        load.wait_for(50ms) == std::future_status::ready;
+    {
+        std::lock_guard lock(barrier.mutex);
+        barrier.released = true;
+    }
+    barrier.changed.notify_all();
+    CHECK(unload.get() == LLW_OK);
+    CHECK(load.get() == LLW_OK);
+    CHECK(!returned_while_old_engine_alive);
+    CHECK(barrier.snapshot_result == LLW_ERR_INVALID_STATE);
+    CHECK(second_model != 0 && second_model != first_model);
+    LLWTestSetEngineDestroyHook(runtime, nullptr, nullptr);
+    CHECK(llw_model_unload(runtime, second_model, &unload_error) == LLW_OK);
     llw_runtime_destroy(runtime);
     return 0;
 }
@@ -583,5 +782,8 @@ int main() {
     CHECK(test_v11_exports() == 0);
     CHECK(test_v11_reserved_validation() == 0);
     CHECK(test_failed_load_callback_quiescence() == 0);
+    CHECK(test_progress_saturation_is_bounded() == 0);
+    CHECK(test_debug_model_fixture_loads() == 0);
+    CHECK(test_unload_serializes_concurrent_load() == 0);
     return 0;
 }

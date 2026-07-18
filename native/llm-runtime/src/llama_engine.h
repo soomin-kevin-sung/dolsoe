@@ -82,10 +82,12 @@ size_t safe_output_prefix(
     const std::vector<uint8_t>& output, const std::vector<std::vector<uint8_t>>& stops);
 void accept_history_tokens(const std::vector<llama_token>& tokens,
                            const std::function<void(llama_token)>& accept);
+bool invoke_progress_callback_noexcept(
+    const std::function<bool(float)>& callback, float value) noexcept;
 
 class LlamaEngine final : public InferenceEngine {
 public:
-    LlamaEngine(ModelConfig config, std::function<void(float)> progress);
+    LlamaEngine(ModelConfig config, std::function<bool(float)> progress);
     ~LlamaEngine() override;
     uint64_t start(EngineRequest request) override;
     std::vector<EngineStep> decode(const std::vector<llw_handle_t>& active) override;

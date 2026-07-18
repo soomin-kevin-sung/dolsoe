@@ -1,5 +1,6 @@
 #include "event_dispatcher.h"
 #include <chrono>
+#include <new>
 #include <stdexcept>
 #include <utility>
 
@@ -52,6 +53,10 @@ bool EventDispatcher::publish(OwnedEvent event) {
          event.type == LLW_EVENT_CANCELLED);
     std::lock_guard lock(mutex_);
 #ifdef LLW_RUNTIME_TESTING
+    if (throw_next_type_ == event.type) {
+        throw_next_type_ = 0;
+        throw std::bad_alloc();
+    }
     if (fail_next_type_ == event.type) {
         fail_next_type_ = 0;
         return false;
@@ -86,6 +91,11 @@ void EventDispatcher::flush_for_test(std::function<void()> barrier_enqueued,
 void EventDispatcher::fail_next_publish_of_type_for_test(int32_t event_type) {
     std::lock_guard lock(mutex_);
     fail_next_type_ = event_type;
+}
+
+void EventDispatcher::throw_next_publish_of_type_for_test(int32_t event_type) {
+    std::lock_guard lock(mutex_);
+    throw_next_type_ = event_type;
 }
 
 size_t EventDispatcher::terminal_permit_count_for_test() {

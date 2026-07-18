@@ -282,7 +282,16 @@ void accept_history_tokens(const std::vector<llama_token>& tokens,
     for (const llama_token token : tokens) accept(token);
 }
 
-LlamaEngine::LlamaEngine(ModelConfig config, std::function<void(float)> progress)
+bool invoke_progress_callback_noexcept(
+    const std::function<bool(float)>& callback, float value) noexcept {
+    try {
+        return callback(value);
+    } catch (...) {
+        return false;
+    }
+}
+
+LlamaEngine::LlamaEngine(ModelConfig config, std::function<bool(float)> progress)
     : config_(std::move(config)) {
     std::string error;
     if (validate_model_config(config_, error) != LLW_OK) throw std::invalid_argument(error);
@@ -293,11 +302,10 @@ LlamaEngine::LlamaEngine(ModelConfig config, std::function<void(float)> progress
         const auto selected = select_device(
             devices, config_.backend, config_.device_index, compiled_gpu_backend());
         if (!selected) throw std::invalid_argument("selected backend device was not found");
-        struct ProgressState { std::function<void(float)>* callback; } state{&progress};
-        const auto progress_bridge = [](float value, void* user_data) -> bool {
+        struct ProgressState { std::function<bool(float)>* callback; } state{&progress};
+        const auto progress_bridge = [](float value, void* user_data) noexcept -> bool {
             auto& context = *static_cast<ProgressState*>(user_data);
-            (*context.callback)(value);
-            return true;
+            return invoke_progress_callback_noexcept(*context.callback, value);
         };
         ggml_backend_dev_t selected_devices[2] = {selected->device, nullptr};
         llama_model_params model_params = llama_model_default_params();

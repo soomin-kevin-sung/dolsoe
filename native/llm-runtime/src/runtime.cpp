@@ -29,16 +29,19 @@ struct llw_runtime_t {
     llw_callback_table_t callbacks{};
     llw_scheduler_config_t config{};
     std::unique_ptr<EventDispatcher> dispatcher;
-    std::unique_ptr<LlamaEngine> engine;
+    std::unique_ptr<InferenceEngine> engine;
     std::unique_ptr<Scheduler> scheduler;
     llw_handle_t model_handle{};
     llw_handle_t next_model_handle{1};
     bool model_loading{};
     std::string backend_directory;
+    std::mutex lifecycle_mutex;
     std::mutex mutex;
 #ifdef LLW_RUNTIME_TESTING
     void (LLW_CALL *flush_enqueued_hook)(void*){};
     void* flush_enqueued_user_data{};
+    void (LLW_CALL *engine_destroy_hook)(void*){};
+    void* engine_destroy_user_data{};
 #endif
 };
 
@@ -63,6 +66,25 @@ struct ModelLoadingReset {
 namespace {
 constexpr size_t RUNTIME_CREATE_V1_0_SIZE = offsetof(llw_runtime_create_params_t, scheduler);
 int module_anchor{};
+
+#ifdef LLW_RUNTIME_TESTING
+class RuntimeTestEngine final : public InferenceEngine {
+public:
+    uint64_t start(EngineRequest request) override { return request.prompt.size(); }
+    std::vector<EngineStep> decode(const std::vector<llw_handle_t>& active) override {
+        std::vector<EngineStep> result;
+        result.reserve(active.size());
+        for (const llw_handle_t handle : active) {
+            EngineStep step;
+            step.handle = handle;
+            step.finished = true;
+            result.push_back(std::move(step));
+        }
+        return result;
+    }
+    void cleanup(llw_handle_t, uint32_t) override {}
+};
+#endif
 
 template <size_t N> bool zeroed(const uint64_t (&values)[N]) {
     return std::all_of(values, values + N, [](uint64_t value) { return value == 0; });
@@ -161,15 +183,20 @@ void copy_text(char* destination, size_t capacity, const std::string& source) {
     destination[count] = '\0';
 }
 
-void publish_runtime_event(llw_runtime_t& runtime, int32_t type, uint32_t format,
-                           llw_handle_t model, std::string payload) {
+bool try_publish_runtime_event(llw_runtime_t& runtime, int32_t type, uint32_t format,
+                               llw_handle_t model, std::string payload) {
     OwnedEvent event;
     event.type = type;
     event.data_format = format;
     event.model = model;
     event.sequence = 0;
     event.data.assign(payload.begin(), payload.end());
-    if (!runtime.dispatcher->publish(std::move(event)))
+    return runtime.dispatcher->publish(std::move(event));
+}
+
+void publish_runtime_event(llw_runtime_t& runtime, int32_t type, uint32_t format,
+                           llw_handle_t model, std::string payload) {
+    if (!try_publish_runtime_event(runtime, type, format, model, std::move(payload)))
         throw std::runtime_error("event dispatcher stopped");
 }
 
@@ -297,7 +324,7 @@ LLW_EXTERN_C LLW_EXPORT void LLW_CALL llw_runtime_destroy(llw_runtime_t* runtime
     if (!runtime) return;
     try {
         std::unique_ptr<Scheduler> scheduler;
-        std::unique_ptr<LlamaEngine> engine;
+        std::unique_ptr<InferenceEngine> engine;
         {
             std::lock_guard lock(runtime->mutex);
             scheduler = std::move(runtime->scheduler);
@@ -325,6 +352,14 @@ LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestFailNextPublishOfType(
     llw_runtime_t* runtime, int32_t event_type) {
     if (!runtime) return;
     runtime->dispatcher->fail_next_publish_of_type_for_test(event_type);
+}
+
+LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestSetEngineDestroyHook(
+    llw_runtime_t* runtime, void (LLW_CALL *hook)(void*), void* user_data) {
+    if (!runtime) return;
+    std::lock_guard lock(runtime->mutex);
+    runtime->engine_destroy_hook = hook;
+    runtime->engine_destroy_user_data = user_data;
 }
 #endif
 
@@ -405,6 +440,7 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
     return guarded(error, [&] {
         if (!runtime || !params || !out_model) throw std::invalid_argument("invalid model load call");
         validate_model(*params);
+        std::unique_lock lifecycle_lock(runtime->lifecycle_mutex);
         std::unique_lock lock(runtime->mutex);
         if (runtime->model_handle != 0 || runtime->model_loading)
             return fail(error, LLW_ERR_BUSY, "a model is already loaded or loading");
@@ -413,13 +449,27 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
         llw_handle_t handle = runtime->next_model_handle++;
         if (handle == 0) handle = runtime->next_model_handle++;
         const std::string path(reinterpret_cast<const char*>(params->path_utf8), params->path_len);
+        const auto publish_progress = [runtime, handle](float progress) noexcept {
+            try {
+                return try_publish_runtime_event(*runtime, LLW_EVENT_MODEL_PROGRESS,
+                    LLW_EVENT_DATA_JSON_UTF8, handle,
+                    "{\"progress\":" + std::to_string(progress) + "}");
+            } catch (...) {
+                return false;
+            }
+        };
 #ifdef LLW_RUNTIME_TESTING
         if (path == "llw-test-bad-alloc.gguf") throw std::bad_alloc();
         if (path == "llw-test-progress-then-bad-alloc.gguf") {
-            publish_runtime_event(*runtime, LLW_EVENT_MODEL_PROGRESS,
-                                  LLW_EVENT_DATA_JSON_UTF8, handle,
-                                  "{\"progress\":0.5}");
+            if (!publish_progress(0.5f))
+                throw std::runtime_error("model progress event queue is full");
             throw std::bad_alloc();
+        }
+        if (path == "llw-test-saturate-progress.gguf") {
+            for (size_t index = 0;; ++index) {
+                if (!publish_progress(static_cast<float>(index) / 100.0f))
+                    throw std::runtime_error("model progress event queue is full");
+            }
         }
 #endif
         ModelConfig config;
@@ -438,13 +488,16 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
         config.use_mlock = params->use_mlock != 0;
         config.check_tensors = params->check_tensors != 0;
         lock.unlock();
-        std::unique_ptr<LlamaEngine> engine;
+        std::unique_ptr<InferenceEngine> engine;
         std::unique_ptr<Scheduler> scheduler;
-        engine = std::make_unique<LlamaEngine>(config, [runtime, handle](float progress) {
-            publish_runtime_event(*runtime, LLW_EVENT_MODEL_PROGRESS,
-                LLW_EVENT_DATA_JSON_UTF8, handle,
-                "{\"progress\":" + std::to_string(progress) + "}");
-        });
+#ifdef LLW_RUNTIME_TESTING
+        if (path == "llw-test-model.gguf") {
+            engine = std::make_unique<RuntimeTestEngine>();
+        } else
+#endif
+        {
+            engine = std::make_unique<LlamaEngine>(config, publish_progress);
+        }
         scheduler = std::make_unique<Scheduler>(runtime->config.slot_count,
             runtime->config.request_queue_capacity, *engine, *runtime->dispatcher);
         lock.lock();
@@ -465,10 +518,12 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_unload(
     llw_runtime_t* runtime, llw_handle_t model, llw_error_t* error) {
     return guarded(error, [&] {
         if (!runtime || model == 0) throw std::invalid_argument("invalid model unload call");
+        std::unique_lock lifecycle_lock(runtime->lifecycle_mutex);
         std::unique_ptr<Scheduler> scheduler;
-        std::unique_ptr<LlamaEngine> engine;
+        std::unique_ptr<InferenceEngine> engine;
 #ifdef LLW_RUNTIME_TESTING
         std::function<void()> flush_enqueued;
+        std::function<void()> before_engine_destroy;
 #endif
         {
             std::lock_guard lock(runtime->mutex);
@@ -483,8 +538,16 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_unload(
                 void* const user_data = runtime->flush_enqueued_user_data;
                 flush_enqueued = [hook, user_data] { hook(user_data); };
             }
+            if (runtime->engine_destroy_hook) {
+                const auto hook = runtime->engine_destroy_hook;
+                void* const user_data = runtime->engine_destroy_user_data;
+                before_engine_destroy = [hook, user_data] { hook(user_data); };
+            }
 #endif
         }
+#ifdef LLW_RUNTIME_TESTING
+        if (before_engine_destroy) before_engine_destroy();
+#endif
         scheduler->cancel_all_and_wait();
         scheduler.reset();
         engine.reset();

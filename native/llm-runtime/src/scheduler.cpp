@@ -126,15 +126,23 @@ llw_result_t Scheduler::submit(const llw_request_params_t& params, llw_handle_t&
         events_.release_terminal(handle);
         throw;
     }
+    try {
+        if (!publish_locked(it->second, LLW_EVENT_QUEUED, UINT32_MAX, 0, std::move(payload),
+                            LLW_EVENT_DATA_JSON_UTF8)) {
+            queued_.erase(std::remove(queued_.begin(), queued_.end(), handle), queued_.end());
+            requests_.erase(it);
+            events_.release_terminal(handle);
+            error = "request event queue is full";
+            return LLW_ERR_QUEUE_FULL;
+        }
+    } catch (...) {
+        queued_.erase(std::remove(queued_.begin(), queued_.end(), handle), queued_.end());
+        requests_.erase(it);
+        events_.release_terminal(handle);
+        throw;
+    }
     ++accepted_;
     out = handle;
-    if (!publish_locked(it->second, LLW_EVENT_QUEUED, UINT32_MAX, 0, std::move(payload),
-                        LLW_EVENT_DATA_JSON_UTF8)) {
-        queued_.erase(std::remove(queued_.begin(), queued_.end(), handle), queued_.end());
-        finish_locked(handle, RequestState::Error, LLW_ERR_INTERNAL,
-                      "event queue capacity exceeded");
-        return LLW_OK;
-    }
     wake_.notify_one();
     return LLW_OK;
 }

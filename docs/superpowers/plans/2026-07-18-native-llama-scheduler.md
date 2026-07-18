@@ -1750,15 +1750,23 @@ llw_result_t Scheduler::submit(const llw_request_params_t& params, llw_handle_t&
         events_.release_terminal(handle);
         throw;
     }
+    try {
+        if (!publish_locked(it->second, LLW_EVENT_QUEUED, UINT32_MAX, 0, std::move(payload),
+                            LLW_EVENT_DATA_JSON_UTF8)) {
+            queued_.erase(std::remove(queued_.begin(), queued_.end(), handle), queued_.end());
+            requests_.erase(it);
+            events_.release_terminal(handle);
+            error = "request event queue is full";
+            return LLW_ERR_QUEUE_FULL;
+        }
+    } catch (...) {
+        queued_.erase(std::remove(queued_.begin(), queued_.end(), handle), queued_.end());
+        requests_.erase(it);
+        events_.release_terminal(handle);
+        throw;
+    }
     ++accepted_;
     out = handle;
-    if (!publish_locked(it->second, LLW_EVENT_QUEUED, UINT32_MAX, 0, std::move(payload),
-                        LLW_EVENT_DATA_JSON_UTF8)) {
-        queued_.erase(std::remove(queued_.begin(), queued_.end(), handle), queued_.end());
-        finish_locked(handle, RequestState::Error, LLW_ERR_INTERNAL,
-                      "event queue capacity exceeded");
-        return LLW_OK;
-    }
     wake_.notify_one();
     return LLW_OK;
 }
@@ -2340,10 +2348,12 @@ size_t safe_output_prefix(
     const std::vector<uint8_t>& output, const std::vector<std::vector<uint8_t>>& stops);
 void accept_history_tokens(const std::vector<llama_token>& tokens,
                            const std::function<void(llama_token)>& accept);
+bool invoke_progress_callback_noexcept(
+    const std::function<bool(float)>& callback, float value) noexcept;
 
 class LlamaEngine final : public InferenceEngine {
 public:
-    LlamaEngine(ModelConfig config, std::function<void(float)> progress);
+    LlamaEngine(ModelConfig config, std::function<bool(float)> progress);
     ~LlamaEngine() override;
     uint64_t start(EngineRequest request) override;
     std::vector<EngineStep> decode(const std::vector<llw_handle_t>& active) override;
@@ -2655,7 +2665,16 @@ void accept_history_tokens(const std::vector<llama_token>& tokens,
     for (const llama_token token : tokens) accept(token);
 }
 
-LlamaEngine::LlamaEngine(ModelConfig config, std::function<void(float)> progress)
+bool invoke_progress_callback_noexcept(
+    const std::function<bool(float)>& callback, float value) noexcept {
+    try {
+        return callback(value);
+    } catch (...) {
+        return false;
+    }
+}
+
+LlamaEngine::LlamaEngine(ModelConfig config, std::function<bool(float)> progress)
     : config_(std::move(config)) {
     std::string error;
     if (validate_model_config(config_, error) != LLW_OK) throw std::invalid_argument(error);
@@ -2666,11 +2685,10 @@ LlamaEngine::LlamaEngine(ModelConfig config, std::function<void(float)> progress
         const auto selected = select_device(
             devices, config_.backend, config_.device_index, compiled_gpu_backend());
         if (!selected) throw std::invalid_argument("selected backend device was not found");
-        struct ProgressState { std::function<void(float)>* callback; } state{&progress};
-        const auto progress_bridge = [](float value, void* user_data) -> bool {
+        struct ProgressState { std::function<bool(float)>* callback; } state{&progress};
+        const auto progress_bridge = [](float value, void* user_data) noexcept -> bool {
             auto& context = *static_cast<ProgressState*>(user_data);
-            (*context.callback)(value);
-            return true;
+            return invoke_progress_callback_noexcept(*context.callback, value);
         };
         ggml_backend_dev_t selected_devices[2] = {selected->device, nullptr};
         llama_model_params model_params = llama_model_default_params();
@@ -3248,12 +3266,13 @@ struct llw_runtime_t {
     llw_callback_table_t callbacks{};
     llw_scheduler_config_t config{};
     std::unique_ptr<EventDispatcher> dispatcher;
-    std::unique_ptr<LlamaEngine> engine;
+    std::unique_ptr<InferenceEngine> engine;
     std::unique_ptr<Scheduler> scheduler;
     llw_handle_t model_handle{};
     llw_handle_t next_model_handle{1};
     bool model_loading{};
     std::string backend_directory;
+    std::mutex lifecycle_mutex;
     std::mutex mutex;
 #ifdef LLW_RUNTIME_TESTING
     void (LLW_CALL *flush_enqueued_hook)(void*){};
@@ -3379,15 +3398,20 @@ void copy_text(char* destination, size_t capacity, const std::string& source) {
     destination[count] = '\0';
 }
 
-void publish_runtime_event(llw_runtime_t& runtime, int32_t type, uint32_t format,
-                           llw_handle_t model, std::string payload) {
+bool try_publish_runtime_event(llw_runtime_t& runtime, int32_t type, uint32_t format,
+                               llw_handle_t model, std::string payload) {
     OwnedEvent event;
     event.type = type;
     event.data_format = format;
     event.model = model;
     event.sequence = 0;
     event.data.assign(payload.begin(), payload.end());
-    if (!runtime.dispatcher->publish(std::move(event)))
+    return runtime.dispatcher->publish(std::move(event));
+}
+
+void publish_runtime_event(llw_runtime_t& runtime, int32_t type, uint32_t format,
+                           llw_handle_t model, std::string payload) {
+    if (!try_publish_runtime_event(runtime, type, format, model, std::move(payload)))
         throw std::runtime_error("event dispatcher stopped");
 }
 
@@ -3514,7 +3538,7 @@ LLW_EXTERN_C LLW_EXPORT void LLW_CALL llw_runtime_destroy(llw_runtime_t* runtime
     if (!runtime) return;
     try {
         std::unique_ptr<Scheduler> scheduler;
-        std::unique_ptr<LlamaEngine> engine;
+        std::unique_ptr<InferenceEngine> engine;
         {
             std::lock_guard lock(runtime->mutex);
             scheduler = std::move(runtime->scheduler);
@@ -3616,6 +3640,7 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
     return guarded(error, [&] {
         if (!runtime || !params || !out_model) throw std::invalid_argument("invalid model load call");
         validate_model(*params);
+        std::unique_lock lifecycle_lock(runtime->lifecycle_mutex);
         std::unique_lock lock(runtime->mutex);
         if (runtime->model_handle != 0 || runtime->model_loading)
             return fail(error, LLW_ERR_BUSY, "a model is already loaded or loading");
@@ -3643,12 +3668,16 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
         config.use_mlock = params->use_mlock != 0;
         config.check_tensors = params->check_tensors != 0;
         lock.unlock();
-        std::unique_ptr<LlamaEngine> engine;
+        std::unique_ptr<InferenceEngine> engine;
         std::unique_ptr<Scheduler> scheduler;
-        engine = std::make_unique<LlamaEngine>(config, [runtime, handle](float progress) {
-            publish_runtime_event(*runtime, LLW_EVENT_MODEL_PROGRESS,
-                LLW_EVENT_DATA_JSON_UTF8, handle,
-                "{\"progress\":" + std::to_string(progress) + "}");
+        engine = std::make_unique<LlamaEngine>(config, [runtime, handle](float progress) noexcept {
+            try {
+                return try_publish_runtime_event(*runtime, LLW_EVENT_MODEL_PROGRESS,
+                    LLW_EVENT_DATA_JSON_UTF8, handle,
+                    "{\"progress\":" + std::to_string(progress) + "}");
+            } catch (...) {
+                return false;
+            }
         });
         scheduler = std::make_unique<Scheduler>(runtime->config.slot_count,
             runtime->config.request_queue_capacity, *engine, *runtime->dispatcher);
@@ -3670,8 +3699,9 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_unload(
     llw_runtime_t* runtime, llw_handle_t model, llw_error_t* error) {
     return guarded(error, [&] {
         if (!runtime || model == 0) throw std::invalid_argument("invalid model unload call");
+        std::unique_lock lifecycle_lock(runtime->lifecycle_mutex);
         std::unique_ptr<Scheduler> scheduler;
-        std::unique_ptr<LlamaEngine> engine;
+        std::unique_ptr<InferenceEngine> engine;
 #ifdef LLW_RUNTIME_TESTING
         std::function<void()> flush_enqueued;
 #endif

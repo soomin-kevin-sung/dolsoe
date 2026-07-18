@@ -15,7 +15,13 @@
 #include <thread>
 #include <vector>
 
-struct SeenEvent { int32_t type{}; llw_handle_t request{}; uint32_t slot{}; uint64_t sequence{}; };
+struct SeenEvent {
+    int32_t type{};
+    llw_handle_t request{};
+    uint32_t slot{};
+    uint64_t sequence{};
+    void* request_user_data{};
+};
 struct Collector {
     std::mutex mutex;
     std::condition_variable changed;
@@ -32,7 +38,8 @@ void LLW_CALL collect_scheduler_event(const llw_event_t* event, void* user_data)
     {
         std::unique_lock lock(collector.mutex);
         collector.events.push_back(SeenEvent{event->event_type, event->request_handle,
-                                              event->slot_id, event->sequence_number});
+                                              event->slot_id, event->sequence_number,
+                                              event->request_user_data});
         if (event->event_type == collector.block_type && !collector.callback_entered) {
             collector.callback_entered = true;
             collector.changed.notify_all();
@@ -316,7 +323,7 @@ void deterministic_metrics_test() {
         throw std::runtime_error("empty sampled pieces emitted token events");
 }
 
-void queued_overflow_finishes_with_reserved_error_test() {
+void queued_overflow_rejects_transactionally_test() {
     Collector collector;
     collector.block_type = LLW_EVENT_LOG;
     EventDispatcher dispatcher(callbacks(collector), 1);
@@ -329,19 +336,19 @@ void queued_overflow_finishes_with_reserved_error_test() {
     const std::string prompt = "overflow";
     llw_handle_t handle{};
     std::string error;
-    if (scheduler.submit(request_params(prompt), handle, error) != LLW_OK || handle == 0)
-        throw std::runtime_error("regular overflow rejected an accepted request");
-    if (scheduler.tracked_request_count_for_test() != 0 || scheduler.snapshot().terminal_requests != 1)
-        throw std::runtime_error("queued overflow did not finish synchronously");
+    if (scheduler.submit(request_params(prompt), handle, error) != LLW_ERR_QUEUE_FULL || handle != 0)
+        throw std::runtime_error("regular overflow was not rejected transactionally");
+    const llw_scheduler_snapshot_t snapshot = scheduler.snapshot();
+    if (scheduler.tracked_request_count_for_test() != 0 || snapshot.accepted_requests != 0 ||
+        snapshot.terminal_requests != 0 || dispatcher.terminal_permit_count_for_test() != 0)
+        throw std::runtime_error("queued overflow retained acceptance state");
     release_callback(collector);
-    wait_for_terminals(collector, 1);
     dispatcher.drain_for_test();
     std::lock_guard lock(collector.mutex);
-    const auto found = std::find_if(collector.events.begin(), collector.events.end(), [handle](const SeenEvent& event) {
-        return event.request == handle && event.type == LLW_EVENT_ERROR;
-    });
-    if (found == collector.events.end() || found->sequence != 2)
-        throw std::runtime_error("queued overflow did not use its reserved terminal");
+    if (std::any_of(collector.events.begin(), collector.events.end(), [](const SeenEvent& event) {
+            return event.request != 0;
+        }))
+        throw std::runtime_error("rejected overflow emitted a request callback");
 }
 
 void token_overflow_does_not_throw_worker_test() {
@@ -398,35 +405,28 @@ void metrics_overflow_only_drops_telemetry_test() {
 
 void terminal_permit_bound_rejects_before_acceptance_test() {
     Collector collector;
-    collector.block_type = LLW_EVENT_LOG;
-    EventDispatcher dispatcher(callbacks(collector), 1);
-    if (!dispatcher.publish(telemetry_event(1))) throw std::runtime_error("prefill publish failed");
-    wait_for_callback_entry(collector);
-    if (!dispatcher.publish(telemetry_event(2))) throw std::runtime_error("queue fill failed");
-
+    EventDispatcher dispatcher(callbacks(collector), 8);
     FakeEngine engine;
     Scheduler scheduler(LLW_MAX_SLOTS, LLW_MAX_QUEUE_CAPACITY, engine, dispatcher);
     constexpr size_t bound = LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS;
     std::string error;
-    for (size_t index = 0; index < bound; ++index) {
-        const std::string prompt = "permit-" + std::to_string(index);
-        llw_handle_t handle{};
-        if (scheduler.submit(request_params(prompt), handle, error) != LLW_OK || handle == 0)
+    for (llw_handle_t handle = 1; handle <= bound; ++handle)
+        if (!dispatcher.reserve_terminal(handle))
             throw std::runtime_error("terminal permit bound rejected too early");
-    }
     llw_handle_t rejected = 99;
     const std::string prompt = "rejected";
     if (scheduler.submit(request_params(prompt), rejected, error) != LLW_ERR_QUEUE_FULL || rejected != 0)
         throw std::runtime_error("terminal permit exhaustion did not reject before acceptance");
     const llw_scheduler_snapshot_t snapshot = scheduler.snapshot();
-    if (snapshot.accepted_requests != bound || snapshot.terminal_requests != bound ||
+    if (snapshot.accepted_requests != 0 || snapshot.terminal_requests != 0 ||
         scheduler.tracked_request_count_for_test() != 0 ||
         dispatcher.terminal_permit_count_for_test() != bound)
         throw std::runtime_error("permit exhaustion changed scheduler acceptance state");
-    release_callback(collector);
-    dispatcher.drain_for_test();
+    for (llw_handle_t handle = 1; handle <= bound; ++handle)
+        if (!dispatcher.release_terminal(handle))
+            throw std::runtime_error("reserved terminal permit did not release");
     if (dispatcher.terminal_permit_count_for_test() != 0)
-        throw std::runtime_error("terminal callbacks did not release scheduler permits");
+        throw std::runtime_error("terminal permits remained after explicit release");
 }
 
 void pre_acceptance_failures_release_terminal_permit_test() {
@@ -452,6 +452,40 @@ void pre_acceptance_failures_release_terminal_permit_test() {
             dispatcher.terminal_permit_count_for_test() != 0)
             throw std::runtime_error("pre-acceptance rollback retained state or terminal permit");
     }
+}
+
+void queued_publish_throw_rolls_back_acceptance_test() {
+    Collector collector;
+    EventDispatcher dispatcher(callbacks(collector), 8);
+    FakeEngine engine;
+    engine.release();
+    Scheduler scheduler(1, 1, engine, dispatcher);
+    dispatcher.throw_next_publish_of_type_for_test(LLW_EVENT_QUEUED);
+    const std::string prompt = "publish-throw";
+    llw_request_params_t params = request_params(prompt);
+    int failed_request_context{};
+    params.request_user_data = &failed_request_context;
+    llw_handle_t handle = 99;
+    std::string error;
+    bool threw = false;
+    try {
+        scheduler.submit(params, handle, error);
+    } catch (const std::bad_alloc&) {
+        threw = true;
+    }
+    dispatcher.drain_for_test();
+    const llw_scheduler_snapshot_t snapshot = scheduler.snapshot();
+    if (!threw || handle != 0 || scheduler.tracked_request_count_for_test() != 0 ||
+        snapshot.queued_count != 0 || snapshot.active_count != 0 ||
+        snapshot.accepted_requests != 0 || snapshot.terminal_requests != 0 ||
+        dispatcher.terminal_permit_count_for_test() != 0)
+        throw std::runtime_error("queued publish throw did not roll back acceptance");
+    std::lock_guard lock(collector.mutex);
+    if (std::any_of(collector.events.begin(), collector.events.end(),
+                    [&failed_request_context](const SeenEvent& event) {
+                        return event.request_user_data == &failed_request_context;
+                    }))
+        throw std::runtime_error("failed submit retained request user data in a callback");
 }
 
 void throwing_terminal_callback_releases_scheduler_permit_test() {
@@ -481,11 +515,12 @@ int main() {
         decode_failure_cleanup_precedes_slot_reuse_test();
         bounded_terminal_storage_test();
         deterministic_metrics_test();
-        queued_overflow_finishes_with_reserved_error_test();
+        queued_overflow_rejects_transactionally_test();
         token_overflow_does_not_throw_worker_test();
         metrics_overflow_only_drops_telemetry_test();
         terminal_permit_bound_rejects_before_acceptance_test();
         pre_acceptance_failures_release_terminal_permit_test();
+        queued_publish_throw_rolls_back_acceptance_test();
         throwing_terminal_callback_releases_scheduler_permit_test();
         return 0;
     } catch (const std::exception& exception) {
