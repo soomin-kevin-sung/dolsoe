@@ -1,3 +1,5 @@
+mod llm_dto;
+mod runtime_path;
 mod runtime_probe;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/

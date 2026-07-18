@@ -1,9 +1,11 @@
-use std::path::{Path, PathBuf};
-
 use serde::Serialize;
 use tauri::Manager;
 
-const MAX_RUNTIME_PACK_ID_LEN: usize = 64;
+use crate::runtime_path::RuntimePackResolver;
+#[cfg(test)]
+use crate::runtime_path::{
+    resolve_runtime_library, runtime_library_filename, validate_runtime_pack_id,
+};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,81 +15,6 @@ pub struct RuntimeInfoDto {
     pub runtime_version: String,
     pub llama_cpp_commit: String,
     pub max_parallel_slots: u32,
-}
-
-fn validate_runtime_pack_id(runtime_pack_id: &str) -> Result<(), String> {
-    if runtime_pack_id.is_empty() {
-        return Err("runtime pack ID must not be empty".into());
-    }
-    if runtime_pack_id.len() > MAX_RUNTIME_PACK_ID_LEN {
-        return Err(format!(
-            "runtime pack ID must not exceed {MAX_RUNTIME_PACK_ID_LEN} ASCII characters"
-        ));
-    }
-    if runtime_pack_id == "." || runtime_pack_id.contains("..") {
-        return Err("runtime pack ID must not contain traversal components".into());
-    }
-    if !runtime_pack_id
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-    {
-        return Err(
-            "runtime pack ID may contain only ASCII letters, digits, dots, underscores, and hyphens"
-                .into(),
-        );
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "windows")]
-fn runtime_library_filename() -> &'static str {
-    "local_llm_runtime.dll"
-}
-
-#[cfg(target_os = "macos")]
-fn runtime_library_filename() -> &'static str {
-    "liblocal_llm_runtime.dylib"
-}
-
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
-fn runtime_library_filename() -> &'static str {
-    "liblocal_llm_runtime.so"
-}
-
-fn resolve_runtime_library(runtime_root: &Path, runtime_pack_id: &str) -> Result<PathBuf, String> {
-    validate_runtime_pack_id(runtime_pack_id)?;
-
-    if !runtime_root.is_dir() {
-        return Err(format!(
-            "trusted runtime root does not exist: {}",
-            runtime_root.display()
-        ));
-    }
-    let pack_dir = runtime_root.join(runtime_pack_id);
-    if !pack_dir.is_dir() {
-        return Err(format!(
-            "runtime pack does not exist: {}",
-            pack_dir.display()
-        ));
-    }
-    let candidate = pack_dir.join(runtime_library_filename());
-    if !candidate.is_file() {
-        return Err(format!(
-            "runtime library does not exist: {}",
-            candidate.display()
-        ));
-    }
-
-    let canonical_root = runtime_root
-        .canonicalize()
-        .map_err(|error| format!("failed to canonicalize trusted runtime root: {error}"))?;
-    let canonical_candidate = candidate
-        .canonicalize()
-        .map_err(|error| format!("failed to canonicalize runtime library: {error}"))?;
-    if !canonical_candidate.starts_with(&canonical_root) {
-        return Err("runtime library escapes trusted runtime root".into());
-    }
-    Ok(canonical_candidate)
 }
 
 fn runtime_info_dto(info: &llm_runtime::RuntimeInfo) -> RuntimeInfoDto {
@@ -112,7 +39,7 @@ pub async fn probe_runtime(
         .join("runtime-packs");
 
     tauri::async_runtime::spawn_blocking(move || {
-        let path = resolve_runtime_library(&runtime_root, &runtime_pack_id)?;
+        let path = RuntimePackResolver::new(runtime_root).resolve(&runtime_pack_id)?;
         // The backend/runtime installer exclusively owns writes to this trusted root.
         // SAFETY: `path` is the canonical path of a project-managed, ABI-conforming runtime pack.
         let runtime = unsafe { llm_runtime::RuntimeLibrary::load(&path) }
@@ -200,7 +127,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_runtime_pack_ids() {
-        let overlong = "a".repeat(MAX_RUNTIME_PACK_ID_LEN + 1);
+        let overlong = "a".repeat(65);
         for runtime_pack_id in [
             "",
             ".",
