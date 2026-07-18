@@ -34,17 +34,20 @@ Tauri commands
 llm-worker thread
   - Option<InferenceRuntime>
   - Option<Model>
-  - HashMap<request_handle, RequestStream>
-  - runtime regular event receiver
-  - request terminal receivers
+  - Option<RequestStream>
+  - optional request terminal receiver
+  |
+  +-- llm-event-relay thread
+      - runtime regular event receiver
+      - terminal forwarding control receiver
   |
   v
 managed runtime DLL -> llama.cpp CPU backend
 ```
 
-Tauri state에는 thread-safe command sender와 worker join handle만 둔다. DLL 호출, 모델 drop, 요청 drop은 worker 스레드에서만 일어난다. 앱 종료 시 worker에 shutdown을 보내 활성 요청을 취소하고 요청, 모델, 런타임 순서로 drop한다.
+Tauri state에는 thread-safe command sender와 worker join handle만 둔다. DLL 호출, 모델 drop, 요청 drop은 worker 스레드에서만 일어난다. `InferenceRuntime::events()`로 복제한 channel receiver만 `llm-event-relay` 스레드로 이동한다. 이는 동기 `model_load`가 worker를 점유하는 동안에도 model-progress를 UI로 전달하기 위한 것으로, 네이티브 객체 소유권은 이동하지 않는다. 앱 종료 시 worker에 shutdown을 보내 활성 요청을 취소하고 relay, 요청, 모델, 런타임 순서로 정리한다.
 
-명령 채널은 용량 32의 bounded channel로 고정한다. 각 명령은 결과를 돌려받을 일회성 응답 채널을 포함하며, Tauri command는 이 응답만 기다린다. worker는 명령 수신을 최대 5ms 기다린 뒤 regular/terminal 이벤트를 drain한다. 이 방식으로 idle busy loop를 피하면서 토큰 전달 지연을 제한한다. 첫 구현에서 활성 요청은 최대 하나이므로 두 번째 submit은 큐에 넣지 않고 busy 오류를 반환한다.
+명령 채널은 용량 32의 bounded channel로 고정한다. 각 명령은 결과를 돌려받을 일회성 응답 채널을 포함하며, Tauri command는 이 응답만 기다린다. worker는 명령 수신을 최대 5ms 기다린 뒤 terminal 이벤트와 relay 실패 신호를 drain한다. relay는 regular event receiver와 terminal 전달 control receiver를 blocking select한다. 이 방식으로 idle busy loop를 피하면서 토큰 전달 지연을 제한한다. 첫 구현에서 활성 요청은 최대 하나이므로 두 번째 submit은 큐에 넣지 않고 busy 오류를 반환한다.
 
 ## 4. 관리형 CPU 팩
 
@@ -74,7 +77,7 @@ llm_get_status() -> LlmStatusDto
 llm_load_model(request: LoadModelRequest) -> LlmStatusDto
 llm_unload_model() -> LlmStatusDto
 llm_submit(request: SubmitRequest) -> SubmitResponse
-llm_cancel(request_handle: u64) -> ()
+llm_cancel(request_handle: string) -> ()
 llm_get_metrics() -> LlmMetricsDto
 ```
 
@@ -100,9 +103,9 @@ LlmEventDto {
 }
 ```
 
-64비트 handle과 sequence는 JavaScript 정밀도 손실을 막기 위해 문자열로 직렬화한다. 토큰은 UTF-8 문자열이 아니라 바이트 배열로 보낸다. 프런트엔드는 요청별 `TextDecoder`를 `stream: true`로 유지하고 terminal에서 flush하여 분할된 멀티바이트 문자를 손상시키지 않는다.
+64비트 handle과 sequence는 JavaScript 정밀도 손실을 막기 위해 문자열로 직렬화한다. 취소 명령도 같은 문자열 handle을 받고 Rust 경계에서 `u64`로 검증·변환한다. 토큰은 UTF-8 문자열이 아니라 바이트 배열로 보낸다. 프런트엔드는 요청별 `TextDecoder`를 `stream: true`로 유지하고 terminal에서 flush하여 분할된 멀티바이트 문자를 손상시키지 않는다.
 
-worker는 regular event receiver를 drain하고 각 `RequestStream` terminal receiver를 nonblocking poll한다. 요청 terminal을 emit한 뒤 해당 stream을 map에서 제거한다. 이벤트 emit 실패나 UI 구독 해제 시 요청을 취소하고 worker를 막지 않는다.
+event relay는 regular event receiver를 순서대로 emit한다. worker가 `RequestStream` terminal을 받으면 terminal을 직접 emit하지 않고 relay control channel로 보낸다. relay는 이미 큐에 들어온 regular 이벤트를 모두 drain한 뒤 terminal을 emit하여 마지막 token보다 terminal이 먼저 전달되지 않게 한다. terminal emit 이후 worker에 정리 완료를 알리고 worker가 해당 stream을 제거한다. 이벤트 emit 실패나 UI 구독 해제 시 relay가 worker에 실패 신호를 보내고 worker는 요청을 취소한 뒤 terminal 정리를 계속한다.
 
 ## 7. 프런트엔드 서비스와 상태
 
