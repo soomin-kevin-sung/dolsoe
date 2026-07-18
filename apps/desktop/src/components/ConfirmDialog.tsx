@@ -5,9 +5,9 @@ const copy = {
   reload: { title: "모델을 다시 로드할까요?", body: "진행 중인 생성 1건이 취소되고, 변경한 옵션으로 모델을 다시 로드합니다.", confirm: "다시 로드" },
 } as const;
 
-export function ConfirmDialog({ type, onClose, returnFocusRef }: { type: keyof typeof copy; onClose(): void; returnFocusRef: RefObject<HTMLButtonElement | null> }) {
+export function ConfirmDialog({ type, onClose, onConfirm, returnFocusRef }: { type: keyof typeof copy; onClose(): void; onConfirm?(): void; returnFocusRef: RefObject<HTMLButtonElement | null> }) {
   const cancelRef = useRef<HTMLButtonElement>(null); const dialogRef = useRef<HTMLDivElement>(null); const value = copy[type];
   useEffect(() => { cancelRef.current?.focus(); return () => returnFocusRef.current?.focus(); }, [returnFocusRef]);
   function trapFocus(event: KeyboardEvent<HTMLDivElement>) { if (event.key !== "Tab") return; const buttons = dialogRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"); if (!buttons?.length) return; const first = buttons[0]; const last = buttons[buttons.length - 1]; if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); } else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); } }
-  return <div className="dialog-scrim"><div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="dialog-title" className="confirm-dialog" onKeyDown={trapFocus}><h2 id="dialog-title">{value.title}</h2><p>{value.body}</p><div className="dialog-actions"><button ref={cancelRef} className="button-secondary" type="button" onClick={onClose}>취소</button><button className={type === "reset" ? "button-danger" : "button-primary"} type="button" onClick={onClose}>{value.confirm}</button></div></div></div>;
+  return <div className="dialog-scrim"><div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="dialog-title" className="confirm-dialog" onKeyDown={trapFocus}><h2 id="dialog-title">{value.title}</h2><p>{value.body}</p><div className="dialog-actions"><button ref={cancelRef} className="button-secondary" type="button" onClick={onClose}>취소</button><button className={type === "reset" ? "button-danger" : "button-primary"} type="button" onClick={() => { onConfirm?.(); onClose(); }}>{value.confirm}</button></div></div></div>;
 }

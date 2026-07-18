@@ -214,3 +214,10 @@ test("approved Korean copy is preserved", async ({ page }) => {
   await page.goto("/?state=no-model");
   await expect(page.getByRole("heading", { name: "선택된 모델이 없습니다" })).toBeVisible();
 });
+
+test("normal browser URL explains that the desktop app is required", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.getByRole("heading", { name: "데스크톱 앱에서 실행해야 합니다" })).toBeVisible();
+  await expect(page.getByText("npm --prefix apps/desktop run tauri -- dev")).toBeVisible();
+});

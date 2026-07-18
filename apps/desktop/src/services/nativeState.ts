@@ -21,6 +21,7 @@ export type NativeAction =
   | { type: "load-failed"; error: string }
   | { type: "submit-started"; prompt: string }
   | { type: "submit-accepted"; requestHandle: string }
+  | { type: "submit-failed"; error: string }
   | { type: "token"; requestHandle: string; text: string }
   | { type: "terminal"; requestHandle: string; status: "complete" | "cancelled" | "error"; tail: string; error?: string }
   | { type: "metrics"; metrics: LlmMetricsDto }
@@ -109,6 +110,15 @@ export function nativeReducer(state: NativeState, action: NativeAction): NativeS
         return state;
       }
       return { ...state, activeRequestHandle: action.requestHandle, pendingSubmit: false };
+    case "submit-failed":
+      return {
+        ...state,
+        phase: "error",
+        activeRequestHandle: null,
+        pendingSubmit: false,
+        error: action.error,
+        messages: updateAssistant(state, (message) => ({ ...message, status: "error" })),
+      };
     case "token":
       if (!acceptsHandle(state, action.requestHandle)) return state;
       return {

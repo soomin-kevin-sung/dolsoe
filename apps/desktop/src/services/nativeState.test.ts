@@ -63,4 +63,15 @@ describe("nativeState", () => {
     expect(state.messages[state.messages.length - 1]?.status).toBe("cancelled");
     expect(state.phase).toBe("ready");
   });
+
+  it("settles a submit command failure instead of leaving a streaming state", () => {
+    let state = nativeReducer(readyState(), { type: "submit-started", prompt: "질문" });
+
+    state = nativeReducer(state, { type: "submit-failed", error: "runtime is busy" });
+
+    expect(state.phase).toBe("error");
+    expect(state.pendingSubmit).toBe(false);
+    expect(state.messages[state.messages.length - 1]?.status).toBe("error");
+    expect(state.error).toBe("runtime is busy");
+  });
 });

@@ -52,6 +52,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .empty-state p { max-width: 430px; margin: 0; line-height: 1.6; }
 .ready-line { display: flex; align-items: center; gap: 6px; margin-top: 16px; font-size: 12px; }
 .caption { margin-top: 8px; color: var(--text-3); font-size: 11px; }
+.desktop-command { margin-top: 16px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg-inset); font: 12px var(--font-mono); }
 .loading-card { width: min(440px, 100%); padding: 20px; border: 1px solid var(--border); border-radius: 6px; text-align: left; background: var(--bg-surface); }
 .loading-file { margin: 0 0 14px; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .progress-track { height: 4px; overflow: hidden; border-radius: 2px; background: var(--bg-active); }
