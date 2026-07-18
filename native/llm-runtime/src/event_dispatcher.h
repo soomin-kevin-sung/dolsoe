@@ -4,10 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
-#include <functional>
-#include <future>
 #include <map>
-#include <memory>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -35,9 +32,9 @@ public:
     bool release_terminal(llw_handle_t request);
     bool publish(OwnedEvent event);
     void flush();
+    bool is_callback_thread();
 #ifdef LLW_RUNTIME_TESTING
-    void flush_for_test(std::function<void()> barrier_enqueued,
-                        std::function<void()> waiting_for_control = {});
+    void flush_for_test(void (LLW_CALL *barrier_enqueued)(void*), void* user_data);
     void fail_next_publish_of_type_for_test(int32_t event_type);
     void throw_next_publish_of_type_for_test(int32_t event_type);
     size_t terminal_permit_count_for_test();
@@ -45,30 +42,29 @@ public:
     void stop();
     void drain_for_test();
 private:
-    enum class Admission { Regular, Terminal, Control };
+    enum class Admission { Regular, Terminal };
     enum class TerminalPermitState { Reserved, Published };
     struct DispatchItem {
         OwnedEvent event;
-        std::shared_ptr<std::promise<void>> barrier;
         Admission admission{Admission::Regular};
     };
-    void flush_impl(std::function<void()> barrier_enqueued,
-                    std::function<void()> waiting_for_control);
+    void flush_impl(void (LLW_CALL *barrier_enqueued)(void*), void* user_data);
     void run();
     llw_callback_table_t callbacks_{};
     // Terminal permits bound reserved, queued, and callback-active request lifetimes together.
-    // The deque holds at most regular_capacity_ + terminal_capacity_ + one barrier.
+    // The deque holds at most regular_capacity_ + terminal_capacity_ events.
     const size_t regular_capacity_;
     static constexpr size_t terminal_capacity_ = LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS;
     std::mutex mutex_;
     std::condition_variable readable_;
-    std::condition_variable control_writable_;
+    std::condition_variable flushed_;
     std::condition_variable drained_;
     std::condition_variable joined_;
     std::deque<DispatchItem> queue_;
     size_t regular_queued_{};
     std::map<llw_handle_t, TerminalPermitState> terminal_permits_;
-    bool barrier_queued_{};
+    uint64_t enqueued_{};
+    uint64_t completed_{};
     bool stopping_{};
     bool join_started_{};
     bool join_finished_{};

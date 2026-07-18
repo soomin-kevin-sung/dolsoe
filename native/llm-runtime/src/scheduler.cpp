@@ -194,10 +194,21 @@ void Scheduler::fail_next_submit_for_test(SubmitFailurePoint point) {
     std::lock_guard lock(mutex_);
     submit_failure_ = point;
 }
+
+void Scheduler::set_worker_paused_for_test(bool paused) {
+    {
+        std::lock_guard lock(mutex_);
+        worker_paused_ = paused;
+    }
+    wake_.notify_all();
+}
 #endif
 
 void Scheduler::cancel_all_and_wait() {
     std::unique_lock lock(mutex_);
+#ifdef LLW_RUNTIME_TESTING
+    worker_paused_ = false;
+#endif
     for (auto& [handle, request] : requests_) {
         (void)handle;
         if (!terminal(request.state)) request.cancel_requested = true;
@@ -213,6 +224,9 @@ void Scheduler::cancel_all_and_wait() {
 
 bool Scheduler::has_work_locked() const {
     if (!queued_.empty()) return true;
+    if (std::any_of(requests_.begin(), requests_.end(), [](const auto& entry) {
+            return entry.second.terminal_pending;
+        })) return true;
     return std::any_of(slots_.begin(), slots_.end(), [this](const Slot& slot) {
         if (slot.request == 0) return false;
         const auto found = requests_.find(slot.request);
@@ -262,136 +276,202 @@ bool Scheduler::publish_locked(Request& request, int32_t type, uint32_t slot,
     event.model = request.model;
     event.request = request.handle;
     event.slot = slot;
-    event.sequence = request.next_sequence++;
+    event.sequence = request.next_sequence;
     event.request_user_data = request.user_data;
     event.data = std::move(payload);
-    return events_.publish(std::move(event));
+    if (!events_.publish(std::move(event))) return false;
+    ++request.next_sequence;
+    return true;
 }
 
 void Scheduler::finish_locked(llw_handle_t handle, RequestState state, int32_t error_code,
                                std::string message) {
     Request& request = requests_.at(handle);
-    if (request.terminal_emitted) return;
-    request.terminal_emitted = true;
-    request.state = state;
+    if (request.terminal_emitted || request.terminal_pending) return;
+    request.terminal_pending = true;
+    request.pending_terminal_state = state;
+    request.pending_terminal_error = error_code;
+    try {
+        request.pending_terminal_message = std::move(message);
+    } catch (...) {
+        request.pending_terminal_state = RequestState::Error;
+        request.pending_terminal_error = LLW_ERR_INTERNAL;
+        request.pending_terminal_message.clear();
+    }
     if (request.engine_started && !request.cleanup_attempted) {
         request.cleanup_attempted = true;
         try {
             engine_.cleanup(request.handle, request.slot_id);
         } catch (const std::exception& exception) {
-            state = RequestState::Error;
-            error_code = LLW_ERR_INTERNAL;
-            message = std::string("sequence cleanup failed: ") + exception.what();
-            request.state = state;
+            request.pending_terminal_state = RequestState::Error;
+            request.pending_terminal_error = LLW_ERR_INTERNAL;
+            try {
+                request.pending_terminal_message =
+                    std::string("sequence cleanup failed: ") + exception.what();
+            } catch (...) {
+                request.pending_terminal_message.clear();
+            }
         } catch (...) {
-            state = RequestState::Error;
-            error_code = LLW_ERR_INTERNAL;
-            message = "sequence cleanup failed";
-            request.state = state;
+            request.pending_terminal_state = RequestState::Error;
+            request.pending_terminal_error = LLW_ERR_INTERNAL;
+            try { request.pending_terminal_message = "sequence cleanup failed"; }
+            catch (...) { request.pending_terminal_message.clear(); }
         }
     }
-    int32_t event_type = LLW_EVENT_DONE;
-    const std::string done_reason = message.empty() ? "stop" : message;
-    std::string payload = "{\"state\":\"done\",\"reason\":\"" +
-                          json_escape(done_reason) + "\",\"generatedTokens\":" +
-                          std::to_string(request.generated_tokens) + "}";
-    if (state == RequestState::Cancelled) {
-        event_type = LLW_EVENT_CANCELLED;
-        payload = "{\"state\":\"cancelled\"}";
-        ++metrics_.cancelled_requests;
-    } else if (state == RequestState::Error) {
-        event_type = LLW_EVENT_ERROR;
-        payload = "{\"state\":\"error\",\"message\":\"" + json_escape(message) + "\"}";
-        ++metrics_.failed_requests;
+    (void)try_publish_terminal_locked(handle);
+}
+
+bool Scheduler::try_publish_terminal_locked(llw_handle_t handle) noexcept {
+    try {
+        const auto found = requests_.find(handle);
+        if (found == requests_.end()) return true;
+        Request& request = found->second;
+        if (!request.terminal_pending || request.terminal_emitted) return true;
+        const RequestState state = request.pending_terminal_state;
+        const int32_t error_code = request.pending_terminal_error;
+        const std::string& message = request.pending_terminal_message;
+        int32_t event_type = LLW_EVENT_DONE;
+        const std::string done_reason = message.empty() ? "stop" : message;
+        std::string payload = "{\"state\":\"done\",\"reason\":\"" +
+                              json_escape(done_reason) + "\",\"generatedTokens\":" +
+                              std::to_string(request.generated_tokens) + "}";
+        if (state == RequestState::Cancelled) {
+            event_type = LLW_EVENT_CANCELLED;
+            payload = "{\"state\":\"cancelled\"}";
+        } else if (state == RequestState::Error) {
+            event_type = LLW_EVENT_ERROR;
+            payload = "{\"state\":\"error\",\"message\":\"" + json_escape(message) + "\"}";
+        }
+        if (!publish_locked(request, event_type, request.slot_id, error_code, bytes(payload),
+                            LLW_EVENT_DATA_JSON_UTF8)) return false;
+        request.terminal_emitted = true;
+        request.terminal_pending = false;
+        request.state = state;
+        if (state == RequestState::Cancelled) ++metrics_.cancelled_requests;
+        else if (state == RequestState::Error) ++metrics_.failed_requests;
+        for (Slot& slot : slots_) {
+            if (slot.request == handle) slot.request = 0;
+        }
+        ++terminal_;
+        requests_.erase(handle);
+        if (terminal_ == accepted_) idle_.notify_all();
+        return true;
+    } catch (...) {
+        return false;
     }
-    if (!publish_locked(request, event_type, request.slot_id, error_code, bytes(payload),
-                        LLW_EVENT_DATA_JSON_UTF8)) {
-        // Accepted requests retain Reserved permits until dispatcher callback completion.
-        request.terminal_emitted = false;
-        return;
-    }
-    for (Slot& slot : slots_) {
-        if (slot.request == handle) slot.request = 0;
-    }
-    ++terminal_;
-    requests_.erase(handle);
-    if (terminal_ == accepted_) idle_.notify_all();
 }
 
 void Scheduler::run() {
     std::unique_lock lock(mutex_);
     for (;;) {
-        wake_.wait(lock, [this] { return stopping_ || has_work_locked(); });
-        if (stopping_ && !has_work_locked()) break;
+        try {
+            wake_.wait(lock, [this] {
+#ifdef LLW_RUNTIME_TESTING
+                return stopping_ || (!worker_paused_ && has_work_locked());
+#else
+                return stopping_ || has_work_locked();
+#endif
+            });
+#ifdef LLW_RUNTIME_TESTING
+            if (worker_paused_ && !stopping_) continue;
+#endif
+            if (stopping_ && !has_work_locked()) break;
 
-        for (Slot& slot : slots_) {
-            if (slot.request == 0) continue;
-            const llw_handle_t handle = slot.request;
-            Request& request = requests_.at(handle);
-            if (!request.cancel_requested || terminal(request.state)) continue;
-            finish_locked(handle, RequestState::Cancelled, 0, "");
-        }
-        promote_locked();
-
-        std::vector<llw_handle_t> active;
-        for (const Slot& slot : slots_) if (slot.request != 0) active.push_back(slot.request);
-        if (active.empty()) continue;
-
-        lock.unlock();
-        std::vector<EngineStep> steps;
-        std::string decode_error;
-        const auto started = std::chrono::steady_clock::now();
-        try { steps = engine_.decode(active); }
-        catch (const std::exception& exception) { decode_error = exception.what(); }
-        catch (...) { decode_error = "unknown decode failure"; }
-        const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
-            std::chrono::steady_clock::now() - started).count();
-        lock.lock();
-
-        ++metrics_.decode_calls;
-        metrics_.decode_ns += static_cast<uint64_t>(elapsed);
-        if (!decode_error.empty()) {
-            for (const llw_handle_t handle : active) {
-                const auto found = requests_.find(handle);
-                if (found != requests_.end())
-                    finish_locked(handle, RequestState::Error, LLW_ERR_INTERNAL, decode_error);
-            }
-            continue;
-        }
-        for (EngineStep& step : steps) {
-            auto found = requests_.find(step.handle);
-            if (found == requests_.end() || found->second.terminal_emitted) continue;
-            Request& request = found->second;
-            request.generated_tokens += step.sampled_tokens;
-            metrics_.generated_tokens += step.sampled_tokens;
-            if (request.cancel_requested) {
-                finish_locked(request.handle, RequestState::Cancelled, 0, "");
+            std::vector<llw_handle_t> pending;
+            for (const auto& [handle, request] : requests_)
+                if (request.terminal_pending) pending.push_back(handle);
+            bool retry_failed = false;
+            for (const llw_handle_t handle : pending)
+                if (!try_publish_terminal_locked(handle)) retry_failed = true;
+            if (retry_failed) {
+                lock.unlock();
+                std::this_thread::yield();
+                lock.lock();
                 continue;
             }
-            if (!step.token_bytes.empty()) {
-                if (!publish_locked(request, LLW_EVENT_TOKEN, request.slot_id, 0,
-                                    std::move(step.token_bytes), LLW_EVENT_DATA_BYTES)) {
-                    finish_locked(request.handle, RequestState::Error, LLW_ERR_INTERNAL,
-                                  "event queue capacity exceeded");
+
+            for (Slot& slot : slots_) {
+                if (slot.request == 0) continue;
+                const llw_handle_t handle = slot.request;
+                Request& request = requests_.at(handle);
+                if (!request.cancel_requested || terminal(request.state)) continue;
+                finish_locked(handle, RequestState::Cancelled, 0, "");
+            }
+            promote_locked();
+
+            std::vector<llw_handle_t> active;
+            for (const Slot& slot : slots_) {
+                if (slot.request == 0) continue;
+                const auto found = requests_.find(slot.request);
+                if (found != requests_.end() && !found->second.terminal_pending)
+                    active.push_back(slot.request);
+            }
+            if (active.empty()) continue;
+
+            lock.unlock();
+            std::vector<EngineStep> steps;
+            std::string decode_error;
+            const auto started = std::chrono::steady_clock::now();
+            try { steps = engine_.decode(active); }
+            catch (const std::exception& exception) { decode_error = exception.what(); }
+            catch (...) { decode_error = "unknown decode failure"; }
+            const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - started).count();
+            lock.lock();
+
+            ++metrics_.decode_calls;
+            metrics_.decode_ns += static_cast<uint64_t>(elapsed);
+            if (!decode_error.empty()) {
+                for (const llw_handle_t handle : active) {
+                    const auto found = requests_.find(handle);
+                    if (found != requests_.end())
+                        finish_locked(handle, RequestState::Error, LLW_ERR_INTERNAL, decode_error);
+                }
+                continue;
+            }
+            for (EngineStep& step : steps) {
+                auto found = requests_.find(step.handle);
+                if (found == requests_.end() || found->second.terminal_emitted ||
+                    found->second.terminal_pending) continue;
+                Request& request = found->second;
+                request.generated_tokens += step.sampled_tokens;
+                metrics_.generated_tokens += step.sampled_tokens;
+                if (request.cancel_requested) {
+                    finish_locked(request.handle, RequestState::Cancelled, 0, "");
                     continue;
                 }
+                if (!step.token_bytes.empty()) {
+                    if (!publish_locked(request, LLW_EVENT_TOKEN, request.slot_id, 0,
+                                        std::move(step.token_bytes), LLW_EVENT_DATA_BYTES)) {
+                        finish_locked(request.handle, RequestState::Error, LLW_ERR_INTERNAL,
+                                      "event queue capacity exceeded");
+                        continue;
+                    }
+                }
+                if (step.failed) finish_locked(request.handle, RequestState::Error,
+                                               LLW_ERR_INTERNAL, step.error);
+                else if (step.finished) finish_locked(request.handle, RequestState::Done, 0,
+                                                      step.finish_reason);
             }
-            if (step.failed) finish_locked(request.handle, RequestState::Error,
-                                           LLW_ERR_INTERNAL, step.error);
-            else if (step.finished) finish_locked(request.handle, RequestState::Done, 0,
-                                                  step.finish_reason);
-        }
 
-        OwnedEvent metrics_event;
-        metrics_event.type = LLW_EVENT_METRICS;
-        metrics_event.data_format = LLW_EVENT_DATA_JSON_UTF8;
-        metrics_event.sequence = 0;
-        metrics_event.data = bytes("{\"promptTokens\":" + std::to_string(metrics_.prompt_tokens) +
-            ",\"generatedTokens\":" + std::to_string(metrics_.generated_tokens) +
-            ",\"decodeCalls\":" + std::to_string(metrics_.decode_calls) +
-            ",\"queueWaitNanoseconds\":" + std::to_string(metrics_.queue_wait_ns) +
-            ",\"decodeNanoseconds\":" + std::to_string(metrics_.decode_ns) + "}");
-        // Metrics saturation drops telemetry without blocking or stopping request execution.
-        events_.publish(std::move(metrics_event));
+            OwnedEvent metrics_event;
+            metrics_event.type = LLW_EVENT_METRICS;
+            metrics_event.data_format = LLW_EVENT_DATA_JSON_UTF8;
+            metrics_event.sequence = 0;
+            metrics_event.data = bytes(
+                "{\"promptTokens\":" + std::to_string(metrics_.prompt_tokens) +
+                ",\"generatedTokens\":" + std::to_string(metrics_.generated_tokens) +
+                ",\"decodeCalls\":" + std::to_string(metrics_.decode_calls) +
+                ",\"queueWaitNanoseconds\":" + std::to_string(metrics_.queue_wait_ns) +
+                ",\"decodeNanoseconds\":" + std::to_string(metrics_.decode_ns) + "}");
+            // Metrics saturation drops telemetry without blocking request execution.
+            try { (void)events_.publish(std::move(metrics_event)); }
+            catch (...) {}
+        } catch (...) {
+            if (!lock.owns_lock()) {
+                try { lock.lock(); } catch (...) { return; }
+            }
+            std::this_thread::yield();
+        }
     }
 }

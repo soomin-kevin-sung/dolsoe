@@ -73,19 +73,25 @@ bool EventDispatcher::publish(OwnedEvent event) {
         return false;
     }
     const Admission admission = terminal ? Admission::Terminal : Admission::Regular;
-    queue_.push_back(DispatchItem{std::move(event), {}, admission});
+    queue_.push_back(DispatchItem{std::move(event), admission});
+    ++enqueued_;
     if (terminal) terminal_permit->second = TerminalPermitState::Published;
     else ++regular_queued_;
     readable_.notify_one();
     return true;
 }
 
-void EventDispatcher::flush() { flush_impl({}, {}); }
+void EventDispatcher::flush() { flush_impl(nullptr, nullptr); }
+
+bool EventDispatcher::is_callback_thread() {
+    std::lock_guard lock(mutex_);
+    return std::this_thread::get_id() == callback_thread_;
+}
 
 #ifdef LLW_RUNTIME_TESTING
-void EventDispatcher::flush_for_test(std::function<void()> barrier_enqueued,
-                                     std::function<void()> waiting_for_control) {
-    flush_impl(std::move(barrier_enqueued), std::move(waiting_for_control));
+void EventDispatcher::flush_for_test(
+    void (LLW_CALL *barrier_enqueued)(void*), void* user_data) {
+    flush_impl(barrier_enqueued, user_data);
 }
 
 void EventDispatcher::fail_next_publish_of_type_for_test(int32_t event_type) {
@@ -104,27 +110,22 @@ size_t EventDispatcher::terminal_permit_count_for_test() {
 }
 #endif
 
-void EventDispatcher::flush_impl(std::function<void()> barrier_enqueued,
-                                 std::function<void()> waiting_for_control) {
-    auto barrier = std::make_shared<std::promise<void>>();
-    std::future<void> completed = barrier->get_future();
+void EventDispatcher::flush_impl(
+    void (LLW_CALL *barrier_enqueued)(void*), void* user_data) {
+    uint64_t target{};
     {
         std::unique_lock lock(mutex_);
         if (std::this_thread::get_id() == callback_thread_)
             throw std::logic_error("event dispatcher flush is not callback-reentrant");
-        if (barrier_queued_ && waiting_for_control) {
-            lock.unlock();
-            waiting_for_control();
-            lock.lock();
-        }
-        control_writable_.wait(lock, [this] { return stopping_ || !barrier_queued_; });
         if (stopping_) throw std::runtime_error("event dispatcher is stopping");
-        queue_.push_back(DispatchItem{{}, std::move(barrier), Admission::Control});
-        barrier_queued_ = true;
-        readable_.notify_one();
+        target = enqueued_;
     }
-    if (barrier_enqueued) barrier_enqueued();
-    completed.get();
+    if (barrier_enqueued) {
+        try { barrier_enqueued(user_data); } catch (...) {}
+    }
+    std::unique_lock lock(mutex_);
+    flushed_.wait(lock, [this, target] { return stopping_ || completed_ >= target; });
+    if (completed_ < target) throw std::runtime_error("event dispatcher stopped before flush");
 }
 
 void EventDispatcher::stop() {
@@ -143,7 +144,7 @@ void EventDispatcher::stop() {
         }
     }
     readable_.notify_all();
-    control_writable_.notify_all();
+    flushed_.notify_all();
     if (!join_worker) return;
     if (thread_.joinable()) thread_.join();
     {
@@ -175,17 +176,7 @@ void EventDispatcher::run() {
             item = std::move(queue_.front());
             queue_.pop_front();
             if (item.admission == Admission::Regular) --regular_queued_;
-            else if (item.admission == Admission::Control) {
-                barrier_queued_ = false;
-                control_writable_.notify_one();
-            }
-            if (!item.barrier) ++in_callback_;
-        }
-        if (item.barrier) {
-            item.barrier->set_value();
-            std::lock_guard lock(mutex_);
-            if (queue_.empty() && in_callback_ == 0) drained_.notify_all();
-            continue;
+            ++in_callback_;
         }
         const llw_handle_t terminal_request =
             item.admission == Admission::Terminal ? item.event.request : 0;
@@ -193,6 +184,8 @@ void EventDispatcher::run() {
             std::lock_guard lock(mutex_);
             if (terminal_request != 0) terminal_permits_.erase(terminal_request);
             --in_callback_;
+            ++completed_;
+            flushed_.notify_all();
             if (queue_.empty() && in_callback_ == 0) drained_.notify_all();
         });
         OwnedEvent& owned = item.event;

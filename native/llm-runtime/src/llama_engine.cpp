@@ -30,6 +30,41 @@ int32_t compiled_gpu_backend() {
     return LLW_BACKEND_CPU;
 }
 
+std::vector<DeviceRecord> enumerate_pack_devices_unlocked(const std::string& directory) {
+    ggml_backend_load_all_from_path(directory.c_str());
+    std::vector<DeviceRecord> result;
+    for (size_t index = 0; index < ggml_backend_dev_count(); ++index) {
+        ggml_backend_dev_t device = ggml_backend_dev_get(index);
+        if (!device) continue;
+        const auto type = ggml_backend_dev_type(device);
+        int32_t backend = LLW_BACKEND_CPU;
+        if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
+            backend = compiled_gpu_backend();
+        } else if (type != GGML_BACKEND_DEVICE_TYPE_CPU) {
+            continue;
+        }
+        ggml_backend_dev_props properties{};
+        ggml_backend_dev_get_props(device, &properties);
+        const char* registry = ggml_backend_reg_name(ggml_backend_dev_backend_reg(device));
+        DeviceRecord record;
+        record.backend = backend;
+        record.backend_index = 0;
+        record.device = device;
+        record.id = properties.device_id ? properties.device_id
+                                         : std::to_string(backend) + ":pending";
+        record.name = ggml_backend_dev_name(device) ? ggml_backend_dev_name(device) : "unknown";
+        record.vendor = registry ? registry : "ggml";
+        result.push_back(std::move(record));
+    }
+    result = assign_device_indices(std::move(result));
+    for (DeviceRecord& record : result) {
+        if (record.id == std::to_string(record.backend) + ":pending")
+            record.id = std::to_string(record.backend) + ":" +
+                        std::to_string(record.backend_index);
+    }
+    return result;
+}
+
 llama_sampler* make_sampler(const SamplingConfig& config) {
     llama_sampler* chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
     if (!chain) throw std::bad_alloc();
@@ -130,39 +165,16 @@ std::optional<DeviceRecord> select_device(const std::vector<DeviceRecord>& devic
 }
 
 std::vector<DeviceRecord> enumerate_pack_devices(const std::string& directory) {
-    ggml_backend_load_all_from_path(directory.c_str());
-    std::vector<DeviceRecord> result;
-    for (size_t index = 0; index < ggml_backend_dev_count(); ++index) {
-        ggml_backend_dev_t device = ggml_backend_dev_get(index);
-        if (!device) continue;
-        const auto type = ggml_backend_dev_type(device);
-        int32_t backend = LLW_BACKEND_CPU;
-        if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
-            backend = compiled_gpu_backend();
-        } else if (type != GGML_BACKEND_DEVICE_TYPE_CPU) {
-            continue;
-        }
-        ggml_backend_dev_props properties{};
-        ggml_backend_dev_get_props(device, &properties);
-        const char* registry = ggml_backend_reg_name(ggml_backend_dev_backend_reg(device));
-        DeviceRecord record;
-        record.backend = backend;
-        record.backend_index = 0;
-        record.device = device;
-        record.id = properties.device_id ? properties.device_id
-                                         : std::to_string(backend) + ":pending";
-        record.name = ggml_backend_dev_name(device) ? ggml_backend_dev_name(device) : "unknown";
-        record.vendor = registry ? registry : "ggml";
-        result.push_back(std::move(record));
-    }
-    result = assign_device_indices(std::move(result));
-    for (DeviceRecord& record : result) {
-        if (record.id == std::to_string(record.backend) + ":pending")
-            record.id = std::to_string(record.backend) + ":" +
-                        std::to_string(record.backend_index);
-    }
-    return result;
+    std::lock_guard lock(backend_mutex);
+    return enumerate_pack_devices_unlocked(directory);
 }
+
+#ifdef LLW_RUNTIME_TESTING
+void run_with_backend_lock_for_test(const std::function<void()>& operation) {
+    std::lock_guard lock(backend_mutex);
+    operation();
+}
+#endif
 
 BatchPlan plan_batch(const std::vector<SequenceView>& sequences, size_t capacity,
                      size_t start_index) {
@@ -298,7 +310,9 @@ LlamaEngine::LlamaEngine(ModelConfig config, std::function<bool(float)> progress
     acquire_backend();
     backend_acquired_ = true;
     try {
-        const std::vector<DeviceRecord> devices = enumerate_pack_devices(config_.backend_directory);
+        std::unique_lock backend_operation_lock(backend_mutex);
+        const std::vector<DeviceRecord> devices =
+            enumerate_pack_devices_unlocked(config_.backend_directory);
         const auto selected = select_device(
             devices, config_.backend, config_.device_index, compiled_gpu_backend());
         if (!selected) throw std::invalid_argument("selected backend device was not found");
@@ -319,6 +333,7 @@ LlamaEngine::LlamaEngine(ModelConfig config, std::function<bool(float)> progress
         model_params.progress_callback_user_data = &state;
         model_ = llama_model_load_from_file(config_.path.c_str(), model_params);
         if (!model_) throw std::runtime_error("llama_model_load_from_file failed");
+        backend_operation_lock.unlock();
 
         llama_context_params context_params = llama_context_default_params();
         context_params.n_ctx = config_.context_tokens_per_slot * config_.slots;

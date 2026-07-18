@@ -1,5 +1,8 @@
 #include "llama_engine.h"
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <future>
 #include <string>
 #include <vector>
 
@@ -25,6 +28,7 @@ ModelConfig valid_config() {
 }
 
 int main() {
+    using namespace std::chrono_literals;
     bool progress_exception_escaped = false;
     bool progress_result = true;
     try {
@@ -35,6 +39,27 @@ int main() {
     }
     CHECK(!progress_exception_escaped);
     CHECK(!progress_result);
+
+    std::promise<void> backend_lock_entered;
+    std::promise<void> release_backend_lock;
+    std::shared_future<void> release = release_backend_lock.get_future().share();
+    auto holder = std::async(std::launch::async, [&] {
+        run_with_backend_lock_for_test([&] {
+            backend_lock_entered.set_value();
+            release.wait();
+        });
+    });
+    backend_lock_entered.get_future().wait();
+    auto enumeration = std::async(std::launch::async, [] {
+        return enumerate_pack_devices(".");
+    });
+    const bool enumeration_was_serialized =
+        enumeration.wait_for(50ms) == std::future_status::timeout;
+    release_backend_lock.set_value();
+    holder.get();
+    CHECK(enumeration.wait_for(5s) == std::future_status::ready);
+    (void)enumeration.get();
+    CHECK(enumeration_was_serialized);
 
     std::string error;
     ModelConfig config = valid_config();

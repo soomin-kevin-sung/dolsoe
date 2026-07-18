@@ -34,6 +34,7 @@ struct llw_runtime_t {
     llw_handle_t model_handle{};
     llw_handle_t next_model_handle{1};
     bool model_loading{};
+    bool model_unloading{};
     std::string backend_directory;
     std::mutex lifecycle_mutex;
     std::mutex mutex;
@@ -42,6 +43,7 @@ struct llw_runtime_t {
     void* flush_enqueued_user_data{};
     void (LLW_CALL *engine_destroy_hook)(void*){};
     void* engine_destroy_user_data{};
+    bool fail_next_unload_before_transition{};
 #endif
 };
 
@@ -361,6 +363,13 @@ LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestSetEngineDestroyHook(
     runtime->engine_destroy_hook = hook;
     runtime->engine_destroy_user_data = user_data;
 }
+
+LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestFailNextUnloadBeforeTransition(
+    llw_runtime_t* runtime) {
+    if (!runtime) return;
+    std::lock_guard lock(runtime->mutex);
+    runtime->fail_next_unload_before_transition = true;
+}
 #endif
 
 LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_get_capabilities(
@@ -519,47 +528,71 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_unload(
     return guarded(error, [&] {
         if (!runtime || model == 0) throw std::invalid_argument("invalid model unload call");
         std::unique_lock lifecycle_lock(runtime->lifecycle_mutex);
+        if (runtime->dispatcher->is_callback_thread())
+            return fail(error, LLW_ERR_INVALID_STATE,
+                        "model unload is not callback-reentrant");
         std::unique_ptr<Scheduler> scheduler;
         std::unique_ptr<InferenceEngine> engine;
 #ifdef LLW_RUNTIME_TESTING
-        std::function<void()> flush_enqueued;
-        std::function<void()> before_engine_destroy;
+        void (LLW_CALL *flush_enqueued)(void*){};
+        void* flush_enqueued_user_data{};
+        void (LLW_CALL *before_engine_destroy)(void*){};
+        void* before_engine_destroy_user_data{};
 #endif
         {
             std::lock_guard lock(runtime->mutex);
             if (runtime->model_handle != model)
                 return fail(error, LLW_ERR_NOT_FOUND, "model handle was not found");
+#ifdef LLW_RUNTIME_TESTING
+            if (runtime->fail_next_unload_before_transition) {
+                runtime->fail_next_unload_before_transition = false;
+                return fail(error, LLW_ERR_INTERNAL, "injected unload pre-transition failure");
+            }
+#endif
+            runtime->model_unloading = true;
             scheduler = std::move(runtime->scheduler);
             engine = std::move(runtime->engine);
-            runtime->model_handle = 0;
 #ifdef LLW_RUNTIME_TESTING
             if (runtime->flush_enqueued_hook) {
-                const auto hook = runtime->flush_enqueued_hook;
-                void* const user_data = runtime->flush_enqueued_user_data;
-                flush_enqueued = [hook, user_data] { hook(user_data); };
+                flush_enqueued = runtime->flush_enqueued_hook;
+                flush_enqueued_user_data = runtime->flush_enqueued_user_data;
             }
             if (runtime->engine_destroy_hook) {
-                const auto hook = runtime->engine_destroy_hook;
-                void* const user_data = runtime->engine_destroy_user_data;
-                before_engine_destroy = [hook, user_data] { hook(user_data); };
+                before_engine_destroy = runtime->engine_destroy_hook;
+                before_engine_destroy_user_data = runtime->engine_destroy_user_data;
             }
 #endif
         }
+        try {
+            scheduler->cancel_all_and_wait();
 #ifdef LLW_RUNTIME_TESTING
-        if (before_engine_destroy) before_engine_destroy();
+            if (flush_enqueued)
+                runtime->dispatcher->flush_for_test(
+                    flush_enqueued, flush_enqueued_user_data);
+            else
+                runtime->dispatcher->flush();
+#else
+            runtime->dispatcher->flush();
 #endif
-        scheduler->cancel_all_and_wait();
+        } catch (...) {
+            std::lock_guard lock(runtime->mutex);
+            runtime->scheduler = std::move(scheduler);
+            runtime->engine = std::move(engine);
+            runtime->model_unloading = false;
+            throw;
+        }
+#ifdef LLW_RUNTIME_TESTING
+        if (before_engine_destroy) {
+            try { before_engine_destroy(before_engine_destroy_user_data); } catch (...) {}
+        }
+#endif
         scheduler.reset();
         engine.reset();
-#ifdef LLW_RUNTIME_TESTING
-        if (flush_enqueued) {
-            runtime->dispatcher->flush_for_test(std::move(flush_enqueued));
-        } else {
-            runtime->dispatcher->flush();
+        {
+            std::lock_guard lock(runtime->mutex);
+            runtime->model_handle = 0;
+            runtime->model_unloading = false;
         }
-#else
-        runtime->dispatcher->flush();
-#endif
         return LLW_OK;
     });
 }
@@ -573,7 +606,8 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_request_submit(
             throw std::invalid_argument("invalid request submit call");
         validate_request(*params);
         std::lock_guard lock(runtime->mutex);
-        if (!runtime->scheduler || runtime->model_handle != params->model_handle)
+        if (runtime->model_unloading || !runtime->scheduler ||
+            runtime->model_handle != params->model_handle)
             return fail(error, LLW_ERR_INVALID_STATE, "requested model is not loaded");
         std::string message;
         const llw_result_t result = runtime->scheduler->submit(*params, *out_request, message);
@@ -586,7 +620,7 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_request_cancel(
     return guarded(error, [&] {
         if (!runtime || request == 0) throw std::invalid_argument("invalid request cancel call");
         std::lock_guard lock(runtime->mutex);
-        if (!runtime->scheduler)
+        if (runtime->model_unloading || !runtime->scheduler)
             return fail(error, LLW_ERR_INVALID_STATE, "no model is loaded");
         std::string message;
         const llw_result_t result = runtime->scheduler->cancel(request, message);
@@ -601,7 +635,7 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_scheduler_snapshot(
             !zeroed(out->reserved))
             throw std::invalid_argument("invalid scheduler snapshot output");
         std::lock_guard lock(runtime->mutex);
-        if (!runtime->scheduler)
+        if (runtime->model_unloading || !runtime->scheduler)
             return fail(error, LLW_ERR_INVALID_STATE, "no model is loaded");
         *out = runtime->scheduler->snapshot();
         return LLW_OK;
@@ -615,7 +649,7 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_metrics(
             !zeroed(out->reserved))
             throw std::invalid_argument("invalid metrics output");
         std::lock_guard lock(runtime->mutex);
-        if (!runtime->scheduler)
+        if (runtime->model_unloading || !runtime->scheduler)
             return fail(error, LLW_ERR_INVALID_STATE, "no model is loaded");
         *out = runtime->scheduler->metrics();
         return LLW_OK;

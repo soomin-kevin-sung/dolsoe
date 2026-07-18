@@ -707,9 +707,8 @@ overflow while a callback blocks and the regular queue is full; zero/duplicate/f
 acceptance rollback, and duplicate/unreserved terminal rejection; terminal admission through the
 independent reserve with FIFO delivery; request churn up to `LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS`
 while the first terminal callback is blocked; permit reuse only after callback return, including a
-throwing callback; saturated and concurrent flush barriers; stop draining published and reserved
-permits and waking a flush
-waiting for the control slot; a throwing C++ callback followed by a later event and successful flush;
+throwing callback; saturated and concurrent flush snapshots; stop draining published and reserved
+permits and waking a flush waiting for callback completion; a throwing C++ callback followed by a later event and successful flush;
 and callback-thread publish, rejected flush, and deferred stop join. Every async path must release its
 callback and join/get its thread or future before asserting so test failures cannot leak threads.
 
@@ -1142,17 +1141,17 @@ void EventDispatcher::run() {
 ```
 
 The dispatcher remains bounded by `event_queue_capacity` regular items, at most
-`LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS` keyed terminal permits, one queued barrier, and one worker-owned
+`LLW_MAX_QUEUE_CAPACITY + LLW_MAX_SLOTS` keyed terminal permits, and one worker-owned
 event. A permit is reserved before native request acceptance, transitions from `Reserved` to `Published`
 only when that request's single terminal is appended, and remains owned through queued and callback-active
 states until callback return. Scheduler rollback can release only an unpublished permit. Thus scheduler-side
 request erasure and churn cannot reuse terminal capacity while an older terminal callback is pending.
 All event classes append to one FIFO deque. Regular `publish` never waits and returns false on regular
 saturation or after stop. A terminal request publish requires its nonzero handle's reserved permit;
-duplicate and unreserved terminals return false deterministically. A flush caller may wait for the independent single control slot; regular payloads
-cannot consume that slot, stop wakes control waiters, and the barrier remains FIFO. `flush()` completion
-means every earlier callback returned. Because control admission has its own slot, regular events cannot
-consume it or prevent a waiting flush from appending its FIFO marker. Callback invocation and test observers happen outside dispatcher
+duplicate and unreserved terminals return false deterministically. `flush()` snapshots a monotonic
+successful-admission counter and waits on a reusable condition variable until the callback-completion
+counter reaches that snapshot. It performs no queue insertion or heap allocation, and completion means
+every earlier callback returned. Callback invocation and test observers happen outside dispatcher
 locks. Callback exceptions are caught, bookkeeping is restored by scope guard, and later work continues,
 but the public ABI still requires callbacks to return normally without throwing or unwinding. Callback-
 thread flush throws; callback-thread publish is nonblocking; callback-thread stop requests shutdown
@@ -2171,6 +2170,10 @@ inserting request/queue state, releases it on every pre-acceptance rollback, and
 After acceptance, scheduler erasure never releases the permit: dispatcher callback completion does,
 including callback exceptions. Dispatcher shutdown occurs only after scheduler shutdown, so every valid
 accepted request retains its terminal permit until exactly one terminal callback returns.
+Terminal completion is a two-phase transaction: cleanup runs once and records explicit pending-terminal
+intent, then state/counters/request erasure commit only after reserved terminal admission succeeds.
+One-shot dispatcher `false` or allocation throws leave the request retryable work, preserve its sequence,
+and cannot escape the worker or strand `cancel_all_and_wait()`.
 
 - [ ] **Step 7: Commit the scheduler core**
 
@@ -2180,6 +2183,11 @@ git commit -m "feat: schedule bounded concurrent requests"
 ```
 
 ### Task 5: Load One Model And Select A Pack Device
+
+Milestone hardening: the process-wide backend mutex covers backend init/free, complete pack device
+loading/enumeration, and model device selection through `llama_model_load_from_file`. The public list
+path and model-load path call a shared locked/unlocked pair so neither recursively acquires the mutex;
+the Debug lock seam proves concurrent enumeration blocks and resumes without deadlock.
 
 **Files:**
 - Modify: `native/llm-runtime/CMakeLists.txt`
@@ -3792,6 +3800,14 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_metrics(
     });
 }
 ```
+
+Milestone hardening supersedes the unload ordering in the snippet above: the lifecycle mutex remains
+held for the full operation, `model_unloading` is set while the installed handle remains present, and
+request/snapshot/metrics APIs reject during that transition. Cancellation and the allocation-free
+dispatcher completion-counter flush run before the commit; any pre-commit failure restores scheduler
+and engine ownership for retry. Only after all admitted callbacks return are scheduler/engine destroyed
+and `model_handle` cleared. Callback-reentrant unload is rejected before state changes, and Debug tests
+cover injected pre-transition failure/retry plus concurrent-load and terminal-callback barriers.
 
 Model load is transactional. Engine and scheduler construction, mutex reacquisition, and the
 fallible loaded-log publication all occur while `ModelLoadingReset` is active and before runtime

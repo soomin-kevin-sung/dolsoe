@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <future>
 #include <map>
 #include <mutex>
 #include <stdexcept>
@@ -130,6 +131,7 @@ void concurrent_requests_test() {
     EventDispatcher dispatcher(callbacks(collector), 64);
     FakeEngine engine;
     Scheduler scheduler(2, 4, engine, dispatcher);
+    scheduler.set_worker_paused_for_test(true);
     const std::string first_prompt = "first";
     const std::string second_prompt = "second";
     llw_handle_t first{};
@@ -137,6 +139,7 @@ void concurrent_requests_test() {
     std::string error;
     if (scheduler.submit(request_params(first_prompt), first, error) != LLW_OK) throw std::runtime_error(error);
     if (scheduler.submit(request_params(second_prompt), second, error) != LLW_OK) throw std::runtime_error(error);
+    scheduler.set_worker_paused_for_test(false);
     engine.wait_for_batch_size(2);
     engine.release();
     wait_for_terminals(collector, 2);
@@ -241,6 +244,7 @@ void decode_failure_cleanup_precedes_slot_reuse_test() {
     FakeEngine engine;
     engine.set_decode_failure(true);
     Scheduler scheduler(2, 2, engine, dispatcher);
+    scheduler.set_worker_paused_for_test(true);
     const std::string first_prompt = "first";
     const std::string second_prompt = "second";
     const std::string reuse_prompt = "reuse";
@@ -250,6 +254,7 @@ void decode_failure_cleanup_precedes_slot_reuse_test() {
         throw std::runtime_error(error);
     if (scheduler.submit(request_params(second_prompt), second, error) != LLW_OK)
         throw std::runtime_error(error);
+    scheduler.set_worker_paused_for_test(false);
     engine.wait_for_batch_size(2);
     engine.release();
     wait_for_terminals(collector, 2);
@@ -506,6 +511,72 @@ void throwing_terminal_callback_releases_scheduler_permit_test() {
         throw std::runtime_error("throwing terminal callback retained permit");
 }
 
+void transient_terminal_false_retries_to_completion_test() {
+    using namespace std::chrono_literals;
+    Collector collector;
+    EventDispatcher dispatcher(callbacks(collector), 8);
+    FakeEngine engine;
+    Scheduler scheduler(1, 1, engine, dispatcher);
+    const std::string prompt = "terminal-false";
+    llw_handle_t handle{};
+    std::string error;
+    if (scheduler.submit(request_params(prompt), handle, error) != LLW_OK)
+        throw std::runtime_error(error);
+    engine.wait_for_started(1);
+    dispatcher.fail_next_publish_of_type_for_test(LLW_EVENT_DONE);
+    engine.release();
+
+    auto teardown = std::async(std::launch::async, [&scheduler] {
+        scheduler.cancel_all_and_wait();
+    });
+    if (teardown.wait_for(5s) != std::future_status::ready)
+        throw std::runtime_error("transient terminal false stranded scheduler teardown");
+    teardown.get();
+    wait_for_terminals(collector, 1);
+    dispatcher.drain_for_test();
+    if (scheduler.tracked_request_count_for_test() != 0 ||
+        scheduler.snapshot().terminal_requests != 1 ||
+        dispatcher.terminal_permit_count_for_test() != 0)
+        throw std::runtime_error("terminal false retry retained scheduler state");
+    engine.wait_for_cleanup(handle);
+    if (engine.cleanup_count(handle) != 1)
+        throw std::runtime_error("terminal false retry repeated engine cleanup");
+    std::lock_guard lock(collector.mutex);
+    assert_sequences(collector, handle);
+}
+
+void transient_terminal_throw_retries_to_completion_test() {
+    using namespace std::chrono_literals;
+    Collector collector;
+    EventDispatcher dispatcher(callbacks(collector), 8);
+    FakeEngine engine;
+    Scheduler scheduler(1, 1, engine, dispatcher);
+    const std::string prompt = "terminal-throw";
+    llw_handle_t handle{};
+    std::string error;
+    if (scheduler.submit(request_params(prompt), handle, error) != LLW_OK)
+        throw std::runtime_error(error);
+    engine.wait_for_started(1);
+    dispatcher.throw_next_publish_of_type_for_test(LLW_EVENT_DONE);
+    engine.release();
+
+    auto teardown = std::async(std::launch::async, [&scheduler] {
+        scheduler.cancel_all_and_wait();
+    });
+    if (teardown.wait_for(5s) != std::future_status::ready)
+        throw std::runtime_error("terminal publish throw escaped or stranded teardown");
+    teardown.get();
+    wait_for_terminals(collector, 1);
+    dispatcher.drain_for_test();
+    if (scheduler.tracked_request_count_for_test() != 0 ||
+        scheduler.snapshot().terminal_requests != 1 ||
+        dispatcher.terminal_permit_count_for_test() != 0 ||
+        engine.cleanup_count(handle) != 1)
+        throw std::runtime_error("terminal throw retry did not commit exactly once");
+    std::lock_guard lock(collector.mutex);
+    assert_sequences(collector, handle);
+}
+
 int main() {
     try {
         concurrent_requests_test();
@@ -522,6 +593,8 @@ int main() {
         pre_acceptance_failures_release_terminal_permit_test();
         queued_publish_throw_rolls_back_acceptance_test();
         throwing_terminal_callback_releases_scheduler_permit_test();
+        transient_terminal_false_retries_to_completion_test();
+        transient_terminal_throw_retries_to_completion_test();
         return 0;
     } catch (const std::exception& exception) {
         std::fprintf(stderr, "%s\n", exception.what());

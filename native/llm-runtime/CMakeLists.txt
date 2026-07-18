@@ -112,6 +112,7 @@ set_tests_properties(llw_scheduler_test PROPERTIES TIMEOUT 30)
 add_executable(llw_llama_engine_test tests/llama_engine_test.cpp src/llama_engine.cpp)
 target_include_directories(llw_llama_engine_test PRIVATE include src)
 target_compile_definitions(llw_llama_engine_test PRIVATE
+  LLW_RUNTIME_TESTING
   LLW_BACKEND_PACK_NAME="${LLW_BACKEND_PACK}"
 )
 target_link_libraries(llw_llama_engine_test PRIVATE llama ggml Threads::Threads)

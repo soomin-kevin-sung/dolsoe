@@ -84,6 +84,9 @@ void accept_history_tokens(const std::vector<llama_token>& tokens,
                            const std::function<void(llama_token)>& accept);
 bool invoke_progress_callback_noexcept(
     const std::function<bool(float)>& callback, float value) noexcept;
+#ifdef LLW_RUNTIME_TESTING
+void run_with_backend_lock_for_test(const std::function<void()>& operation);
+#endif
 
 class LlamaEngine final : public InferenceEngine {
 public:

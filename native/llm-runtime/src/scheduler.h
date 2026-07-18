@@ -33,6 +33,7 @@ public:
 #ifdef LLW_RUNTIME_TESTING
     enum class SubmitFailurePoint { RequestInsert, QueueInsert };
     void fail_next_submit_for_test(SubmitFailurePoint point);
+    void set_worker_paused_for_test(bool paused);
 #endif
     void cancel_all_and_wait();
 private:
@@ -50,8 +51,12 @@ private:
         void* user_data{};
         bool cancel_requested{};
         bool terminal_emitted{};
+        bool terminal_pending{};
         bool engine_started{};
         bool cleanup_attempted{};
+        RequestState pending_terminal_state{RequestState::Error};
+        int32_t pending_terminal_error{LLW_ERR_INTERNAL};
+        std::string pending_terminal_message;
         uint64_t next_sequence{1};
         TimePoint enqueued_at{};
         TimePoint started_at{};
@@ -60,6 +65,7 @@ private:
     void run();
     void promote_locked();
     void finish_locked(llw_handle_t, RequestState, int32_t, std::string);
+    bool try_publish_terminal_locked(llw_handle_t) noexcept;
     bool publish_locked(Request&, int32_t, uint32_t, int32_t, std::vector<uint8_t>, uint32_t);
     bool has_work_locked() const;
     uint32_t slots_count_{};
@@ -81,5 +87,6 @@ private:
     uint64_t terminal_{};
 #ifdef LLW_RUNTIME_TESTING
     std::optional<SubmitFailurePoint> submit_failure_;
+    bool worker_paused_{};
 #endif
 };

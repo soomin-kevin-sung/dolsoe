@@ -31,6 +31,8 @@
 
 LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestSetEngineDestroyHook(
     llw_runtime_t* runtime, void (LLW_CALL *hook)(void*), void* user_data);
+LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestFailNextUnloadBeforeTransition(
+    llw_runtime_t* runtime);
 
 int test_v11_exports() {
     llw_error_t error{};
@@ -425,6 +427,192 @@ int test_unload_serializes_concurrent_load() {
     return 0;
 }
 
+int test_unload_failure_is_retryable() {
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 1;
+    create.scheduler.request_queue_capacity = 1;
+    create.scheduler.event_queue_capacity = 16;
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    llw_runtime_t* runtime{};
+    CHECK(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
+    const std::string path = "llw-test-model.gguf";
+    llw_model_load_params_t model{};
+    model.struct_size = sizeof(model);
+    model.path_utf8 = reinterpret_cast<const uint8_t*>(path.data());
+    model.path_len = path.size();
+    model.backend = LLW_BACKEND_CPU;
+    model.context_tokens_per_slot = 512;
+    model.logical_batch_tokens = 64;
+    model.physical_batch_tokens = 64;
+    model.n_threads = 1;
+    model.n_threads_batch = 1;
+    model.use_mmap = 1;
+    llw_handle_t handle{};
+    CHECK(llw_model_load(runtime, &model, &handle, &error) == LLW_OK);
+
+    LLWTestFailNextUnloadBeforeTransition(runtime);
+    CHECK(llw_model_unload(runtime, handle, &error) == LLW_ERR_INTERNAL);
+    llw_scheduler_snapshot_t snapshot{};
+    snapshot.struct_size = sizeof(snapshot);
+    CHECK(llw_get_scheduler_snapshot(runtime, &snapshot, &error) == LLW_OK);
+    llw_handle_t second{};
+    CHECK(llw_model_load(runtime, &model, &second, &error) == LLW_ERR_BUSY);
+    CHECK(second == 0);
+    CHECK(llw_model_unload(runtime, handle, &error) == LLW_OK);
+    llw_runtime_destroy(runtime);
+    return 0;
+}
+
+struct TerminalCallbackBarrier {
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool entered{};
+    bool released{};
+};
+
+void LLW_CALL block_terminal_callback(const llw_event_t* event, void* user_data) {
+    if (event->event_type != LLW_EVENT_DONE && event->event_type != LLW_EVENT_CANCELLED &&
+        event->event_type != LLW_EVENT_ERROR) return;
+    auto& barrier = *static_cast<TerminalCallbackBarrier*>(user_data);
+    std::unique_lock lock(barrier.mutex);
+    barrier.entered = true;
+    barrier.changed.notify_all();
+    barrier.changed.wait(lock, [&barrier] { return barrier.released; });
+}
+
+int test_unload_waits_for_terminal_callback_quiescence() {
+    using namespace std::chrono_literals;
+    TerminalCallbackBarrier barrier;
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.callbacks.on_event = block_terminal_callback;
+    create.callbacks.user_data = &barrier;
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 1;
+    create.scheduler.request_queue_capacity = 1;
+    create.scheduler.event_queue_capacity = 16;
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    llw_runtime_t* runtime{};
+    CHECK(llw_runtime_create(&create, &runtime, &error) == LLW_OK);
+    const std::string path = "llw-test-model.gguf";
+    llw_model_load_params_t model{};
+    model.struct_size = sizeof(model);
+    model.path_utf8 = reinterpret_cast<const uint8_t*>(path.data());
+    model.path_len = path.size();
+    model.backend = LLW_BACKEND_CPU;
+    model.context_tokens_per_slot = 512;
+    model.logical_batch_tokens = 64;
+    model.physical_batch_tokens = 64;
+    model.n_threads = 1;
+    model.n_threads_batch = 1;
+    model.use_mmap = 1;
+    llw_handle_t model_handle{};
+    CHECK(llw_model_load(runtime, &model, &model_handle, &error) == LLW_OK);
+    const uint8_t prompt[] = {'x'};
+    llw_request_params_t request{};
+    request.struct_size = sizeof(request);
+    request.model_handle = model_handle;
+    request.prompt = prompt;
+    request.prompt_len = sizeof(prompt);
+    request.max_new_tokens = 1;
+    request.top_p = 1;
+    request.repeat_penalty = 1;
+    llw_handle_t request_handle{};
+    CHECK(llw_request_submit(runtime, &request, &request_handle, &error) == LLW_OK);
+    {
+        std::unique_lock lock(barrier.mutex);
+        CHECK(barrier.changed.wait_for(lock, 5s, [&barrier] { return barrier.entered; }));
+    }
+    auto unload = std::async(std::launch::async, [&] {
+        llw_error_t unload_error{};
+        unload_error.struct_size = sizeof(unload_error);
+        return llw_model_unload(runtime, model_handle, &unload_error);
+    });
+    const bool unload_waited_for_callback =
+        unload.wait_for(50ms) == std::future_status::timeout;
+    {
+        std::lock_guard lock(barrier.mutex);
+        barrier.released = true;
+    }
+    barrier.changed.notify_all();
+    CHECK(unload.get() == LLW_OK);
+    CHECK(unload_waited_for_callback);
+    llw_runtime_destroy(runtime);
+    return 0;
+}
+
+struct ReentrantUnloadCallback {
+    llw_runtime_t* runtime{};
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool called{};
+    llw_result_t result{LLW_OK};
+};
+
+void LLW_CALL attempt_reentrant_unload(const llw_event_t* event, void* user_data) {
+    auto& callback = *static_cast<ReentrantUnloadCallback*>(user_data);
+    if (event->event_type != LLW_EVENT_LOG || event->model_handle == 0 || !callback.runtime)
+        return;
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    const llw_result_t result =
+        llw_model_unload(callback.runtime, event->model_handle, &error);
+    {
+        std::lock_guard lock(callback.mutex);
+        callback.called = true;
+        callback.result = result;
+    }
+    callback.changed.notify_all();
+}
+
+int test_callback_reentrant_unload_is_rejected_before_transition() {
+    using namespace std::chrono_literals;
+    ReentrantUnloadCallback callback;
+    llw_runtime_create_params_t create{};
+    create.struct_size = sizeof(create);
+    create.callbacks.struct_size = sizeof(create.callbacks);
+    create.callbacks.on_event = attempt_reentrant_unload;
+    create.callbacks.user_data = &callback;
+    create.scheduler.struct_size = sizeof(create.scheduler);
+    create.scheduler.slot_count = 1;
+    create.scheduler.request_queue_capacity = 1;
+    create.scheduler.event_queue_capacity = 16;
+    llw_error_t error{};
+    error.struct_size = sizeof(error);
+    CHECK(llw_runtime_create(&create, &callback.runtime, &error) == LLW_OK);
+    const std::string path = "llw-test-model.gguf";
+    llw_model_load_params_t model{};
+    model.struct_size = sizeof(model);
+    model.path_utf8 = reinterpret_cast<const uint8_t*>(path.data());
+    model.path_len = path.size();
+    model.backend = LLW_BACKEND_CPU;
+    model.context_tokens_per_slot = 512;
+    model.logical_batch_tokens = 64;
+    model.physical_batch_tokens = 64;
+    model.n_threads = 1;
+    model.n_threads_batch = 1;
+    model.use_mmap = 1;
+    llw_handle_t handle{};
+    CHECK(llw_model_load(callback.runtime, &model, &handle, &error) == LLW_OK);
+    {
+        std::unique_lock lock(callback.mutex);
+        CHECK(callback.changed.wait_for(lock, 5s, [&callback] { return callback.called; }));
+        CHECK(callback.result == LLW_ERR_INVALID_STATE);
+    }
+    llw_scheduler_snapshot_t snapshot{};
+    snapshot.struct_size = sizeof(snapshot);
+    CHECK(llw_get_scheduler_snapshot(callback.runtime, &snapshot, &error) == LLW_OK);
+    CHECK(llw_model_unload(callback.runtime, handle, &error) == LLW_OK);
+    llw_runtime_destroy(callback.runtime);
+    return 0;
+}
+
 int main() {
     static_assert(sizeof(void*) == 8);
     static_assert(LLW_ABI_MAJOR == 1u);
@@ -785,5 +973,8 @@ int main() {
     CHECK(test_progress_saturation_is_bounded() == 0);
     CHECK(test_debug_model_fixture_loads() == 0);
     CHECK(test_unload_serializes_concurrent_load() == 0);
+    CHECK(test_unload_failure_is_retryable() == 0);
+    CHECK(test_unload_waits_for_terminal_callback_quiescence() == 0);
+    CHECK(test_callback_reentrant_unload_is_rejected_before_transition() == 0);
     return 0;
 }
