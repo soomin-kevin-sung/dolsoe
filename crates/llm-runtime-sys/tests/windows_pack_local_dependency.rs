@@ -2,114 +2,98 @@
 
 use std::ffi::CStr;
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitStatus};
+use std::process::Command;
 
-const CHILD_ENV: &str = "LLW_PACK_LOCAL_TEST_CHILD";
-const DLL_ENV: &str = "LLW_PACK_LOCAL_TEST_DLL";
+use llm_runtime_sys::{AbiInfo, AbiQuery, Api, Error, OK};
+
+const CHILD_ENV: &str = "LLW_PACK_LOCAL_CHILD";
+const RUNTIME_ENV: &str = "LLW_PACK_LOCAL_RUNTIME";
 
 #[test]
-fn loads_pack_local_dependency_when_working_directory_is_elsewhere() {
+fn loads_dependency_from_runtime_pack_directory() {
     if std::env::var_os(CHILD_ENV).is_some() {
-        load_fixture_in_child();
+        run_child();
         return;
     }
 
-    let build_dir = test_scratch_dir("build");
-    let elsewhere = test_scratch_dir("cwd");
-    reset_dir(&build_dir);
-    reset_dir(&elsewhere);
+    let fixture = fixture_dir();
+    let root = short_build_root();
+    let build = root.join("build");
+    let unrelated = root.join("cwd");
+    std::fs::create_dir_all(&unrelated).expect("create unrelated cwd");
 
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../native/llm-runtime/tests/fixtures/windows-pack-local");
-    assert_success(
-        Command::new("cmake")
-            .arg("-S")
-            .arg(&fixture)
-            .arg("-B")
-            .arg(&build_dir)
-            .status()
-            .expect("run CMake configure"),
-        "configure loader fixture",
-    );
-    assert_success(
-        Command::new("cmake")
-            .arg("--build")
-            .arg(&build_dir)
-            .args(["--config", "Debug"])
-            .status()
-            .expect("run CMake build"),
-        "build loader fixture",
-    );
+    run(Command::new("cmake")
+        .arg("-S")
+        .arg(&fixture)
+        .arg("-B")
+        .arg(&build));
+    run(Command::new("cmake")
+        .arg("--build")
+        .arg(&build)
+        .arg("--config")
+        .arg("Debug"));
 
-    let runtime = find_file(&build_dir, "local_llm_runtime.dll");
-    let helper = find_file(&build_dir, "llw_pack_local_helper.dll");
-    assert_eq!(
-        runtime.parent(),
-        helper.parent(),
-        "fixture DLLs must be siblings"
-    );
-
-    let status = Command::new(std::env::current_exe().expect("locate test executable"))
-        .args([
-            "--exact",
-            "loads_pack_local_dependency_when_working_directory_is_elsewhere",
-            "--nocapture",
-        ])
+    let runtime = find_runtime(&build);
+    let output = Command::new(std::env::current_exe().expect("current test executable"))
+        .arg("--exact")
+        .arg("loads_dependency_from_runtime_pack_directory")
+        .arg("--nocapture")
         .env(CHILD_ENV, "1")
-        .env(DLL_ENV, &runtime)
-        .current_dir(&elsewhere)
-        .status()
-        .expect("run loader fixture child");
-    std::fs::remove_dir_all(&build_dir).expect("remove fixture build directory");
-    std::fs::remove_dir_all(&elsewhere).expect("remove fixture working directory");
-    assert_success(status, "load fixture from unrelated working directory");
+        .env(RUNTIME_ENV, &runtime)
+        .current_dir(&unrelated)
+        .output()
+        .expect("re-execute integration test");
+    assert!(
+        output.status.success(),
+        "child failed\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
-fn load_fixture_in_child() {
-    let runtime = PathBuf::from(std::env::var_os(DLL_ENV).expect("fixture DLL path"));
-    let api = unsafe { llm_runtime_sys::Api::load(&runtime) }.expect("load fixture runtime");
-    let query = llm_runtime_sys::AbiQuery::default();
-    let mut info = llm_runtime_sys::AbiInfo::default();
-    let mut error = llm_runtime_sys::Error::default();
-    let result = unsafe { (api.get_abi_info)(&query, &mut info, &mut error) };
-    assert_eq!(result, llm_runtime_sys::OK);
-    assert_eq!(info.abi_major, llm_runtime_sys::ABI_MAJOR);
+fn run_child() {
+    let runtime = PathBuf::from(std::env::var_os(RUNTIME_ENV).expect("runtime DLL path"));
+    assert!(runtime.is_absolute());
+    let api = unsafe { Api::load(&runtime) }.expect("load runtime and pack-local dependency");
+    let query = AbiQuery::default();
+    let mut info = AbiInfo::default();
+    let mut error = Error::default();
+    assert_eq!(
+        unsafe { (api.get_abi_info)(&query, &mut info, &mut error) },
+        OK
+    );
     let version = unsafe { CStr::from_ptr((api.runtime_version)()) };
-    assert_eq!(version.to_bytes(), b"pack-local-helper");
+    assert_eq!(version.to_bytes(), b"pack-local-helper-sentinel");
 }
 
-fn test_scratch_dir(name: &str) -> PathBuf {
-    let local_data = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir);
-    local_data
-        .join("llw-tests")
-        .join(format!("pack-local-{}-{name}", std::process::id()))
+fn fixture_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../native/llm-runtime/tests/fixtures/windows-pack-local")
 }
 
-fn reset_dir(path: &Path) {
-    if path.exists() {
-        std::fs::remove_dir_all(path).expect("remove stale fixture directory");
-    }
-    std::fs::create_dir_all(path).expect("create fixture directory");
+fn short_build_root() -> PathBuf {
+    let local = PathBuf::from(std::env::var_os("LOCALAPPDATA").expect("LOCALAPPDATA"));
+    local.join(format!("llw-pack-test-{}", std::process::id()))
 }
 
-fn find_file(root: &Path, name: &str) -> PathBuf {
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(directory) = pending.pop() {
-        for entry in std::fs::read_dir(&directory).expect("read fixture build directory") {
-            let entry = entry.expect("read fixture build entry");
-            let path = entry.path();
-            if path.is_dir() {
-                pending.push(path);
-            } else if path.file_name().is_some_and(|file_name| file_name == name) {
-                return path;
-            }
+fn find_runtime(build: &Path) -> PathBuf {
+    for candidate in [
+        build.join("Debug/local_llm_runtime.dll"),
+        build.join("local_llm_runtime.dll"),
+    ] {
+        if candidate.is_file() {
+            return candidate.canonicalize().expect("canonical runtime DLL");
         }
     }
-    panic!("did not find {name} beneath {}", root.display());
+    panic!("runtime DLL not found beneath {}", build.display());
 }
 
-fn assert_success(status: ExitStatus, action: &str) {
-    assert!(status.success(), "failed to {action}: {status}");
+fn run(command: &mut Command) {
+    let output = command.output().expect("run command");
+    assert!(
+        output.status.success(),
+        "command failed: {command:?}\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }

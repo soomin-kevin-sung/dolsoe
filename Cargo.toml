@@ -13,6 +13,7 @@ license = "MIT"
 rust-version = "1.93"
 
 [workspace.dependencies]
+crossbeam-channel = "0.5"
 libloading = "0.8"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"

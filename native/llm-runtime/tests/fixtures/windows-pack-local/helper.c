@@ -1,5 +1,9 @@
-#include <stdint.h>
+#ifdef _WIN32
+#define HELPER_EXPORT __declspec(dllexport)
+#else
+#define HELPER_EXPORT __attribute__((visibility("default")))
+#endif
 
-__declspec(dllexport) const char* llw_pack_local_helper_version(void) {
-    return "pack-local-helper";
+HELPER_EXPORT const char* llw_pack_local_version(void) {
+    return "pack-local-helper-sentinel";
 }

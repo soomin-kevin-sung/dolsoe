@@ -530,6 +530,13 @@ pub struct Api {
     pub runtime_destroy: RuntimeDestroyFn,
     pub runtime_get_capabilities: RuntimeGetCapabilitiesFn,
     pub runtime_list_devices: RuntimeListDevicesFn,
+    pub runtime_get_option_schema: RuntimeGetOptionSchemaFn,
+    pub model_load: ModelLoadFn,
+    pub model_unload: ModelUnloadFn,
+    pub request_submit: RequestSubmitFn,
+    pub request_cancel: RequestCancelFn,
+    pub get_scheduler_snapshot: GetSchedulerSnapshotFn,
+    pub get_metrics: GetMetricsFn,
 }
 
 #[cfg(windows)]
@@ -572,6 +579,16 @@ impl Api {
             unsafe { *library.get::<RuntimeGetCapabilitiesFn>(b"llw_runtime_get_capabilities\0")? };
         let runtime_list_devices =
             unsafe { *library.get::<RuntimeListDevicesFn>(b"llw_runtime_list_devices\0")? };
+        let runtime_get_option_schema = unsafe {
+            *library.get::<RuntimeGetOptionSchemaFn>(b"llw_runtime_get_option_schema\0")?
+        };
+        let model_load = unsafe { *library.get::<ModelLoadFn>(b"llw_model_load\0")? };
+        let model_unload = unsafe { *library.get::<ModelUnloadFn>(b"llw_model_unload\0")? };
+        let request_submit = unsafe { *library.get::<RequestSubmitFn>(b"llw_request_submit\0")? };
+        let request_cancel = unsafe { *library.get::<RequestCancelFn>(b"llw_request_cancel\0")? };
+        let get_scheduler_snapshot =
+            unsafe { *library.get::<GetSchedulerSnapshotFn>(b"llw_get_scheduler_snapshot\0")? };
+        let get_metrics = unsafe { *library.get::<GetMetricsFn>(b"llw_get_metrics\0")? };
         Ok(Self {
             _library: library,
             get_abi_info,
@@ -581,6 +598,13 @@ impl Api {
             runtime_destroy,
             runtime_get_capabilities,
             runtime_list_devices,
+            runtime_get_option_schema,
+            model_load,
+            model_unload,
+            request_submit,
+            request_cancel,
+            get_scheduler_snapshot,
+            get_metrics,
         })
     }
 }
@@ -588,6 +612,34 @@ impl Api {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loader_names_each_required_export_once() {
+        let source = include_str!("lib.rs");
+        let loader = source.split("#[cfg(test)]").next().expect("loader source");
+        for symbol in [
+            "llw_get_abi_info\\0",
+            "llw_runtime_version\\0",
+            "llw_llama_cpp_commit\\0",
+            "llw_runtime_create\\0",
+            "llw_runtime_destroy\\0",
+            "llw_runtime_get_capabilities\\0",
+            "llw_runtime_list_devices\\0",
+            "llw_runtime_get_option_schema\\0",
+            "llw_model_load\\0",
+            "llw_model_unload\\0",
+            "llw_request_submit\\0",
+            "llw_request_cancel\\0",
+            "llw_get_scheduler_snapshot\\0",
+            "llw_get_metrics\\0",
+        ] {
+            assert_eq!(
+                loader.matches(symbol).count(),
+                1,
+                "symbol count for {symbol}"
+            );
+        }
+    }
 
     #[test]
     fn ffi_error_constants_match_c_contract() {
