@@ -30,6 +30,19 @@ void copy_text(char* destination, size_t capacity, const char* source) {
     destination[capacity - 1u] = '\0';
 }
 
+template <typename T>
+void clear_output(T* output) {
+    if (output && output->struct_size >= sizeof(T)) {
+        const auto struct_size = output->struct_size;
+        *output = {};
+        output->struct_size = struct_size;
+    }
+}
+
+llw_result_t unsupported(llw_error_t* error) {
+    return fail(error, LLW_ERR_UNSUPPORTED, "not implemented by fake runtime");
+}
+
 }  // namespace
 
 LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_abi_info(
@@ -135,4 +148,66 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_list_devices(
     copy_text(device.vendor, sizeof(device.vendor), "Local LLM Wiki");
     out_devices->count = 1u;
     return LLW_OK;
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_get_option_schema(
+    llw_runtime_t*,
+    llw_buffer_t* out_json,
+    llw_error_t* out_error) {
+    if (out_json && out_json->struct_size >= sizeof(llw_buffer_t)) {
+        out_json->len = 0u;
+    }
+    return unsupported(out_error);
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
+    llw_runtime_t*,
+    const llw_model_load_params_t*,
+    llw_handle_t* out_model,
+    llw_error_t* out_error) {
+    if (out_model) {
+        *out_model = 0u;
+    }
+    return unsupported(out_error);
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_unload(
+    llw_runtime_t*,
+    llw_handle_t,
+    llw_error_t* out_error) {
+    return unsupported(out_error);
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_request_submit(
+    llw_runtime_t*,
+    const llw_request_params_t*,
+    llw_handle_t* out_request,
+    llw_error_t* out_error) {
+    if (out_request) {
+        *out_request = 0u;
+    }
+    return unsupported(out_error);
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_request_cancel(
+    llw_runtime_t*,
+    llw_handle_t,
+    llw_error_t* out_error) {
+    return unsupported(out_error);
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_scheduler_snapshot(
+    llw_runtime_t*,
+    llw_scheduler_snapshot_t* out_snapshot,
+    llw_error_t* out_error) {
+    clear_output(out_snapshot);
+    return unsupported(out_error);
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_metrics(
+    llw_runtime_t*,
+    llw_metrics_t* out_metrics,
+    llw_error_t* out_error) {
+    clear_output(out_metrics);
+    return unsupported(out_error);
 }

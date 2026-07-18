@@ -1,5 +1,6 @@
 #include "llw_runtime.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -28,6 +29,17 @@ int main() {
     static_assert(LLW_ABI_MINOR == 1u);
     static_assert(sizeof(llw_handle_t) == sizeof(std::uint64_t));
     static_assert(sizeof(llw_result_t) == sizeof(std::int32_t));
+    static_assert(LLW_OK == 0);
+    static_assert(LLW_ERR_INVALID_ARGUMENT == 1);
+    static_assert(LLW_ERR_ABI_MISMATCH == 2);
+    static_assert(LLW_ERR_BUFFER_TOO_SMALL == 3);
+    static_assert(LLW_ERR_BUSY == 4);
+    static_assert(LLW_ERR_QUEUE_FULL == 5);
+    static_assert(LLW_ERR_NOT_FOUND == 6);
+    static_assert(LLW_ERR_INVALID_STATE == 7);
+    static_assert(LLW_ERR_CANCELLED == 8);
+    static_assert(LLW_ERR_UNSUPPORTED == 9);
+    static_assert(LLW_ERR_INTERNAL == 1000);
 
     LLW_ASSERT_LAYOUT(llw_error_t, 592u);
     LLW_ASSERT_FIELD(llw_error_t, struct_size, std::uint32_t, 0u);
@@ -287,6 +299,89 @@ int main() {
     CHECK(devices.count == 1u);
     CHECK(storage[0].backend == LLW_BACKEND_CPU);
     CHECK(std::strcmp(storage[0].id, "cpu:0") == 0);
+
+    std::uint8_t option_storage[1]{0xffu};
+    llw_buffer_t option_schema{};
+    option_schema.struct_size = sizeof(option_schema);
+    option_schema.data = option_storage;
+    option_schema.capacity = sizeof(option_storage);
+    option_schema.len = 1u;
+    reset_error();
+    CHECK(llw_runtime_get_option_schema(runtime, &option_schema, &error) == LLW_ERR_UNSUPPORTED);
+    CHECK(option_schema.len == 0u);
+    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+
+    llw_model_load_params_t load_params{};
+    load_params.struct_size = sizeof(load_params);
+    llw_handle_t model = 123u;
+    reset_error();
+    CHECK(llw_model_load(runtime, &load_params, &model, &error) == LLW_ERR_UNSUPPORTED);
+    CHECK(model == 0u);
+    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+
+    reset_error();
+    CHECK(llw_model_unload(runtime, 123u, &error) == LLW_ERR_UNSUPPORTED);
+    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+
+    llw_request_params_t request_params{};
+    request_params.struct_size = sizeof(request_params);
+    llw_handle_t request = 456u;
+    reset_error();
+    CHECK(llw_request_submit(runtime, &request_params, &request, &error) == LLW_ERR_UNSUPPORTED);
+    CHECK(request == 0u);
+    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+
+    reset_error();
+    CHECK(llw_request_cancel(runtime, 456u, &error) == LLW_ERR_UNSUPPORTED);
+    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+
+    llw_scheduler_snapshot_t snapshot{};
+    snapshot.struct_size = sizeof(snapshot);
+    snapshot.flags = 1u;
+    snapshot.slot_count = 1u;
+    snapshot.active_count = 1u;
+    snapshot.queued_count = 1u;
+    snapshot.queue_capacity = 1u;
+    snapshot.accepted_requests = 1u;
+    snapshot.terminal_requests = 1u;
+    std::fill_n(snapshot.reserved, 8u, std::uint64_t{1u});
+    reset_error();
+    CHECK(llw_get_scheduler_snapshot(runtime, &snapshot, &error) == LLW_ERR_UNSUPPORTED);
+    CHECK(snapshot.flags == 0u);
+    CHECK(snapshot.slot_count == 0u);
+    CHECK(snapshot.active_count == 0u);
+    CHECK(snapshot.queued_count == 0u);
+    CHECK(snapshot.queue_capacity == 0u);
+    CHECK(snapshot.accepted_requests == 0u);
+    CHECK(snapshot.terminal_requests == 0u);
+    CHECK(std::all_of(snapshot.reserved, snapshot.reserved + 8u,
+                      [](std::uint64_t value) { return value == 0u; }));
+    CHECK(error.code == LLW_ERR_UNSUPPORTED);
+
+    llw_metrics_t metrics{};
+    metrics.struct_size = sizeof(metrics);
+    metrics.flags = 1u;
+    metrics.prompt_tokens = 1u;
+    metrics.generated_tokens = 1u;
+    metrics.decode_calls = 1u;
+    metrics.cancelled_requests = 1u;
+    metrics.failed_requests = 1u;
+    metrics.queue_wait_ns = 1u;
+    metrics.decode_ns = 1u;
+    std::fill_n(metrics.reserved, 8u, std::uint64_t{1u});
+    reset_error();
+    CHECK(llw_get_metrics(runtime, &metrics, &error) == LLW_ERR_UNSUPPORTED);
+    CHECK(metrics.flags == 0u);
+    CHECK(metrics.prompt_tokens == 0u);
+    CHECK(metrics.generated_tokens == 0u);
+    CHECK(metrics.decode_calls == 0u);
+    CHECK(metrics.cancelled_requests == 0u);
+    CHECK(metrics.failed_requests == 0u);
+    CHECK(metrics.queue_wait_ns == 0u);
+    CHECK(metrics.decode_ns == 0u);
+    CHECK(std::all_of(metrics.reserved, metrics.reserved + 8u,
+                      [](std::uint64_t value) { return value == 0u; }));
+    CHECK(error.code == LLW_ERR_UNSUPPORTED);
 
     llw_runtime_destroy(runtime);
 

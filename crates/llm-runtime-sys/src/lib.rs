@@ -9,7 +9,7 @@ pub const ABI_MAJOR: u32 = 1;
 pub const ABI_MINOR: u32 = 1;
 pub const OK: i32 = 0;
 pub const ERR_INVALID_ARGUMENT: i32 = 1;
-pub const ERR_INTERNAL: i32 = 2;
+pub const ERR_ABI_MISMATCH: i32 = 2;
 pub const ERR_BUFFER_TOO_SMALL: i32 = 3;
 pub const ERR_BUSY: i32 = 4;
 pub const ERR_QUEUE_FULL: i32 = 5;
@@ -17,6 +17,7 @@ pub const ERR_NOT_FOUND: i32 = 6;
 pub const ERR_INVALID_STATE: i32 = 7;
 pub const ERR_CANCELLED: i32 = 8;
 pub const ERR_UNSUPPORTED: i32 = 9;
+pub const ERR_INTERNAL: i32 = 1000;
 pub const BACKEND_AUTO: i32 = 0;
 pub const BACKEND_CPU: i32 = 1;
 pub const BACKEND_CUDA: i32 = 2;
@@ -587,6 +588,43 @@ impl Api {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ffi_error_constants_match_c_contract() {
+        assert_eq!(OK, 0);
+        assert_eq!(ERR_INVALID_ARGUMENT, 1);
+        assert_eq!(ERR_ABI_MISMATCH, 2);
+        assert_eq!(ERR_BUFFER_TOO_SMALL, 3);
+        assert_eq!(ERR_BUSY, 4);
+        assert_eq!(ERR_QUEUE_FULL, 5);
+        assert_eq!(ERR_NOT_FOUND, 6);
+        assert_eq!(ERR_INVALID_STATE, 7);
+        assert_eq!(ERR_CANCELLED, 8);
+        assert_eq!(ERR_UNSUPPORTED, 9);
+        assert_eq!(ERR_INTERNAL, 1000);
+    }
+
+    #[test]
+    fn public_header_documents_callback_ownership_and_quiescence() {
+        let header = include_str!("../../../native/llm-runtime/include/llw_runtime.h");
+
+        assert!(header.contains(
+            "callback_table.user_data pointee must remain alive until llw_runtime_destroy returns"
+        ));
+        assert!(header.contains(
+            "request_user_data pointee must remain alive from an accepted llw_request_submit until its terminal callback returns"
+        ));
+        assert!(header.contains(
+            "On submit failure, the runtime retains neither request_user_data nor its pointee"
+        ));
+        assert!(header.contains("llw_runtime_destroy is a quiescence barrier for every callback"));
+        assert!(header.contains(
+            "Successful llw_model_unload is a quiescence barrier for that model's progress callbacks"
+        ));
+        assert!(header.contains(
+            "Failed model load and failed model unload return only after callbacks started by that call have completed"
+        ));
+    }
 
     macro_rules! assert_layout {
         ($ty:ty, $size:expr) => {

@@ -342,6 +342,13 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_list_devices(
  * no thread may retain or use the raw llw_runtime_t pointer once destruction begins. Load, unload,
  * submit, and cancel are internally serialized while the runtime remains alive. Under this precondition,
  * model-progress callbacks finish before unload/destroy returns and cannot outlive the runtime.
+ * callback_table.user_data pointee must remain alive until llw_runtime_destroy returns.
+ * request_user_data pointee must remain alive from an accepted llw_request_submit until its terminal callback returns.
+ * On submit failure, the runtime retains neither request_user_data nor its pointee.
+ * llw_runtime_destroy is a quiescence barrier for every callback: no callback is executing or can begin
+ * after it returns. Successful llw_model_unload is a quiescence barrier for that model's progress callbacks.
+ * A successful model load may have pending MODEL_PROGRESS callbacks; successful unload or runtime destroy
+ * waits for them. Failed model load and failed model unload return only after callbacks started by that call have completed.
  */
 LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_get_option_schema(
     llw_runtime_t* runtime, llw_buffer_t* out_json, llw_error_t* out_error);
