@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+# Requires the repository's native fixture and remains covered by workspace tests.
+exclude = ["tests/windows_pack_local_dependency.rs"]
 
 [dependencies]
 libloading.workspace = true
