@@ -54,8 +54,10 @@ native/llm-runtime/tests/fake_engine.h             Deterministic engine used onl
 native/llm-runtime/tests/scheduler_test.cpp        Concurrency, queue-full, cancellation, terminal tests
 native/llm-runtime/tests/runtime_backend_test.cpp Required checksum-pinned GGUF CPU end-to-end test
 native/llm-runtime/tests/fixtures/model.json       Tiny GGUF URL, SHA-256, size, and provenance
+native/llm-runtime/tests/fixtures/windows-pack-local/* Sibling-DLL loader integration fixture
 scripts/acquire-test-model.ps1                     Explicit checksum-verified fixture acquisition
 crates/llm-runtime-sys/src/lib.rs                  Exact repr(C) mirrors and fourteen dynamic exports
+crates/llm-runtime-sys/tests/windows_pack_local_dependency.rs Windows pack-local loader test
 crates/llm-runtime/src/lib.rs                      Safe model/request API and callback payload copying
 crates/llm-runtime/tests/native_runtime.rs         Rust-to-DLL load/generate/cancel integration tests
 apps/desktop/src-tauri/src/runtime_probe.rs        Preserve managed-pack resolution; no inference UI
@@ -3627,6 +3629,10 @@ git commit -m "feat: expose native model and request lifecycle"
 
 **Files:**
 - Modify: `crates/llm-runtime-sys/src/lib.rs`
+- Create: `crates/llm-runtime-sys/tests/windows_pack_local_dependency.rs`
+- Create: `native/llm-runtime/tests/fixtures/windows-pack-local/CMakeLists.txt`
+- Create: `native/llm-runtime/tests/fixtures/windows-pack-local/helper.c`
+- Create: `native/llm-runtime/tests/fixtures/windows-pack-local/runtime.c`
 - Modify: `crates/llm-runtime/Cargo.toml`
 - Modify: `crates/llm-runtime/src/lib.rs`
 
@@ -3651,6 +3657,25 @@ fn loader_names_each_required_export_once() {
     }
 }
 ```
+
+Add a Windows-only integration test in
+`crates/llm-runtime-sys/tests/windows_pack_local_dependency.rs`. Its CMake fixture must build a
+`local_llm_runtime.dll` that imports and calls an exported function from a sibling
+`llw_pack_local_helper.dll`. Build the fixture into a short per-process directory beneath
+`LOCALAPPDATA`, then re-exec the Rust integration-test binary with `current_dir` set to a separate
+directory. Pass the absolute runtime DLL path through an environment variable, call `Api::load`,
+and assert that `runtime_version` returns the helper DLL's sentinel string. Re-exec keeps the CWD
+change out of the parent test process, and calling through the imported function proves that the
+helper was resolved and loaded rather than merely present.
+
+Run the raw loader test before changing production code:
+
+```powershell
+cargo test -p llm-runtime-sys --test windows_pack_local_dependency -- --nocapture
+```
+
+Expected on Windows: FAIL with loader error 126 because flags `0` do not resolve the runtime
+pack's sibling helper when the process CWD and executable directory are elsewhere.
 
 Add these tests to `crates/llm-runtime/src/lib.rs`'s existing test module after Task 8 Step 3 adds `CallbackState`:
 
@@ -3907,13 +3932,29 @@ pub struct Api {
     pub get_metrics: GetMetricsFn,
 }
 
+#[cfg(windows)]
+unsafe fn load_library(path: &std::path::Path) -> Result<libloading::Library, libloading::Error> {
+    use libloading::os::windows::{
+        Library, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
+    };
+
+    let flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32;
+    let library = unsafe { Library::load_with_flags(path, flags)? };
+    Ok(library.into())
+}
+
+#[cfg(not(windows))]
+unsafe fn load_library(path: &std::path::Path) -> Result<libloading::Library, libloading::Error> {
+    unsafe { libloading::Library::new(path) }
+}
+
 impl Api {
     /// # Safety
     ///
     /// `path` must name an LLW ABI 1.x library. Every runtime and handle created through this
     /// object must be destroyed before the object is dropped.
     pub unsafe fn load(path: &std::path::Path) -> Result<Self, libloading::Error> {
-        let library = unsafe { libloading::Library::new(path)? };
+        let library = unsafe { load_library(path)? };
         let get_abi_info = unsafe { *library.get::<GetAbiInfoFn>(b"llw_get_abi_info\0")? };
         let runtime_version = unsafe {
             *library.get::<RuntimeVersionFn>(b"llw_runtime_version\0")?
@@ -3968,6 +4009,19 @@ impl Api {
     }
 }
 ```
+
+The Windows flags intentionally limit dependency resolution to the loaded DLL's directory and
+`SYSTEM32`. Do not use `SetDllDirectory`, `AddDllDirectory`, or any other process-global search-path
+mutation. Keep the `cfg(not(windows))` branch so the future scheduler implementation remains
+portable to Unix dynamic loaders.
+
+Run:
+
+```powershell
+cargo test -p llm-runtime-sys --all-targets
+```
+
+Expected: the pack-local integration fixture loads from the unrelated CWD and all sys tests pass.
 
 - [ ] **Step 3: Add safe owned types and callback delivery**
 

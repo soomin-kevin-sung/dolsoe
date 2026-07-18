@@ -259,6 +259,22 @@ pub struct Api {
     pub runtime_list_devices: RuntimeListDevicesFn,
 }
 
+#[cfg(windows)]
+unsafe fn load_library(path: &std::path::Path) -> Result<libloading::Library, libloading::Error> {
+    use libloading::os::windows::{
+        Library, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR, LOAD_LIBRARY_SEARCH_SYSTEM32,
+    };
+
+    let flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32;
+    let library = unsafe { Library::load_with_flags(path, flags)? };
+    Ok(library.into())
+}
+
+#[cfg(not(windows))]
+unsafe fn load_library(path: &std::path::Path) -> Result<libloading::Library, libloading::Error> {
+    unsafe { libloading::Library::new(path) }
+}
+
 impl Api {
     /// # Safety
     ///
@@ -271,7 +287,7 @@ impl Api {
     /// it and stop using copied function pointers, runtime-owned static strings, runtime handles,
     /// and callback or user-data relationships associated with the library.
     pub unsafe fn load(path: &std::path::Path) -> Result<Self, libloading::Error> {
-        let library = unsafe { libloading::Library::new(path)? };
+        let library = unsafe { load_library(path)? };
         let get_abi_info = unsafe { *library.get::<GetAbiInfoFn>(b"llw_get_abi_info\0")? };
         let runtime_version =
             unsafe { *library.get::<RuntimeVersionFn>(b"llw_runtime_version\0")? };
