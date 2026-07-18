@@ -10,6 +10,14 @@ cmake -S native/llm-runtime -B .cmake-build/llm-cpu -A x64 -DLLW_BACKEND_PACK=CP
 cmake --build .cmake-build/llm-cpu --config Release
 cmake --install .cmake-build/llm-cpu --config Release --prefix .runtime-packs/cpu-release
 
+For desktop development, build, test, and activate the managed `cpu-dev` pack under the Tauri app-local data directory with:
+
+```powershell
+& scripts/prepare-dev-cpu-pack.ps1
+```
+
+Use `-Configuration Release`, `-PackId`, or `-DestinationRoot` only when a different development layout is required. The script verifies the complete CPU pack before replacing the active directory and restores the previous directory if activation fails.
+
 ## CUDA compile smoke
 cmake -S native/llm-runtime -B .cmake-build/llm-cuda -A x64 -DLLW_BACKEND_PACK=CUDA
 cmake --build .cmake-build/llm-cuda --config Release
