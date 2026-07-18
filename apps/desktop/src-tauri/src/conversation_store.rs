@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 pub type StoreResult<T> = Result<T, String>;
@@ -31,7 +31,7 @@ CREATE INDEX messages_conversation_created
 ON messages(conversation_id, created_at, id);
 "#;
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum MessageRole {
     User,
@@ -55,7 +55,7 @@ impl MessageRole {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum MessageStatus {
     Complete,
@@ -146,7 +146,7 @@ impl ConversationStore {
     }
 
     #[cfg(test)]
-    fn open_in_memory() -> StoreResult<Self> {
+    pub(crate) fn open_in_memory() -> StoreResult<Self> {
         let connection = Connection::open_in_memory().map_err(store_error)?;
         Self::from_connection(connection)
     }

@@ -1,3 +1,4 @@
+mod conversation_commands;
 mod conversation_store;
 mod llm_commands;
 mod llm_dto;
@@ -7,6 +8,7 @@ mod runtime_probe;
 
 use tauri::{Emitter, Manager};
 
+use crate::conversation_store::ConversationStore;
 use crate::llm_worker::WorkerHandle;
 use crate::runtime_path::RuntimePackResolver;
 
@@ -16,7 +18,11 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let runtime_root = app.path().app_local_data_dir()?.join("runtime-packs");
+            let app_data = app.path().app_local_data_dir()?;
+            std::fs::create_dir_all(&app_data)?;
+            let runtime_root = app_data.join("runtime-packs");
+            let conversation_store = ConversationStore::open(app_data.join("local-llm-wiki.db"))
+                .map_err(std::io::Error::other)?;
             let app_handle = app.handle().clone();
             let worker =
                 WorkerHandle::spawn(RuntimePackResolver::new(runtime_root), move |event| {
@@ -25,6 +31,7 @@ pub fn run() {
                         .map_err(|error| error.to_string())
                 })
                 .map_err(std::io::Error::other)?;
+            app.manage(conversation_store);
             app.manage(worker);
             Ok(())
         })
@@ -36,6 +43,14 @@ pub fn run() {
             llm_commands::llm_submit,
             llm_commands::llm_cancel,
             llm_commands::llm_get_metrics,
+            conversation_commands::conversation_bootstrap,
+            conversation_commands::conversation_create,
+            conversation_commands::conversation_load,
+            conversation_commands::conversation_rename,
+            conversation_commands::conversation_clear,
+            conversation_commands::conversation_delete,
+            conversation_commands::conversation_start_turn,
+            conversation_commands::conversation_finish_turn,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
