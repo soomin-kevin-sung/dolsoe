@@ -5,10 +5,10 @@ import { IconButton } from "./IconButton";
 
 interface Props {
   title: string; modelName: string; modelState: RuntimeStatus; settingsOpen: boolean;
-  settingsButtonRef: Ref<HTMLButtonElement>; onSettings(): void;
+  settingsButtonRef: Ref<HTMLButtonElement>; resetButtonRef: Ref<HTMLButtonElement>; onSettings(): void; onReset(): void;
 }
 
-export function ChatHeader({ title, modelName, modelState, settingsOpen, settingsButtonRef, onSettings }: Props) {
+export function ChatHeader({ title, modelName, modelState, settingsOpen, settingsButtonRef, resetButtonRef, onSettings, onReset }: Props) {
   return (
     <header className="chat-header">
       <div className="chat-title">{title}</div><div className="header-spacer" />
@@ -18,7 +18,7 @@ export function ChatHeader({ title, modelName, modelState, settingsOpen, setting
         {modelState === "loading" ? <span className="metrics-line live">64%</span> : <ChevronDown size={14} />}
       </button>
       <span className="header-divider" />
-      <IconButton icon={Eraser} label="대화 초기화" />
+      <IconButton buttonRef={resetButtonRef} icon={Eraser} label="대화 초기화" onClick={onReset} />
       <IconButton buttonRef={settingsButtonRef} icon={SlidersHorizontal} label="설정" className={settingsOpen ? "active" : ""} aria-pressed={settingsOpen} onClick={onSettings} />
     </header>
   );

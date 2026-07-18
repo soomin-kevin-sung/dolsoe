@@ -6,6 +6,9 @@ import { Composer } from "./components/Composer";
 import { MessageList } from "./components/MessageList";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
+import { SettingsPanel } from "./components/SettingsPanel";
+import { DiagnosticsView } from "./components/DiagnosticsView";
+import { ConfirmDialog } from "./components/ConfirmDialog";
 import { DEFAULT_MODEL, mockRuntime } from "./services/mockRuntime";
 import { parseMockState, type Message, type MockStateName } from "./services/runtime";
 
@@ -18,7 +21,9 @@ export default function App() {
   const [state, setState] = useState<MockStateName>(initialState);
   const [settingsOpen, setSettingsOpen] = useState(["settings", "reload-confirm", "pack-install"].includes(initialState));
   const [extraMessages, setExtraMessages] = useState<Message[]>([]);
+  const [dialog, setDialog] = useState<"reset" | "reload" | null>(mockRuntime.getSnapshot(initialState).dialog);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const resetButtonRef = useRef<HTMLButtonElement>(null);
   const snapshot = useMemo(() => mockRuntime.getSnapshot(state), [state]);
   const longModel = queryValue("longModel") === "1";
   const longMessage = queryValue("longMessage") === "1";
@@ -46,6 +51,10 @@ export default function App() {
       } else if (event.ctrlKey && event.key === ",") {
         event.preventDefault();
         setSettingsOpen((open) => !open);
+      } else if (event.key === "Escape" && dialog) {
+        setDialog(null);
+      } else if (event.key === "Escape" && ["streaming", "multi"].includes(state)) {
+        setState("cancelled");
       } else if (event.key === "Escape" && settingsOpen) {
         setSettingsOpen(false);
         settingsButtonRef.current?.focus();
@@ -53,7 +62,7 @@ export default function App() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [settingsOpen]);
+  }, [dialog, settingsOpen, state]);
 
   function sendPrompt(prompt: string) {
     setExtraMessages((current) => [
@@ -67,8 +76,9 @@ export default function App() {
       <div className="workspace">
         <Sidebar
           sessions={snapshot.sessions}
-          diagnosticsOpen={false}
+          diagnosticsOpen={state === "diagnostics"}
           onNew={() => setState("empty")}
+          onDiagnostics={() => setState("diagnostics")}
         />
         <section className="conversation-shell">
           <ChatHeader
@@ -77,10 +87,12 @@ export default function App() {
             modelState={snapshot.runtimeStatus}
             settingsOpen={settingsOpen}
             settingsButtonRef={settingsButtonRef}
+            resetButtonRef={resetButtonRef}
+            onReset={() => setDialog("reset")}
             onSettings={() => setSettingsOpen((open) => !open)}
           />
           <main className="conversation" aria-label="대화">
-            <MessageList state={state} messages={messages} />
+            {state === "diagnostics" ? <DiagnosticsView /> : <MessageList state={state} messages={messages} />}
           </main>
           {state !== "diagnostics" && (
             <Composer
@@ -91,11 +103,15 @@ export default function App() {
             />
           )}
         </section>
-        <aside className="settings-placeholder" aria-label="설정" hidden={!settingsOpen}>
-          <strong>설정</strong>
-        </aside>
+        <SettingsPanel
+          open={settingsOpen}
+          packs={snapshot.packs}
+          onClose={() => { setSettingsOpen(false); settingsButtonRef.current?.focus(); }}
+          onReload={() => setDialog("reload")}
+        />
       </div>
       <StatusBar snapshot={{ ...snapshot, modelName }} />
+      {dialog && <ConfirmDialog type={dialog} onClose={() => setDialog(null)} returnFocusRef={dialog === "reset" ? resetButtonRef : settingsButtonRef} />}
     </div>
   );
 }

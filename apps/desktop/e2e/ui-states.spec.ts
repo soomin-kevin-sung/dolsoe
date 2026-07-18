@@ -84,3 +84,43 @@ test("long content stays inside the application shell", async ({ page }) => {
   await expect(page.locator("[data-long-message]")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1024);
 });
+
+test("settings opens from keyboard and changes theme", async ({ page }) => {
+  await page.goto("/?state=ready");
+  await page.keyboard.press("Control+,");
+  const settings = page.getByRole("complementary", { name: "설정" });
+  await expect(settings).toBeVisible();
+  await settings.getByRole("button", { name: "다크" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await settings.getByRole("button", { name: "라이트" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(settings.getByRole("button", { name: "시스템" })).toBeVisible();
+});
+
+test("diagnostics replaces the conversation composer", async ({ page }) => {
+  await page.goto("/?state=diagnostics");
+  await expect(page.getByRole("heading", { name: "진단" })).toBeVisible();
+  await expect(page.getByRole("form", { name: "메시지 입력" })).toHaveCount(0);
+  await expect(page.getByText("Bridge ABI", { exact: true })).toBeVisible();
+});
+
+test("dialog states expose the approved confirmations", async ({ page }) => {
+  await page.goto("/?state=reset-confirm");
+  await expect(page.getByRole("dialog", { name: "대화를 초기화할까요?" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "초기화", exact: true })).toBeVisible();
+  await page.goto("/?state=reload-confirm");
+  await expect(page.getByRole("dialog", { name: "모델을 다시 로드할까요?" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "다시 로드", exact: true })).toBeVisible();
+});
+
+test("Escape closes dialog before panel and cancels streaming", async ({ page }) => {
+  await page.goto("/?state=reload-confirm");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(page.getByRole("complementary", { name: "설정" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("complementary", { name: "설정" })).toBeHidden();
+  await page.goto("/?state=streaming");
+  await page.keyboard.press("Escape");
+  await expect(page.locator('[data-app-state="cancelled"]')).toBeVisible();
+});

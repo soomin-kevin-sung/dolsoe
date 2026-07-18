@@ -2,9 +2,9 @@ import { Activity, LoaderCircle, Search, SquarePen } from "lucide-react";
 import type { Session } from "../services/runtime";
 import { IconButton } from "./IconButton";
 
-interface SidebarProps { sessions: Session[]; diagnosticsOpen: boolean; onNew(): void; }
+interface SidebarProps { sessions: Session[]; diagnosticsOpen: boolean; onNew(): void; onDiagnostics(): void; }
 
-export function Sidebar({ sessions, diagnosticsOpen, onNew }: SidebarProps) {
+export function Sidebar({ sessions, diagnosticsOpen, onNew, onDiagnostics }: SidebarProps) {
   return (
     <nav className="sidebar" aria-label="대화 목록">
       <div className="sidebar-header">
@@ -28,7 +28,7 @@ export function Sidebar({ sessions, diagnosticsOpen, onNew }: SidebarProps) {
         ))}
       </div>
       <div className="sidebar-footer">
-        <button type="button" className={`footer-button ${diagnosticsOpen ? "active" : ""}`}>
+        <button type="button" className={`footer-button ${diagnosticsOpen ? "active" : ""}`} onClick={onDiagnostics}>
           <Activity size={16} aria-hidden="true" />진단
         </button>
       </div>
