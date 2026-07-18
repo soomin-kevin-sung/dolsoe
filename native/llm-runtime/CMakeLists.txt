@@ -37,6 +37,7 @@ FetchContent_Declare(
   llama_cpp
   GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
   GIT_TAG ${LLAMA_CPP_COMMIT}
+  GIT_CONFIG core.longpaths=true
   GIT_SHALLOW FALSE
   GIT_PROGRESS TRUE
 )
