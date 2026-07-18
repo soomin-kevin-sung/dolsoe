@@ -31,6 +31,7 @@ export type ConversationAction =
   | { type: "deleted"; deletedId: string; fallback: ConversationDetail }
   | { type: "turn-started"; value: StartedTurn }
   | { type: "request-bound"; requestHandle: string }
+  | { type: "turn-failed"; error: string }
   | { type: "token"; requestHandle: string; text: string }
   | { type: "terminal"; requestHandle: string; status: TerminalMessageStatus; tail: string }
   | { type: "search"; value: string }
@@ -171,6 +172,14 @@ export function workspaceReducer(
         return state;
       }
       return { ...state, activeTurn: { ...state.activeTurn, requestHandle: action.requestHandle } };
+    case "turn-failed": {
+      const updated = updateAssistant(state, (message) => ({
+        ...message,
+        content: action.error,
+        status: "error",
+      }));
+      return { ...updated, activeTurn: null };
+    }
     case "token": {
       if (!acceptsRequest(state, action.requestHandle)) return state;
       const bound = state.activeTurn?.requestHandle

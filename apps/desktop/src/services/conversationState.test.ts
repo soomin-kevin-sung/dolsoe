@@ -94,4 +94,16 @@ describe("conversationState", () => {
     expect(selectVisibleConversations(state).map((item) => item.title)).toEqual(["Rust bridge"]);
     expect(state.conversations).toEqual(original.conversations);
   });
+
+  it("marks the persisted assistant as error when native submit fails", () => {
+    let state = workspaceReducer(bootstrappedState(), { type: "turn-started", value: turn });
+
+    state = workspaceReducer(state, { type: "turn-failed", error: "runtime is busy" });
+
+    expect(state.details.a.messages[state.details.a.messages.length - 1]).toMatchObject({
+      content: "runtime is busy",
+      status: "error",
+    });
+    expect(state.activeTurn).toBeNull();
+  });
 });
