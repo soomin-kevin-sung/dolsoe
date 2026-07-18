@@ -44,7 +44,7 @@ test("minimum window has no horizontal overflow", async ({ page }) => {
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   );
   expect(overflow).toBeLessThanOrEqual(0);
-  await expect(page.locator("[data-model-name]")).toContainText("Q".repeat(80));
+  await expect(page.locator("[data-model-name]").first()).toContainText("Q".repeat(80));
 });
 
 test("global keyboard shortcuts change application state", async ({ page }) => {
@@ -55,4 +55,32 @@ test("global keyboard shortcuts change application state", async ({ page }) => {
   await expect(page.getByRole("complementary", { name: "설정" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("complementary", { name: "설정" })).toBeHidden();
+});
+
+test("application shell exposes semantic landmarks", async ({ page }) => {
+  await page.goto("/?state=ready");
+  await expect(page.getByRole("navigation", { name: "대화 목록" })).toBeVisible();
+  await expect(page.locator("header")).toBeVisible();
+  await expect(page.getByRole("main", { name: "대화" })).toBeVisible();
+  await expect(page.getByRole("form", { name: "메시지 입력" })).toBeVisible();
+  await expect(page.getByRole("status")).toBeVisible();
+});
+
+test("application shell handles Enter and Shift+Enter", async ({ page }) => {
+  await page.goto("/?state=empty");
+  const input = page.getByRole("textbox", { name: "메시지" });
+  await input.fill("첫째 줄");
+  await page.keyboard.press("Shift+Enter");
+  await input.type("둘째 줄");
+  await expect(input).toHaveValue("첫째 줄\n둘째 줄");
+  await page.keyboard.press("Enter");
+  await expect(page.locator('[data-message-role="user"]').last()).toContainText("첫째 줄");
+});
+
+test("long content stays inside the application shell", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 700 });
+  await page.goto("/?state=ready&longModel=1&longMessage=1");
+  await expect(page.locator("[data-model-name]").first()).toContainText("Q".repeat(80));
+  await expect(page.locator("[data-long-message]")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1024);
 });

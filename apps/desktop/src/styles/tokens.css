@@ -1,0 +1,53 @@
+:root {
+  --bg-app: #f4f5f6;
+  --bg-surface: #ffffff;
+  --bg-inset: #eceef0;
+  --bg-hover: #e8eaec;
+  --bg-active: #e1e4e7;
+  --bg-statusbar: #f4f5f6;
+  --border: #d8dce0;
+  --border-strong: #b8bec5;
+  --text-1: #1a1d21;
+  --text-2: #555c64;
+  --text-3: #6b737c;
+  --accent: #0f766e;
+  --accent-solid: #0f766e;
+  --accent-solid-hover: #0c5f59;
+  --on-accent: #ffffff;
+  --accent-subtle: #e3f0ee;
+  --amber: #8a5c00;
+  --amber-bg: #faf2dc;
+  --red: #b42318;
+  --red-hover: #932015;
+  --on-red: #ffffff;
+  --red-bg: #fbebe9;
+  --shadow-overlay: 0 4px 16px rgba(15, 20, 25, 0.14), 0 0 0 1px rgba(15, 20, 25, 0.04);
+  --font-ui: "Pretendard Variable", Pretendard, "Segoe UI Variable Text", "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --font-mono: "Cascadia Mono", "SF Mono", Consolas, "D2Coding", monospace;
+}
+
+html[data-theme="dark"] {
+  --bg-app: #17191d;
+  --bg-surface: #1e2226;
+  --bg-inset: #272c31;
+  --bg-hover: #2a2f35;
+  --bg-active: #31373e;
+  --bg-statusbar: #14161a;
+  --border: #33383f;
+  --border-strong: #4a515a;
+  --text-1: #e7eaed;
+  --text-2: #a6adb5;
+  --text-3: #8f97a1;
+  --accent: #3ecbba;
+  --accent-solid: #3ecbba;
+  --accent-solid-hover: #5ad6c7;
+  --on-accent: #0b2b27;
+  --accent-subtle: #1c3330;
+  --amber: #e3b45e;
+  --amber-bg: #37301e;
+  --red: #f28b82;
+  --red-hover: #f5a39c;
+  --on-red: #331512;
+  --red-bg: #3b2523;
+  --shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
