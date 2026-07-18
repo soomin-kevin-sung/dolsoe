@@ -6,13 +6,48 @@ compile_error!("llm-runtime-sys supports only 64-bit targets");
 use std::ffi::{c_char, c_void};
 
 pub const ABI_MAJOR: u32 = 1;
-pub const ABI_MINOR: u32 = 0;
+pub const ABI_MINOR: u32 = 1;
 pub const OK: i32 = 0;
+pub const ERR_INVALID_ARGUMENT: i32 = 1;
+pub const ERR_INTERNAL: i32 = 2;
 pub const ERR_BUFFER_TOO_SMALL: i32 = 3;
+pub const ERR_BUSY: i32 = 4;
+pub const ERR_QUEUE_FULL: i32 = 5;
+pub const ERR_NOT_FOUND: i32 = 6;
+pub const ERR_INVALID_STATE: i32 = 7;
+pub const ERR_CANCELLED: i32 = 8;
+pub const ERR_UNSUPPORTED: i32 = 9;
 pub const BACKEND_AUTO: i32 = 0;
 pub const BACKEND_CPU: i32 = 1;
 pub const BACKEND_CUDA: i32 = 2;
 pub const BACKEND_VULKAN: i32 = 3;
+pub const EVENT_DATA_NONE: u32 = 0;
+pub const EVENT_DATA_BYTES: u32 = 1;
+pub const EVENT_DATA_UTF8: u32 = 2;
+pub const EVENT_DATA_JSON_UTF8: u32 = 3;
+pub const EVENT_MODEL_PROGRESS: i32 = 1;
+pub const EVENT_QUEUED: i32 = 2;
+pub const EVENT_TOKEN: i32 = 3;
+pub const EVENT_METRICS: i32 = 4;
+pub const EVENT_DONE: i32 = 5;
+pub const EVENT_CANCELLED: i32 = 6;
+pub const EVENT_ERROR: i32 = 7;
+pub const EVENT_LOG: i32 = 8;
+pub const REQUEST_STATE_QUEUED: i32 = 1;
+pub const REQUEST_STATE_PREPROCESSING: i32 = 2;
+pub const REQUEST_STATE_RUNNING: i32 = 3;
+pub const REQUEST_STATE_DONE: i32 = 4;
+pub const REQUEST_STATE_CANCELLED: i32 = 5;
+pub const REQUEST_STATE_ERROR: i32 = 6;
+pub const MAX_SLOTS: u32 = 4;
+pub const MAX_QUEUE_CAPACITY: u32 = 1024;
+pub const MAX_EVENT_QUEUE_CAPACITY: u32 = 65_536;
+pub const MAX_MODEL_PATH_BYTES: u32 = 32_768;
+pub const MAX_DEVICE_INDEX: u32 = 255;
+pub const MAX_PROMPT_BYTES: u32 = 16 * 1024 * 1024;
+pub const MAX_STOP_SEQUENCES: u32 = 8;
+pub const MAX_STOP_BYTES: u32 = 256;
+pub const MAX_STOP_TOTAL_BYTES: u32 = 2048;
 
 pub type Handle = u64;
 
@@ -133,25 +168,6 @@ impl Default for CallbackTable {
 }
 
 #[repr(C)]
-pub struct RuntimeCreateParams {
-    pub struct_size: u32,
-    pub flags: u32,
-    pub callbacks: CallbackTable,
-    pub reserved: [u64; 8],
-}
-
-impl Default for RuntimeCreateParams {
-    fn default() -> Self {
-        Self {
-            struct_size: std::mem::size_of::<Self>() as u32,
-            flags: 0,
-            callbacks: CallbackTable::default(),
-            reserved: [0; 8],
-        }
-    }
-}
-
-#[repr(C)]
 pub struct Capabilities {
     pub struct_size: u32,
     pub flags: u32,
@@ -237,6 +253,251 @@ impl Default for DeviceList {
     }
 }
 
+#[repr(C)]
+pub struct Bytes {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub data: *const u8,
+    pub len: u64,
+    pub reserved: [u64; 8],
+}
+
+#[repr(C)]
+pub struct Buffer {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub data: *mut u8,
+    pub capacity: u64,
+    pub len: u64,
+    pub reserved: [u64; 8],
+}
+
+#[repr(C)]
+pub struct SchedulerConfig {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub slot_count: u32,
+    pub request_queue_capacity: u32,
+    pub event_queue_capacity: u32,
+    pub reserved0: u32,
+    pub reserved: [u64; 8],
+}
+
+#[repr(C)]
+pub struct RuntimeCreateParams {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub callbacks: CallbackTable,
+    pub reserved: [u64; 8],
+    pub scheduler: SchedulerConfig,
+    pub reserved_v1: [u64; 8],
+}
+
+impl Default for RuntimeCreateParams {
+    fn default() -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            flags: 0,
+            callbacks: CallbackTable::default(),
+            reserved: [0; 8],
+            scheduler: SchedulerConfig::default(),
+            reserved_v1: [0; 8],
+        }
+    }
+}
+
+#[repr(C)]
+pub struct ModelLoadParams {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub path_utf8: *const u8,
+    pub path_len: u64,
+    pub backend: i32,
+    pub device_index: u32,
+    pub context_tokens_per_slot: u32,
+    pub logical_batch_tokens: u32,
+    pub physical_batch_tokens: u32,
+    pub n_threads: i32,
+    pub n_threads_batch: i32,
+    pub n_gpu_layers: i32,
+    pub use_mmap: u32,
+    pub use_mlock: u32,
+    pub check_tensors: u32,
+    pub reserved0: u32,
+    pub reserved: [u64; 12],
+}
+
+#[repr(C)]
+pub struct RequestParams {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub model_handle: Handle,
+    pub prompt: *const u8,
+    pub prompt_len: u64,
+    pub max_new_tokens: u32,
+    pub seed: u32,
+    pub temperature: f32,
+    pub top_k: i32,
+    pub top_p: f32,
+    pub min_p: f32,
+    pub repeat_last_n: i32,
+    pub repeat_penalty: f32,
+    pub frequency_penalty: f32,
+    pub presence_penalty: f32,
+    pub stop_count: u32,
+    pub reserved0: u32,
+    pub stop_sequences: *const Bytes,
+    pub request_user_data: *mut c_void,
+    pub reserved: [u64; 12],
+}
+
+#[repr(C)]
+pub struct SchedulerSnapshot {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub slot_count: u32,
+    pub active_count: u32,
+    pub queued_count: u32,
+    pub queue_capacity: u32,
+    pub accepted_requests: u64,
+    pub terminal_requests: u64,
+    pub reserved: [u64; 8],
+}
+
+#[repr(C)]
+pub struct Metrics {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub prompt_tokens: u64,
+    pub generated_tokens: u64,
+    pub decode_calls: u64,
+    pub cancelled_requests: u64,
+    pub failed_requests: u64,
+    pub queue_wait_ns: u64,
+    pub decode_ns: u64,
+    pub reserved: [u64; 8],
+}
+
+macro_rules! zero_default {
+    ($type:ty, $value:expr) => {
+        impl Default for $type {
+            fn default() -> Self {
+                $value
+            }
+        }
+    };
+}
+
+zero_default!(
+    Bytes,
+    Self {
+        struct_size: std::mem::size_of::<Self>() as u32,
+        flags: 0,
+        data: std::ptr::null(),
+        len: 0,
+        reserved: [0; 8],
+    }
+);
+zero_default!(
+    Buffer,
+    Self {
+        struct_size: std::mem::size_of::<Self>() as u32,
+        flags: 0,
+        data: std::ptr::null_mut(),
+        capacity: 0,
+        len: 0,
+        reserved: [0; 8],
+    }
+);
+zero_default!(
+    SchedulerConfig,
+    Self {
+        struct_size: std::mem::size_of::<Self>() as u32,
+        flags: 0,
+        slot_count: 1,
+        request_queue_capacity: 16,
+        event_queue_capacity: 1024,
+        reserved0: 0,
+        reserved: [0; 8],
+    }
+);
+zero_default!(
+    ModelLoadParams,
+    Self {
+        struct_size: std::mem::size_of::<Self>() as u32,
+        flags: 0,
+        path_utf8: std::ptr::null(),
+        path_len: 0,
+        backend: BACKEND_AUTO,
+        device_index: 0,
+        context_tokens_per_slot: 4096,
+        logical_batch_tokens: 512,
+        physical_batch_tokens: 128,
+        n_threads: 8,
+        n_threads_batch: 8,
+        n_gpu_layers: 0,
+        use_mmap: 1,
+        use_mlock: 0,
+        check_tensors: 0,
+        reserved0: 0,
+        reserved: [0; 12],
+    }
+);
+zero_default!(
+    RequestParams,
+    Self {
+        struct_size: std::mem::size_of::<Self>() as u32,
+        flags: 0,
+        model_handle: 0,
+        prompt: std::ptr::null(),
+        prompt_len: 0,
+        max_new_tokens: 256,
+        seed: u32::MAX,
+        temperature: 0.8,
+        top_k: 40,
+        top_p: 0.95,
+        min_p: 0.05,
+        repeat_last_n: 64,
+        repeat_penalty: 1.1,
+        frequency_penalty: 0.0,
+        presence_penalty: 0.0,
+        stop_count: 0,
+        reserved0: 0,
+        stop_sequences: std::ptr::null(),
+        request_user_data: std::ptr::null_mut(),
+        reserved: [0; 12],
+    }
+);
+zero_default!(
+    SchedulerSnapshot,
+    Self {
+        struct_size: std::mem::size_of::<Self>() as u32,
+        flags: 0,
+        slot_count: 0,
+        active_count: 0,
+        queued_count: 0,
+        queue_capacity: 0,
+        accepted_requests: 0,
+        terminal_requests: 0,
+        reserved: [0; 8],
+    }
+);
+zero_default!(
+    Metrics,
+    Self {
+        struct_size: std::mem::size_of::<Self>() as u32,
+        flags: 0,
+        prompt_tokens: 0,
+        generated_tokens: 0,
+        decode_calls: 0,
+        cancelled_requests: 0,
+        failed_requests: 0,
+        queue_wait_ns: 0,
+        decode_ns: 0,
+        reserved: [0; 8],
+    }
+);
+
 pub type GetAbiInfoFn = unsafe extern "C" fn(*const AbiQuery, *mut AbiInfo, *mut Error) -> i32;
 pub type RuntimeVersionFn = unsafe extern "C" fn() -> *const c_char;
 pub type LlamaCommitFn = unsafe extern "C" fn() -> *const c_char;
@@ -247,6 +508,17 @@ pub type RuntimeGetCapabilitiesFn =
     unsafe extern "C" fn(*mut Runtime, *mut Capabilities, *mut Error) -> i32;
 pub type RuntimeListDevicesFn =
     unsafe extern "C" fn(*mut Runtime, i32, *mut DeviceList, *mut Error) -> i32;
+pub type RuntimeGetOptionSchemaFn =
+    unsafe extern "C" fn(*mut Runtime, *mut Buffer, *mut Error) -> i32;
+pub type ModelLoadFn =
+    unsafe extern "C" fn(*mut Runtime, *const ModelLoadParams, *mut Handle, *mut Error) -> i32;
+pub type ModelUnloadFn = unsafe extern "C" fn(*mut Runtime, Handle, *mut Error) -> i32;
+pub type RequestSubmitFn =
+    unsafe extern "C" fn(*mut Runtime, *const RequestParams, *mut Handle, *mut Error) -> i32;
+pub type RequestCancelFn = unsafe extern "C" fn(*mut Runtime, Handle, *mut Error) -> i32;
+pub type GetSchedulerSnapshotFn =
+    unsafe extern "C" fn(*mut Runtime, *mut SchedulerSnapshot, *mut Error) -> i32;
+pub type GetMetricsFn = unsafe extern "C" fn(*mut Runtime, *mut Metrics, *mut Error) -> i32;
 
 pub struct Api {
     _library: libloading::Library,
@@ -400,6 +672,7 @@ mod tests {
 
     #[test]
     fn ffi_struct_layouts_match_x64_c_contract() {
+        assert_eq!(ABI_MINOR, 1);
         assert_layout!(Error, 592);
         assert_offset!(Error, struct_size, 0);
         assert_offset!(Error, code, 4);
@@ -478,7 +751,46 @@ mod tests {
         assert_offset!(CallbackTable, user_data, 16);
         assert_offset!(CallbackTable, reserved, 24);
 
-        assert_layout!(RuntimeCreateParams, 160);
+        assert_layout!(Bytes, 88);
+        assert_layout!(Buffer, 96);
+        assert_layout!(SchedulerConfig, 88);
+        assert_layout!(ModelLoadParams, 168);
+        assert_layout!(RequestParams, 192);
+        assert_layout!(SchedulerSnapshot, 104);
+        assert_layout!(Metrics, 128);
+        assert_offset!(RuntimeCreateParams, scheduler, 160);
+        assert_offset!(RuntimeCreateParams, reserved_v1, 248);
+        assert_eq!(std::mem::size_of::<RuntimeCreateParams>(), 312);
+        assert_offset!(Bytes, data, 8);
+        assert_offset!(Bytes, len, 16);
+        assert_offset!(Bytes, reserved, 24);
+        assert_offset!(Buffer, data, 8);
+        assert_offset!(Buffer, capacity, 16);
+        assert_offset!(Buffer, len, 24);
+        assert_offset!(SchedulerConfig, slot_count, 8);
+        assert_offset!(SchedulerConfig, request_queue_capacity, 12);
+        assert_offset!(SchedulerConfig, event_queue_capacity, 16);
+        assert_offset!(SchedulerConfig, reserved, 24);
+        assert_offset!(ModelLoadParams, path_utf8, 8);
+        assert_offset!(ModelLoadParams, path_len, 16);
+        assert_offset!(ModelLoadParams, backend, 24);
+        assert_offset!(ModelLoadParams, context_tokens_per_slot, 32);
+        assert_offset!(ModelLoadParams, n_gpu_layers, 52);
+        assert_offset!(ModelLoadParams, reserved, 72);
+        assert_offset!(RequestParams, model_handle, 8);
+        assert_offset!(RequestParams, prompt, 16);
+        assert_offset!(RequestParams, max_new_tokens, 32);
+        assert_offset!(RequestParams, temperature, 40);
+        assert_offset!(RequestParams, stop_sequences, 80);
+        assert_offset!(RequestParams, request_user_data, 88);
+        assert_offset!(RequestParams, reserved, 96);
+        assert_offset!(SchedulerSnapshot, accepted_requests, 24);
+        assert_offset!(SchedulerSnapshot, reserved, 40);
+        assert_offset!(Metrics, prompt_tokens, 8);
+        assert_offset!(Metrics, decode_ns, 56);
+        assert_offset!(Metrics, reserved, 64);
+
+        assert_layout!(RuntimeCreateParams, 312);
         assert_offset!(RuntimeCreateParams, struct_size, 0);
         assert_offset!(RuntimeCreateParams, flags, 4);
         assert_offset!(RuntimeCreateParams, callbacks, 8);

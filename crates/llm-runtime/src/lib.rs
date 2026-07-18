@@ -154,6 +154,8 @@ impl RuntimeLibrary {
             flags: 0,
             callbacks: sys::CallbackTable::default(),
             reserved: [0; 8],
+            scheduler: sys::SchedulerConfig::default(),
+            reserved_v1: [0; 8],
         };
         let mut runtime = ptr::null_mut();
         let mut raw_error = sys::Error::default();

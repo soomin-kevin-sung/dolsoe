@@ -31,7 +31,7 @@
 #endif
 
 #define LLW_ABI_MAJOR 1u
-#define LLW_ABI_MINOR 0u
+#define LLW_ABI_MINOR 1u
 
 typedef uint64_t llw_handle_t;
 typedef int32_t llw_result_t;
@@ -55,6 +55,35 @@ typedef int32_t llw_result_t;
 #define LLW_EVENT_CANCELLED ((int32_t)6)
 #define LLW_EVENT_ERROR ((int32_t)7)
 #define LLW_EVENT_LOG ((int32_t)8)
+
+#define LLW_ERR_BUSY ((llw_result_t)4)
+#define LLW_ERR_QUEUE_FULL ((llw_result_t)5)
+#define LLW_ERR_NOT_FOUND ((llw_result_t)6)
+#define LLW_ERR_INVALID_STATE ((llw_result_t)7)
+#define LLW_ERR_CANCELLED ((llw_result_t)8)
+#define LLW_ERR_UNSUPPORTED ((llw_result_t)9)
+
+#define LLW_EVENT_DATA_NONE ((uint32_t)0)
+#define LLW_EVENT_DATA_BYTES ((uint32_t)1)
+#define LLW_EVENT_DATA_UTF8 ((uint32_t)2)
+#define LLW_EVENT_DATA_JSON_UTF8 ((uint32_t)3)
+
+#define LLW_REQUEST_STATE_QUEUED ((int32_t)1)
+#define LLW_REQUEST_STATE_PREPROCESSING ((int32_t)2)
+#define LLW_REQUEST_STATE_RUNNING ((int32_t)3)
+#define LLW_REQUEST_STATE_DONE ((int32_t)4)
+#define LLW_REQUEST_STATE_CANCELLED ((int32_t)5)
+#define LLW_REQUEST_STATE_ERROR ((int32_t)6)
+
+#define LLW_MAX_SLOTS 4u
+#define LLW_MAX_QUEUE_CAPACITY 1024u
+#define LLW_MAX_EVENT_QUEUE_CAPACITY 65536u
+#define LLW_MAX_MODEL_PATH_BYTES 32768u
+#define LLW_MAX_DEVICE_INDEX 255u
+#define LLW_MAX_PROMPT_BYTES (16u * 1024u * 1024u)
+#define LLW_MAX_STOP_SEQUENCES 8u
+#define LLW_MAX_STOP_BYTES 256u
+#define LLW_MAX_STOP_TOTAL_BYTES 2048u
 
 /*
  * Before passing any input or output structure, zero-initialize the entire
@@ -166,12 +195,109 @@ typedef struct llw_callback_table_t {
     uint64_t reserved[8];
 } llw_callback_table_t;
 
+typedef struct llw_bytes_t {
+    uint32_t struct_size;
+    uint32_t flags;
+    const uint8_t* data;
+    uint64_t len;
+    uint64_t reserved[8];
+} llw_bytes_t;
+
+typedef struct llw_buffer_t {
+    uint32_t struct_size;
+    uint32_t flags;
+    uint8_t* data;
+    uint64_t capacity;
+    uint64_t len;
+    uint64_t reserved[8];
+} llw_buffer_t;
+
+typedef struct llw_scheduler_config_t {
+    uint32_t struct_size;
+    uint32_t flags;
+    uint32_t slot_count; /* 1..4 */
+    uint32_t request_queue_capacity; /* 1..1024 */
+    uint32_t event_queue_capacity; /* 16..65536 */
+    uint32_t reserved0;
+    uint64_t reserved[8];
+} llw_scheduler_config_t;
+
 typedef struct llw_runtime_create_params_t {
     uint32_t struct_size;
     uint32_t flags;
     llw_callback_table_t callbacks;
     uint64_t reserved[8];
+    llw_scheduler_config_t scheduler;
+    uint64_t reserved_v1[8];
 } llw_runtime_create_params_t;
+
+typedef struct llw_model_load_params_t {
+    uint32_t struct_size;
+    uint32_t flags;
+    const uint8_t* path_utf8; /* 1..32768 UTF-8 bytes with no NUL */
+    uint64_t path_len;
+    int32_t backend; /* AUTO, CPU, CUDA, or VULKAN */
+    uint32_t device_index; /* 0..255 */
+    uint32_t context_tokens_per_slot; /* 512..262144 */
+    uint32_t logical_batch_tokens; /* 1..8192 */
+    uint32_t physical_batch_tokens; /* 1..logical_batch_tokens */
+    int32_t n_threads; /* 1..256 */
+    int32_t n_threads_batch; /* 1..256 */
+    int32_t n_gpu_layers; /* -1..65535 */
+    uint32_t use_mmap;
+    uint32_t use_mlock;
+    uint32_t check_tensors;
+    uint32_t reserved0;
+    uint64_t reserved[12];
+} llw_model_load_params_t;
+
+typedef struct llw_request_params_t {
+    uint32_t struct_size;
+    uint32_t flags;
+    llw_handle_t model_handle;
+    const uint8_t* prompt; /* 1..LLW_MAX_PROMPT_BYTES */
+    uint64_t prompt_len;
+    uint32_t max_new_tokens; /* 1..1048576 */
+    uint32_t seed;
+    float temperature; /* 0.0..10.0 */
+    int32_t top_k; /* 0..100000 */
+    float top_p; /* 0.0..1.0 */
+    float min_p; /* 0.0..1.0 */
+    int32_t repeat_last_n; /* 0..262144 */
+    float repeat_penalty; /* 0.0..10.0 */
+    float frequency_penalty; /* -2.0..2.0 */
+    float presence_penalty; /* -2.0..2.0 */
+    uint32_t stop_count; /* 0..8 */
+    uint32_t reserved0;
+    const llw_bytes_t* stop_sequences; /* each 1..256 bytes; combined 0..2048 bytes */
+    void* request_user_data;
+    uint64_t reserved[12];
+} llw_request_params_t;
+
+typedef struct llw_scheduler_snapshot_t {
+    uint32_t struct_size;
+    uint32_t flags;
+    uint32_t slot_count;
+    uint32_t active_count;
+    uint32_t queued_count;
+    uint32_t queue_capacity;
+    uint64_t accepted_requests;
+    uint64_t terminal_requests;
+    uint64_t reserved[8];
+} llw_scheduler_snapshot_t;
+
+typedef struct llw_metrics_t {
+    uint32_t struct_size;
+    uint32_t flags;
+    uint64_t prompt_tokens;
+    uint64_t generated_tokens;
+    uint64_t decode_calls;
+    uint64_t cancelled_requests;
+    uint64_t failed_requests;
+    uint64_t queue_wait_ns;
+    uint64_t decode_ns;
+    uint64_t reserved[8];
+} llw_metrics_t;
 
 #pragma pack(pop)
 
@@ -199,5 +325,40 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_list_devices(
     int32_t backend,
     llw_device_list_t* out_devices,
     llw_error_t* out_error);
+
+/*
+ * All input byte pointers are borrowed only for the call. llw_request_submit copies the prompt,
+ * stop arrays, stop bytes, and request_user_data value before returning. Event data uses event.flags:
+ * TOKEN is BYTES; LOG is UTF8; QUEUED, MODEL_PROGRESS, METRICS, DONE, CANCELLED, and ERROR are
+ * JSON_UTF8. event and data are valid only during the callback and must be copied before return.
+ * Only the dispatcher thread invokes on_event; callbacks are serialized, may not call llw_* reentrantly,
+ * and must not block indefinitely. Each accepted request emits increasing sequence_number values and
+ * exactly one of DONE, CANCELLED, or ERROR. After that terminal event is copied into the bounded event
+ * queue and sequence cleanup completes, the scheduler erases the request and later
+ * llw_request_cancel calls for that handle deterministically return LLW_ERR_NOT_FOUND.
+ * DONE JSON uses `reason:"stop"` for EOS/configured-stop completion and `reason:"length"` when the
+ * effective per-slot generation budget is exhausted; per-slot length completion is not an ERROR.
+ * The caller must externally exclude llw_runtime_destroy from every other llw_* call and callback;
+ * no thread may retain or use the raw llw_runtime_t pointer once destruction begins. Load, unload,
+ * submit, and cancel are internally serialized while the runtime remains alive. Under this precondition,
+ * model-progress callbacks finish before unload/destroy returns and cannot outlive the runtime.
+ */
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_get_option_schema(
+    llw_runtime_t* runtime, llw_buffer_t* out_json, llw_error_t* out_error);
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
+    llw_runtime_t* runtime, const llw_model_load_params_t* params,
+    llw_handle_t* out_model, llw_error_t* out_error);
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_unload(
+    llw_runtime_t* runtime, llw_handle_t model, llw_error_t* out_error);
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_request_submit(
+    llw_runtime_t* runtime, const llw_request_params_t* params,
+    llw_handle_t* out_request, llw_error_t* out_error);
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_request_cancel(
+    llw_runtime_t* runtime, llw_handle_t request, llw_error_t* out_error);
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_scheduler_snapshot(
+    llw_runtime_t* runtime, llw_scheduler_snapshot_t* out_snapshot,
+    llw_error_t* out_error);
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_metrics(
+    llw_runtime_t* runtime, llw_metrics_t* out_metrics, llw_error_t* out_error);
 
 #endif

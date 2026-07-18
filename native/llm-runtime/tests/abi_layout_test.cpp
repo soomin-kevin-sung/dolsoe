@@ -25,7 +25,7 @@
 int main() {
     static_assert(sizeof(void*) == 8);
     static_assert(LLW_ABI_MAJOR == 1u);
-    static_assert(LLW_ABI_MINOR == 0u);
+    static_assert(LLW_ABI_MINOR == 1u);
     static_assert(sizeof(llw_handle_t) == sizeof(std::uint64_t));
     static_assert(sizeof(llw_result_t) == sizeof(std::int32_t));
 
@@ -107,11 +107,48 @@ int main() {
     LLW_ASSERT_FIELD(llw_callback_table_t, user_data, void*, 16u);
     LLW_ASSERT_FIELD(llw_callback_table_t, reserved, std::uint64_t[8], 24u);
 
-    LLW_ASSERT_LAYOUT(llw_runtime_create_params_t, 160u);
+    LLW_ASSERT_LAYOUT(llw_runtime_create_params_t, 312u);
     LLW_ASSERT_FIELD(llw_runtime_create_params_t, struct_size, std::uint32_t, 0u);
     LLW_ASSERT_FIELD(llw_runtime_create_params_t, flags, std::uint32_t, 4u);
     LLW_ASSERT_FIELD(llw_runtime_create_params_t, callbacks, llw_callback_table_t, 8u);
     LLW_ASSERT_FIELD(llw_runtime_create_params_t, reserved, std::uint64_t[8], 96u);
+    static_assert(sizeof(llw_bytes_t) == 88u);
+    static_assert(sizeof(llw_buffer_t) == 96u);
+    static_assert(sizeof(llw_scheduler_config_t) == 88u);
+    static_assert(sizeof(llw_model_load_params_t) == 168u);
+    static_assert(sizeof(llw_request_params_t) == 192u);
+    static_assert(sizeof(llw_scheduler_snapshot_t) == 104u);
+    static_assert(sizeof(llw_metrics_t) == 128u);
+    static_assert(offsetof(llw_runtime_create_params_t, scheduler) == 160u);
+    static_assert(sizeof(llw_runtime_create_params_t) == 312u);
+    LLW_ASSERT_FIELD(llw_bytes_t, data, const std::uint8_t*, 8u);
+    LLW_ASSERT_FIELD(llw_bytes_t, len, std::uint64_t, 16u);
+    LLW_ASSERT_FIELD(llw_bytes_t, reserved, std::uint64_t[8], 24u);
+    LLW_ASSERT_FIELD(llw_buffer_t, data, std::uint8_t*, 8u);
+    LLW_ASSERT_FIELD(llw_buffer_t, capacity, std::uint64_t, 16u);
+    LLW_ASSERT_FIELD(llw_buffer_t, len, std::uint64_t, 24u);
+    LLW_ASSERT_FIELD(llw_scheduler_config_t, slot_count, std::uint32_t, 8u);
+    LLW_ASSERT_FIELD(llw_scheduler_config_t, request_queue_capacity, std::uint32_t, 12u);
+    LLW_ASSERT_FIELD(llw_scheduler_config_t, event_queue_capacity, std::uint32_t, 16u);
+    LLW_ASSERT_FIELD(llw_scheduler_config_t, reserved, std::uint64_t[8], 24u);
+    LLW_ASSERT_FIELD(llw_model_load_params_t, path_utf8, const std::uint8_t*, 8u);
+    LLW_ASSERT_FIELD(llw_model_load_params_t, path_len, std::uint64_t, 16u);
+    LLW_ASSERT_FIELD(llw_model_load_params_t, backend, std::int32_t, 24u);
+    LLW_ASSERT_FIELD(llw_model_load_params_t, context_tokens_per_slot, std::uint32_t, 32u);
+    LLW_ASSERT_FIELD(llw_model_load_params_t, n_gpu_layers, std::int32_t, 52u);
+    LLW_ASSERT_FIELD(llw_model_load_params_t, reserved, std::uint64_t[12], 72u);
+    LLW_ASSERT_FIELD(llw_request_params_t, model_handle, llw_handle_t, 8u);
+    LLW_ASSERT_FIELD(llw_request_params_t, prompt, const std::uint8_t*, 16u);
+    LLW_ASSERT_FIELD(llw_request_params_t, max_new_tokens, std::uint32_t, 32u);
+    LLW_ASSERT_FIELD(llw_request_params_t, temperature, float, 40u);
+    LLW_ASSERT_FIELD(llw_request_params_t, stop_sequences, const llw_bytes_t*, 80u);
+    LLW_ASSERT_FIELD(llw_request_params_t, request_user_data, void*, 88u);
+    LLW_ASSERT_FIELD(llw_request_params_t, reserved, std::uint64_t[12], 96u);
+    LLW_ASSERT_FIELD(llw_scheduler_snapshot_t, accepted_requests, std::uint64_t, 24u);
+    LLW_ASSERT_FIELD(llw_scheduler_snapshot_t, reserved, std::uint64_t[8], 40u);
+    LLW_ASSERT_FIELD(llw_metrics_t, prompt_tokens, std::uint64_t, 8u);
+    LLW_ASSERT_FIELD(llw_metrics_t, decode_ns, std::uint64_t, 56u);
+    LLW_ASSERT_FIELD(llw_metrics_t, reserved, std::uint64_t[8], 64u);
 
     llw_abi_info_t info{};
     info.struct_size = sizeof(info);
@@ -169,7 +206,7 @@ int main() {
     CHECK(runtime == nullptr);
 
     llw_runtime_create_params_t undersized_create{};
-    undersized_create.struct_size = sizeof(undersized_create) - 1u;
+    undersized_create.struct_size = offsetof(llw_runtime_create_params_t, scheduler) - 1u;
     runtime = reinterpret_cast<llw_runtime_t*>(std::uintptr_t{1u});
     reset_error();
     CHECK(llw_runtime_create(&undersized_create, &runtime, &error) == LLW_ERR_INVALID_ARGUMENT);
@@ -252,6 +289,16 @@ int main() {
     CHECK(std::strcmp(storage[0].id, "cpu:0") == 0);
 
     llw_runtime_destroy(runtime);
+
+    llw_runtime_create_params_t legacy_create{};
+    legacy_create.struct_size = offsetof(llw_runtime_create_params_t, scheduler);
+    legacy_create.callbacks.struct_size = sizeof(llw_callback_table_t);
+    llw_runtime_t* legacy_runtime = nullptr;
+    reset_error();
+    CHECK(llw_runtime_create(&legacy_create, &legacy_runtime, &error) == LLW_OK);
+    CHECK(legacy_runtime != nullptr);
+    llw_runtime_destroy(legacy_runtime);
+
     llw_runtime_destroy(nullptr);
     return 0;
 }

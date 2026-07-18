@@ -1,6 +1,7 @@
 #include "llw_runtime.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstring>
 #include <new>
 
@@ -67,7 +68,9 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_create(
     if (out_runtime) {
         *out_runtime = nullptr;
     }
-    if (!params || !out_runtime || params->struct_size < sizeof(llw_runtime_create_params_t)) {
+    constexpr size_t LLW_RUNTIME_CREATE_V1_0_SIZE =
+        offsetof(llw_runtime_create_params_t, scheduler);
+    if (!params || !out_runtime || params->struct_size < LLW_RUNTIME_CREATE_V1_0_SIZE) {
         return fail(out_error, LLW_ERR_INVALID_ARGUMENT, "invalid runtime create parameters");
     }
     auto* runtime = new (std::nothrow) llw_runtime_t{};
