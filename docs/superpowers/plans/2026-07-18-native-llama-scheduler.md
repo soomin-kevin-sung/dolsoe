@@ -26,7 +26,7 @@ Expected output:
 6bdd77f13cf11b264b4231d320afc404f48d576e refs/heads/master
 ```
 
-The exact detached commit was inspected in the official repository: [`include/llama.h`](https://github.com/ggml-org/llama.cpp/blob/6bdd77f13cf11b264b4231d320afc404f48d576e/include/llama.h), [`ggml/include/ggml-backend.h`](https://github.com/ggml-org/llama.cpp/blob/6bdd77f13cf11b264b4231d320afc404f48d576e/ggml/include/ggml-backend.h), [`ggml/CMakeLists.txt`](https://github.com/ggml-org/llama.cpp/blob/6bdd77f13cf11b264b4231d320afc404f48d576e/ggml/CMakeLists.txt), and the [commit record](https://github.com/ggml-org/llama.cpp/commit/6bdd77f13cf11b264b4231d320afc404f48d576e). `include/llama.h` contains `llama_model_params.devices`, `llama_context_params.n_ctx`, `n_batch`, `n_ubatch`, `n_seq_max`, `n_threads`, and `n_threads_batch`; `llama_batch_init`, `llama_decode`, `llama_get_memory`, `llama_memory_seq_rm`, `llama_model_load_from_file`, `llama_init_from_model`, `llama_tokenize`, `llama_token_to_piece`, `llama_sampler_chain_init`, `llama_sampler_chain_add`, `llama_sampler_init_*`, `llama_sampler_sample`, `llama_sampler_accept`, and `llama_sampler_free` are present. `ggml/include/ggml-backend.h` contains `ggml_backend_load_all_from_path`, `ggml_backend_dev_count`, `ggml_backend_dev_get`, `ggml_backend_dev_name`, `ggml_backend_dev_description`, `ggml_backend_dev_memory`, and `ggml_backend_dev_type`. The pinned `ggml/CMakeLists.txt` defines `GGML_CPU`, `GGML_CUDA`, `GGML_VULKAN`, `GGML_BACKEND_DL`, and `GGML_NATIVE`; the root defines `BUILD_SHARED_LIBS`, `LLAMA_BUILD_TESTS`, `LLAMA_BUILD_EXAMPLES`, and `LLAMA_BUILD_SERVER`.
+The exact detached commit was inspected in the official repository: [`include/llama.h`](https://github.com/ggml-org/llama.cpp/blob/6bdd77f13cf11b264b4231d320afc404f48d576e/include/llama.h), [`ggml/include/ggml-backend.h`](https://github.com/ggml-org/llama.cpp/blob/6bdd77f13cf11b264b4231d320afc404f48d576e/ggml/include/ggml-backend.h), [`ggml/CMakeLists.txt`](https://github.com/ggml-org/llama.cpp/blob/6bdd77f13cf11b264b4231d320afc404f48d576e/ggml/CMakeLists.txt), and the [commit record](https://github.com/ggml-org/llama.cpp/commit/6bdd77f13cf11b264b4231d320afc404f48d576e). `include/llama.h` contains `llama_model_params.devices`, `llama_context_params.n_ctx`, `n_batch`, `n_ubatch`, `n_seq_max`, `n_threads`, and `n_threads_batch`; `llama_batch_init`, `llama_decode`, `llama_get_memory`, `llama_memory_seq_rm`, `llama_model_load_from_file`, `llama_init_from_model`, `llama_tokenize`, `llama_token_to_piece`, `llama_sampler_chain_init`, `llama_sampler_chain_add`, `llama_sampler_init_*`, `llama_sampler_sample`, `llama_sampler_accept`, and `llama_sampler_free` are present. The pinned header defines `llama_sampler_sample` as sample-and-accept shorthand, so prompt tokens use explicit `llama_sampler_accept` once during sequence setup while generated tokens use only `llama_sampler_sample`. `ggml/include/ggml-backend.h` contains `ggml_backend_load_all_from_path`, `ggml_backend_dev_count`, `ggml_backend_dev_get`, `ggml_backend_dev_name`, `ggml_backend_dev_description`, `ggml_backend_dev_memory`, and `ggml_backend_dev_type`. The pinned `ggml/CMakeLists.txt` defines `GGML_CPU`, `GGML_CUDA`, `GGML_VULKAN`, `GGML_BACKEND_DL`, and `GGML_NATIVE`; the root defines `BUILD_SHARED_LIBS`, `LLAMA_BUILD_TESTS`, `LLAMA_BUILD_EXAMPLES`, and `LLAMA_BUILD_SERVER`.
 
 Do not update this pin while executing the plan. A pin update is a separate reviewed change that repeats header, build-option, license, CPU, CUDA, and Vulkan verification.
 
@@ -856,6 +856,7 @@ public:
     void flush();
 #ifdef LLW_RUNTIME_TESTING
     void flush_for_test(std::function<void()> barrier_enqueued);
+    void fail_next_publish_of_type_for_test(int32_t event_type);
 #endif
     void stop();
     void drain_for_test();
@@ -876,6 +877,9 @@ private:
     bool stopping_{};
     size_t in_callback_{};
     std::thread::id callback_thread_{};
+#ifdef LLW_RUNTIME_TESTING
+    int32_t fail_next_type_{};
+#endif
     std::thread thread_;
 };
 ```
@@ -909,6 +913,12 @@ EventDispatcher::~EventDispatcher() { stop(); }
 
 bool EventDispatcher::publish(OwnedEvent event) {
     std::unique_lock lock(mutex_);
+#ifdef LLW_RUNTIME_TESTING
+    if (fail_next_type_ == event.type) {
+        fail_next_type_ = 0;
+        return false;
+    }
+#endif
     writable_.wait(lock, [this] { return stopping_ || queue_.size() < capacity_; });
     if (stopping_) return false;
     queue_.push_back(DispatchItem{std::move(event), {}});
@@ -921,6 +931,11 @@ void EventDispatcher::flush() { flush_impl({}); }
 #ifdef LLW_RUNTIME_TESTING
 void EventDispatcher::flush_for_test(std::function<void()> barrier_enqueued) {
     flush_impl(std::move(barrier_enqueued));
+}
+
+void EventDispatcher::fail_next_publish_of_type_for_test(int32_t event_type) {
+    std::lock_guard lock(mutex_);
+    fail_next_type_ = event_type;
 }
 #endif
 
@@ -1297,6 +1312,7 @@ void deterministic_metrics_test() {
     Collector collector;
     EventDispatcher dispatcher(callbacks(collector), 64);
     FakeEngine engine;
+    engine.set_empty_token_bytes(true);
     std::atomic<uint64_t> ticks{0};
     Scheduler scheduler(1, 2, engine, dispatcher, [&ticks] {
         return Scheduler::TimePoint(std::chrono::nanoseconds(ticks.fetch_add(10)));
@@ -1309,9 +1325,16 @@ void deterministic_metrics_test() {
     engine.wait_for_started(1);
     engine.release();
     wait_for_terminals(collector, 1);
+    dispatcher.drain_for_test();
     const llw_metrics_t metrics = scheduler.metrics();
-    if (metrics.prompt_tokens != prompt.size() || metrics.queue_wait_ns != 10)
-        throw std::runtime_error("prompt-token or queue-wait metrics are not deterministic");
+    if (metrics.prompt_tokens != prompt.size() || metrics.generated_tokens != 3 ||
+        metrics.queue_wait_ns != 10)
+        throw std::runtime_error("sample, prompt, or queue-wait metrics are not deterministic");
+    std::lock_guard lock(collector.mutex);
+    if (std::count_if(collector.events.begin(), collector.events.end(), [handle](const SeenEvent& event) {
+            return event.request == handle && event.type == LLW_EVENT_TOKEN;
+        }) != 0)
+        throw std::runtime_error("empty sampled pieces emitted token events");
 }
 
 int main() {
@@ -1360,8 +1383,8 @@ struct EngineRequest {
     uint32_t max_new_tokens{}; SamplingConfig sampling; std::vector<std::vector<uint8_t>> stops;
 };
 struct EngineStep {
-    llw_handle_t handle{}; std::vector<uint8_t> token_bytes; bool finished{}; bool failed{};
-    std::string error; std::string finish_reason;
+    llw_handle_t handle{}; std::vector<uint8_t> token_bytes; uint32_t sampled_tokens{};
+    bool finished{}; bool failed{}; std::string error; std::string finish_reason;
 };
 class InferenceEngine {
 public:
@@ -1785,13 +1808,13 @@ void Scheduler::run() {
             auto found = requests_.find(step.handle);
             if (found == requests_.end() || found->second.terminal_emitted) continue;
             Request& request = found->second;
+            request.generated_tokens += step.sampled_tokens;
+            metrics_.generated_tokens += step.sampled_tokens;
             if (request.cancel_requested) {
                 finish_locked(request.handle, RequestState::Cancelled, 0, "");
                 continue;
             }
             if (!step.token_bytes.empty()) {
-                ++request.generated_tokens;
-                ++metrics_.generated_tokens;
                 publish_locked(request, LLW_EVENT_TOKEN, request.slot_id, 0,
                                std::move(step.token_bytes), LLW_EVENT_DATA_BYTES);
             }
@@ -1861,7 +1884,9 @@ public:
             ++stored.steps;
             EngineStep step;
             step.handle = handle;
-            step.token_bytes = {static_cast<uint8_t>('A' + stored.request.seq_id)};
+            step.sampled_tokens = 1;
+            if (!empty_token_bytes_)
+                step.token_bytes = {static_cast<uint8_t>('A' + stored.request.seq_id)};
             step.finished = stored.steps == 3;
             result.push_back(std::move(step));
         }
@@ -1882,6 +1907,11 @@ public:
     void set_decode_failure(bool value) {
         std::lock_guard lock(mutex_);
         decode_failure_ = value;
+    }
+
+    void set_empty_token_bytes(bool value) {
+        std::lock_guard lock(mutex_);
+        empty_token_bytes_ = value;
     }
 
     void reject_prompt(std::vector<uint8_t> prompt) {
@@ -1937,6 +1967,7 @@ private:
     std::vector<std::string> operation_log_;
     bool released_{};
     bool decode_failure_{};
+    bool empty_token_bytes_{};
     std::vector<uint8_t> rejected_prompt_;
 };
 ```
@@ -1948,7 +1979,9 @@ cmake --build .cmake-build/llm-cpu --config Debug --target llw_scheduler_test
 1..20 | ForEach-Object { ctest --test-dir .cmake-build/llm-cpu -C Debug -R llw_scheduler_test --output-on-failure }
 ```
 
-Expected: all 20 runs pass; the two-request test proves at least one fake `decode` call contains both handles, queue-full is deterministic, active and queued cancellation pass, and terminal counts equal accepted counts.
+Expected: all 20 runs pass; the two-request test proves at least one fake `decode` call contains both
+handles, queue-full is deterministic, active and queued cancellation pass, terminal counts equal
+accepted counts, and three sampled tokens are metered even when the fake engine emits zero token bytes.
 
 - [ ] **Step 7: Commit the scheduler core**
 
@@ -2126,8 +2159,6 @@ size_t safe_output_prefix(
     const std::vector<uint8_t>& output, const std::vector<std::vector<uint8_t>>& stops);
 void accept_history_tokens(const std::vector<llama_token>& tokens,
                            const std::function<void(llama_token)>& accept);
-void accept_history_token(llama_token token,
-                          const std::function<void(llama_token)>& accept);
 
 class LlamaEngine final : public InferenceEngine {
 public:
@@ -2443,11 +2474,6 @@ void accept_history_tokens(const std::vector<llama_token>& tokens,
     for (const llama_token token : tokens) accept(token);
 }
 
-void accept_history_token(llama_token token,
-                          const std::function<void(llama_token)>& accept) {
-    accept(token);
-}
-
 LlamaEngine::LlamaEngine(ModelConfig config, std::function<void(float)> progress)
     : config_(std::move(config)) {
     std::string error;
@@ -2588,7 +2614,7 @@ std::vector<EngineStep> LlamaEngine::decode(const std::vector<llw_handle_t>& act
     if (decode_result != 0) {
         std::vector<EngineStep> failed;
         for (const llw_handle_t handle : active)
-            failed.push_back(EngineStep{handle, {}, false, true,
+            failed.push_back(EngineStep{handle, {}, 0, false, true,
                 "llama_decode returned " + std::to_string(decode_result)});
         return failed;
     }
@@ -2596,14 +2622,13 @@ std::vector<EngineStep> LlamaEngine::decode(const std::vector<llw_handle_t>& act
     std::vector<EngineStep> result;
     for (const LogitOwner& owner : logit_owners) {
         Sequence& sequence = *sequences_.at(owner.handle);
+        // At the pinned commit llama_sampler_sample samples and accepts exactly once.
         const llama_token token = llama_sampler_sample(sequence.sampler, context_,
                                                        owner.batch_index);
-        accept_history_token(token, [sampler = sequence.sampler](llama_token accepted) {
-            llama_sampler_accept(sampler, accepted);
-        });
         ++sequence.generated;
         EngineStep step;
         step.handle = owner.handle;
+        step.sampled_tokens = 1;
         bool done = llama_vocab_is_eog(vocab_, token) ||
                     sequence.generated >= sequence.effective_generation_budget;
         step.finish_reason = llama_vocab_is_eog(vocab_, token) ? "stop" :
@@ -2822,8 +2847,7 @@ int main() {
     CHECK(effective_generation_budget(512, 1, 512) == 0);
     std::vector<llama_token> accepted;
     accept_history_tokens(first_tokens, [&accepted](llama_token token) { accepted.push_back(token); });
-    accept_history_token(31, [&accepted](llama_token token) { accepted.push_back(token); });
-    CHECK(accepted == std::vector<llama_token>({10, 11, 12, 31}));
+    CHECK(accepted == first_tokens);
 
     const std::vector<std::vector<uint8_t>> stops = {
         {'a', 'b'}, {'a', 'b', 'c'}, {'b', 'c'}, {'a', 'b', 'c'},
@@ -2845,9 +2869,14 @@ int main() {
 ```powershell
 cmake --build .cmake-build/llm-cpu --config Debug --target llw_llama_engine_test llw_scheduler_test
 ctest --test-dir .cmake-build/llm-cpu -C Debug -R "llw_(llama_engine|scheduler)_test" --output-on-failure
+$accepts = @(rg -n "llama_sampler_accept" native/llm-runtime/src/llama_engine.cpp)
+if ($accepts.Count -ne 1) { throw "expected one prompt-history llama_sampler_accept call, found $($accepts.Count)" }
+rg -n "llama_sampler_sample|llama_sampler_accept" native/llm-runtime/src/llama_engine.cpp
 ```
 
-Expected: batch-plan fairness/capacity/logits/sequence assertions and fake scheduler cancellation/concurrency tests pass.
+Expected: batch-plan fairness/capacity/logits/sequence assertions and fake scheduler
+cancellation/concurrency tests pass. The audit prints one `llama_sampler_accept` in prompt setup and
+one `llama_sampler_sample` in decode; generated tokens have no second explicit accept.
 
 - [ ] **Step 3: Commit shared decode verification**
 
@@ -3327,6 +3356,12 @@ LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestSetFlushEnqueuedHook(
     runtime->flush_enqueued_hook = hook;
     runtime->flush_enqueued_user_data = user_data;
 }
+
+LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestFailNextPublishOfType(
+    llw_runtime_t* runtime, int32_t event_type) {
+    if (!runtime) return;
+    runtime->dispatcher->fail_next_publish_of_type_for_test(event_type);
+}
 #endif
 
 LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_get_capabilities(
@@ -3437,15 +3472,15 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
         scheduler = std::make_unique<Scheduler>(runtime->config.slot_count,
             runtime->config.request_queue_capacity, *engine, *runtime->dispatcher);
         lock.lock();
+        publish_runtime_event(*runtime, LLW_EVENT_LOG, LLW_EVENT_DATA_UTF8, handle,
+                              "model loaded on backend " + std::to_string(config.backend) +
+                                  " device " + std::to_string(config.device_index));
         runtime->engine = std::move(engine);
         runtime->scheduler = std::move(scheduler);
         runtime->model_handle = handle;
         runtime->model_loading = false;
         loading_reset.release();
         *out_model = handle;
-        publish_runtime_event(*runtime, LLW_EVENT_LOG, LLW_EVENT_DATA_UTF8, handle,
-                              "model loaded on backend " + std::to_string(config.backend) +
-                                  " device " + std::to_string(config.device_index));
         return LLW_OK;
     });
 }
@@ -3546,6 +3581,13 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_metrics(
     });
 }
 ```
+
+Model load is transactional. Engine and scheduler construction, mutex reacquisition, and the
+fallible loaded-log publication all occur while `ModelLoadingReset` is active and before runtime
+ownership or `out_model` changes. After publication succeeds, the remaining unique-pointer moves,
+scalar assignments, guard release, and output-handle assignment are non-throwing. Any earlier error
+therefore destroys local engine/scheduler state, resets `model_loading`, leaves no installed model,
+and preserves the entry-time zero written to `out_model`.
 
 The following schema key reference uses `CPU|CUDA|VULKAN` only as compact documentation notation for the three concrete strings emitted by the complete `option_schema()` code above; it is not copied into source:
 
@@ -4668,6 +4710,8 @@ Create `native/llm-runtime/tests/runtime_backend_test.cpp`:
 #ifdef LLW_RUNTIME_TESTING
 LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestSetFlushEnqueuedHook(
     llw_runtime_t* runtime, void (LLW_CALL *hook)(void*), void* user_data);
+LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestFailNextPublishOfType(
+    llw_runtime_t* runtime, int32_t event_type);
 #endif
 
 struct RequestResult { std::vector<uint8_t> bytes; uint32_t terminals{}; bool error{}; };
@@ -4838,6 +4882,14 @@ int main(int argc, char** argv) {
     CHECK(llw_model_unload(runtime, model, &error) == LLW_OK);
 
 #ifdef LLW_RUNTIME_TESTING
+    LLWTestFailNextPublishOfType(runtime, LLW_EVENT_LOG);
+    llw_handle_t failed_model{99};
+    CHECK(llw_model_load(runtime, &model_params, &failed_model, &error) == LLW_ERR_INTERNAL);
+    CHECK(failed_model == 0);
+    llw_scheduler_snapshot_t failed_snapshot{};
+    failed_snapshot.struct_size = sizeof(failed_snapshot);
+    CHECK(llw_get_scheduler_snapshot(runtime, &failed_snapshot, &error) == LLW_ERR_INVALID_STATE);
+    CHECK(llw_model_unload(runtime, model, &error) == LLW_ERR_NOT_FOUND);
     {
         std::lock_guard lock(events.mutex);
         events.block_callbacks = true;
@@ -4933,9 +4985,11 @@ int main(int argc, char** argv) {
 The Debug lifecycle section deliberately blocks a model-progress callback and uses the
 `LLWTestSetFlushEnqueuedHook` test-only, non-`llw_` export to observe the exact instant unload inserts
 its dispatcher barrier. Only after that handshake does it assert unload is blocked, release the
-callback, and require unload plus all three request terminals to complete. Release packs omit this
-test hook and retain exactly the fourteen production `llw_` exports. No callback can remain in flight
-when `llw_model_unload` returns.
+callback, and require unload plus all three request terminals to complete. Release packs omit these
+test hooks and retain exactly the fourteen production `llw_` exports. No callback can remain in flight
+when `llw_model_unload` returns. The adjacent Debug failure injection rejects the pre-commit loaded
+log, then requires a zero output handle, no scheduler/model, and a successful immediate retry through
+the lifecycle model load.
 
 Add the target and checksum-fixture registration:
 
@@ -4957,16 +5011,16 @@ Create `crates/llm-runtime/tests/native_runtime.rs` with the complete Rust-to-DL
 
 ```rust
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use llm_runtime::{
     Backend, EventKind, GenerationOptions, InferenceRuntime, ModelOptions, RuntimeOptions,
 };
 
 fn required_path(name: &str) -> PathBuf {
-    std::env::var_os(name).map(PathBuf::from).unwrap_or_else(|| {
-        panic!("{name} must be set by the explicit model-backed test command")
-    })
+    std::env::var_os(name)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| panic!("{name} must be set by the explicit model-backed test command"))
 }
 
 #[test]
@@ -4986,19 +5040,26 @@ fn dropping_a_queued_request_cancels_it_once() {
             ModelOptions {
                 backend: Backend::Cpu,
                 context_tokens_per_slot: 512,
-                logical_batch_tokens: 128,
-                physical_batch_tokens: 64,
+                logical_batch_tokens: 1,
+                physical_batch_tokens: 1,
+                n_threads: 1,
+                n_threads_batch: 1,
                 n_gpu_layers: 0,
                 ..ModelOptions::default()
             },
         )
         .expect("load tiny model");
+    // Invalid UTF-8 bytes take the tokenizer's byte-fallback path and cannot merge,
+    // so 480 bytes plus BOS require 481 prompt-token decode ticks at batch size one.
+    let blocker_prompt = vec![0xff; 480];
     let long = GenerationOptions {
-        max_new_tokens: 1024,
+        max_new_tokens: 128,
         seed: 11,
         ..GenerationOptions::default()
     };
-    let blocker = model.submit(b"Once", long).expect("submit active request");
+    let blocker = model
+        .submit(&blocker_prompt, long)
+        .expect("submit active request");
     let queued = model
         .submit(
             b"The",
@@ -5011,20 +5072,47 @@ fn dropping_a_queued_request_cancels_it_once() {
         .expect("submit queued request");
     let queued_handle = queued.handle();
     let queued_terminal = queued.terminal_receiver();
+
+    let state_deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let snapshot = runtime.scheduler_snapshot().expect("scheduler snapshot");
+        if snapshot.active_count == 1 && snapshot.queued_count == 1 {
+            break;
+        }
+        assert!(
+            Instant::now() < state_deadline,
+            "blocker never became active with the second request queued: active={}, queued={}",
+            snapshot.active_count,
+            snapshot.queued_count
+        );
+        std::thread::yield_now();
+    }
     drop(queued);
     let event = queued_terminal
         .recv_timeout(Duration::from_secs(30))
         .expect("queued terminal before timeout");
     assert_eq!(event.request_handle, queued_handle);
     assert_eq!(event.kind, EventKind::Cancelled);
-    assert!(queued_terminal.recv_timeout(Duration::from_millis(250)).is_err());
+    assert!(queued_terminal
+        .recv_timeout(Duration::from_millis(250))
+        .is_err());
     blocker.cancel().expect("cancel active request");
     let blocker_event = blocker
         .recv_terminal_timeout(Duration::from_secs(30))
         .expect("active cancellation terminal before timeout");
-    assert!(matches!(blocker_event.kind, EventKind::Cancelled | EventKind::Done));
+    assert!(matches!(
+        blocker_event.kind,
+        EventKind::Cancelled | EventKind::Done
+    ));
 }
 ```
+
+The 480 invalid UTF-8 bytes each take llama.cpp's byte-fallback path and cannot merge; with BOS they
+consume 481 of the 512 per-slot tokens. A one-token logical/physical batch therefore requires 481
+prompt decode ticks before the first sampled token can be EOS. The second submit occurs immediately
+after the blocker submit, and the bounded snapshot poll must then observe `active_count == 1` and
+`queued_count == 1` before the queued stream is dropped. Failure to establish that exact state fails
+the test instead of silently weakening the cancellation assertion.
 
 - [ ] **Step 4: Acquire and run the required CPU E2E**
 
@@ -5379,10 +5467,12 @@ Map evidence to: one loaded model; opaque nonzero numeric handles; explicit boun
 params; copied caller buffers; generic event encodings/lifetimes/thread rules; bounded native and Rust
 event queues; atomic bounded request registry; configured 1-4 slots; per-slot context budgets; one
 shared batch decode call per tick; exact logits indices; independent sequence IDs/KV/samplers;
-prompt and generated penalty history; deterministic stop matching; queued and active cancellation;
+prompt history accepted exactly once and generated samples auto-accepted exactly once by the pinned
+sampler API; sampled-token metrics independent of emitted bytes; deterministic stop matching;
+queued and active cancellation with snapshot-proven queued Drop;
 deduplicated bounded cancellation registry with a lossless capacity-one wake token; exactly one
 terminal event; terminal request erasure and pending-cancel removal; deterministic dispatcher flush
-handshakes; lifecycle exception/race handling; isolated
+handshakes; transactional model-load publication/rollback; lifecycle exception/race handling; isolated
 oversized peer behavior; required checksum-pinned CPU E2E; hardware-gated CUDA/Vulkan.
 
 - [ ] **Step 3: Audit scope and security**
