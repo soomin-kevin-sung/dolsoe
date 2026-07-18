@@ -1,19 +1,22 @@
 use llm_runtime::{Backend, RuntimeLibrary};
 
 #[test]
-fn probes_fake_runtime() {
+fn probes_native_runtime_contract() {
     let path = std::env::var_os("LLW_TEST_RUNTIME")
         .map(std::path::PathBuf::from)
-        .expect("LLW_TEST_RUNTIME must point to the fake DLL");
-    // SAFETY: The test DLL is built from this repository's conforming fake LLW runtime.
-    let runtime = unsafe { RuntimeLibrary::load(&path) }.expect("load fake runtime");
+        .expect("LLW_TEST_RUNTIME must point to the staged native runtime DLL");
+    // SAFETY: CI stages this repository's conforming native runtime pack before this test.
+    let runtime = unsafe { RuntimeLibrary::load(&path) }.expect("load native runtime");
     let info = runtime.info();
     assert_eq!(info.abi_major, 1);
-    assert_eq!(info.runtime_version, "0.1.0-fake");
-    assert_eq!(info.llama_cpp_commit, "not-linked");
+    assert_eq!(info.runtime_version, "0.2.0");
+    assert_eq!(
+        info.llama_cpp_commit,
+        "6bdd77f13cf11b264b4231d320afc404f48d576e"
+    );
     assert!(info.capabilities.supports_cpu);
     assert_eq!(info.capabilities.max_parallel_slots, 4);
     let devices = runtime.devices(Backend::Cpu).expect("list CPU devices");
     assert_eq!(devices.len(), 1);
-    assert_eq!(devices[0].id, "cpu:0");
+    assert!(!devices[0].id.is_empty());
 }
