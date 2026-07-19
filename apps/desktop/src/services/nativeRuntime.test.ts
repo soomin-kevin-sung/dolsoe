@@ -29,6 +29,8 @@ describe("NativeRuntimeService", () => {
     const service = new NativeRuntimeService(fake.value);
     const load = {
       runtimePackId: "cpu-dev",
+      backend: "cpu" as const,
+      deviceIndex: 0,
       modelPath: "D:\\models\\tiny.gguf",
       contextSize: 4096,
       batchSize: 512,

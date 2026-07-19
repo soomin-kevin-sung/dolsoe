@@ -73,6 +73,8 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     setState((current) => nativeReducer(current, { type: "load-started", modelPath }));
     const request: LoadModelRequest = {
       runtimePackId: "cpu-dev",
+      backend: "cpu",
+      deviceIndex: 0,
       modelPath,
       contextSize: options.contextSize,
       batchSize: options.batchSize,

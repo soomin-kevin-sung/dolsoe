@@ -18,6 +18,8 @@ export interface LlmStatusDto {
 
 export interface LoadModelRequest {
   runtimePackId: string;
+  backend: "cpu" | "cuda" | "vulkan";
+  deviceIndex: number;
   modelPath: string;
   contextSize: number;
   batchSize: number;
