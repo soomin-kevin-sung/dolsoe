@@ -126,6 +126,17 @@ export function useConversationWorkspace() {
     await terminal;
   }, [runtime]);
 
+  const applyPendingRuntime = useCallback(async () => {
+    const active = stateRef.current.activeTurn;
+    if (active) await cancelSource(active.conversationId);
+    await runtime.applyPendingRuntime();
+  }, [cancelSource, runtime]);
+
+  const workspaceRuntime = useMemo(
+    () => ({ ...runtime, applyPendingRuntime }),
+    [applyPendingRuntime, runtime],
+  );
+
   const clear = useCallback(async (conversationId: string) => {
     try {
       await cancelSource(conversationId);
@@ -180,14 +191,14 @@ export function useConversationWorkspace() {
     state,
     current,
     visibleConversations,
-    runtime,
+    runtime: workspaceRuntime,
     create,
     select,
     rename,
     clear,
     remove,
     submit,
-    stop: runtime.stop,
+    stop: workspaceRuntime.stop,
     setSearch,
   };
 }

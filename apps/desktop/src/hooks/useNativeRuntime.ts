@@ -2,6 +2,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { NativeRuntimeService, type LlmEventDto, type LoadModelRequest, type SubmitRequest } from "../services/nativeRuntime";
 import { applyNativeEvent, createNativeState, nativeReducer, TokenDecoders } from "../services/nativeState";
+import {
+  RuntimePackService,
+  applyRuntimeSelection,
+  readRuntimePreference,
+  resolveRuntimeSelection,
+  writeRuntimePreference,
+  type RuntimeBackend,
+  type RuntimePack,
+  type RuntimeSelection,
+} from "../services/runtimePacks";
 
 export interface NativeOptions {
   contextSize: number;
@@ -31,11 +41,16 @@ function errorText(error: unknown): string {
 
 export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
   const service = useMemo(() => new NativeRuntimeService(), []);
+  const runtimePackService = useMemo(() => new RuntimePackService(), []);
   const decoders = useRef(new TokenDecoders());
   const cancelWhenAccepted = useRef(false);
   const eventObserver = useRef(onEvent);
   const [state, setState] = useState(createNativeState);
   const [options, setOptions] = useState(defaultNativeOptions);
+  const [runtimePacks, setRuntimePacks] = useState<RuntimePack[]>([]);
+  const [runtimePackError, setRuntimePackError] = useState<string | null>(null);
+  const [appliedRuntime, setAppliedRuntime] = useState<RuntimeSelection | null>(null);
+  const [pendingRuntime, setPendingRuntime] = useState<RuntimeSelection | null>(null);
 
   useEffect(() => {
     eventObserver.current = onEvent;
@@ -69,12 +84,33 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     };
   }, [service]);
 
-  const loadPath = useCallback(async (modelPath: string) => {
+  useEffect(() => {
+    let disposed = false;
+    void runtimePackService.list()
+      .then((inventory) => {
+        if (disposed) return;
+        const selection = resolveRuntimeSelection(inventory, readRuntimePreference(window.localStorage));
+        setRuntimePacks(inventory.packs);
+        setAppliedRuntime(selection);
+        setPendingRuntime(selection);
+        setRuntimePackError(null);
+      })
+      .catch((error) => {
+        if (!disposed) setRuntimePackError(errorText(error));
+      });
+    return () => { disposed = true; };
+  }, [runtimePackService]);
+
+  const loadPath = useCallback(async (modelPath: string, selection = appliedRuntime) => {
     setState((current) => nativeReducer(current, { type: "load-started", modelPath }));
+    if (!selection) {
+      setState((current) => nativeReducer(current, { type: "load-failed", error: "사용 가능한 런타임 팩이 없습니다." }));
+      return;
+    }
     const request: LoadModelRequest = {
-      runtimePackId: "cpu-dev",
-      backend: "cpu",
-      deviceIndex: 0,
+      runtimePackId: selection.packId,
+      backend: selection.backend,
+      deviceIndex: selection.deviceIndex,
       modelPath,
       contextSize: options.contextSize,
       batchSize: options.batchSize,
@@ -88,7 +124,7 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     } catch (error) {
       setState((current) => nativeReducer(current, { type: "load-failed", error: errorText(error) }));
     }
-  }, [options, service]);
+  }, [appliedRuntime, options, service]);
 
   const chooseModel = useCallback(async () => {
     const modelPath = await service.chooseModel();
@@ -146,5 +182,53 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     if (state.modelPath) await loadPath(state.modelPath);
   }, [loadPath, state.modelPath]);
 
-  return { state, options, setOptions, chooseModel, submit, stop, reset, unload, reload };
+  const setPendingBackend = useCallback((backend: RuntimeBackend) => {
+    const pack = runtimePacks.find((candidate) => candidate.status === "ready"
+      && candidate.backend === backend
+      && candidate.devices.length > 0);
+    const device = pack?.devices[0];
+    setPendingRuntime(pack && device
+      ? { packId: pack.id, backend, deviceIndex: device.index }
+      : null);
+  }, [runtimePacks]);
+
+  const applyPendingRuntime = useCallback(async () => {
+    if (!pendingRuntime) return;
+    try {
+      await applyRuntimeSelection(pendingRuntime, {
+        modelPath: state.modelPath,
+        unload: async () => {
+          const status = await service.unloadModel();
+          decoders.current.clear();
+          setState((current) => nativeReducer(current, { type: "status", status }));
+        },
+        persist: (selection) => {
+          writeRuntimePreference(window.localStorage, selection);
+          setAppliedRuntime(selection);
+          setPendingRuntime(selection);
+        },
+        load: loadPath,
+      });
+    } catch (error) {
+      setState((current) => nativeReducer(current, { type: "load-failed", error: errorText(error) }));
+    }
+  }, [loadPath, pendingRuntime, service, state.modelPath]);
+
+  return {
+    state,
+    options,
+    setOptions,
+    runtimePacks,
+    runtimePackError,
+    appliedRuntime,
+    pendingRuntime,
+    setPendingBackend,
+    applyPendingRuntime,
+    chooseModel,
+    submit,
+    stop,
+    reset,
+    unload,
+    reload,
+  };
 }

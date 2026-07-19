@@ -85,6 +85,26 @@ export function resolveRuntimeSelection(
   return selectionFor(inventory.packs.find((pack) => pack.id === inventory.fallbackPackId));
 }
 
+interface RuntimeTransition {
+  modelPath: string | null;
+  unload(): Promise<void>;
+  persist(selection: RuntimeSelection): void;
+  load(modelPath: string, selection: RuntimeSelection): Promise<void>;
+}
+
+export async function applyRuntimeSelection(
+  selection: RuntimeSelection,
+  transition: RuntimeTransition,
+): Promise<void> {
+  if (!transition.modelPath) {
+    transition.persist(selection);
+    return;
+  }
+  await transition.unload();
+  transition.persist(selection);
+  await transition.load(transition.modelPath, selection);
+}
+
 export class RuntimePackService {
   constructor(private readonly bindings: RuntimePackBindings = tauriRuntimePackBindings) {}
 

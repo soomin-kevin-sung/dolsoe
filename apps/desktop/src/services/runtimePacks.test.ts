@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   PREFERENCE_KEY,
   RuntimePackService,
+  applyRuntimeSelection,
   readRuntimePreference,
   resolveRuntimeSelection,
   type RuntimePack,
@@ -39,6 +40,28 @@ function inventory(packs: RuntimePack[]): RuntimePackInventory {
 }
 
 describe("runtime pack selection", () => {
+  it("unloads, saves, and reloads the current model in order", async () => {
+    const calls: string[] = [];
+    await applyRuntimeSelection({ packId: "cuda", backend: "cuda", deviceIndex: 0 }, {
+      modelPath: "D:\\models\\tiny.gguf",
+      unload: async () => { calls.push("unload"); },
+      persist: () => { calls.push("persist"); },
+      load: async () => { calls.push("load"); },
+    });
+    expect(calls).toEqual(["unload", "persist", "load"]);
+  });
+
+  it("only saves a selection when no model is loaded", async () => {
+    const calls: string[] = [];
+    await applyRuntimeSelection({ packId: "cpu-dev", backend: "cpu", deviceIndex: 0 }, {
+      modelPath: null,
+      unload: async () => { calls.push("unload"); },
+      persist: () => { calls.push("persist"); },
+      load: async () => { calls.push("load"); },
+    });
+    expect(calls).toEqual(["persist"]);
+  });
+
   it("lists installed packs through the fixed command", async () => {
     const invoke = vi.fn(async () => inventory([]));
     await new RuntimePackService({ invoke }).list();
