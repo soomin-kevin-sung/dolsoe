@@ -97,6 +97,19 @@ test("settings opens from keyboard and changes theme", async ({ page }) => {
   await expect(settings.getByRole("button", { name: "시스템" })).toBeVisible();
 });
 
+test("runtime control disables unavailable backends", async ({ page }) => {
+  await page.goto("/?state=settings");
+  await expect(page.getByRole("button", { name: "Vulkan" })).toBeDisabled();
+  await expect(page.getByText("Vulkan 런타임이 설치되어 있지 않습니다.")).toBeVisible();
+});
+
+test("runtime selection exposes pending reload state", async ({ page }) => {
+  await page.goto("/?state=settings");
+  await page.getByRole("button", { name: "CUDA", exact: true }).click();
+  await expect(page.getByText("재로드 대기")).toBeVisible();
+  await expect(page.getByRole("button", { name: "적용하고 모델 다시 로드" })).toBeVisible();
+});
+
 test("diagnostics replaces the conversation composer", async ({ page }) => {
   await page.goto("/?state=diagnostics");
   await expect(page.getByRole("heading", { name: "진단" })).toBeVisible();

@@ -1,10 +1,15 @@
 import type { NativeState } from "../services/nativeState";
+import type { RuntimePack } from "../services/runtimePacks";
 
-export function NativeDiagnosticsView({ state }: { state: NativeState }) {
+export function NativeDiagnosticsView({ state, runtimePack }: { state: NativeState; runtimePack?: RuntimePack }) {
   const rows = [
     ["상태", state.phase],
     ["백엔드", state.backend],
     ["모델", state.modelName],
+    ["런타임 팩", runtimePack?.id ?? "—"],
+    ["런타임 버전", runtimePack?.runtimeVersion ?? "—"],
+    ["llama.cpp 커밋", runtimePack?.llamaCppCommit ?? "—"],
+    ["Bridge ABI", runtimePack ? `${runtimePack.abiMajor}.${runtimePack.abiMinor}` : "—"],
     ["속도", state.telemetry.speed],
     ["토큰", state.telemetry.tokens],
     ["시간", state.telemetry.elapsed],

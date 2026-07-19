@@ -115,6 +115,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .segmented button.selected { color: var(--accent); background: var(--accent-subtle); font-weight: 600; }
 .segmented button:disabled { color: var(--text-3); cursor: not-allowed; opacity: 0.6; }
 .device-line { display: flex; align-items: center; gap: 6px; }
+.settings-section .runtime-unavailable { color: var(--text-3); }
+.settings-section .runtime-pack-error { color: var(--red); }
 .reload-badge { display: inline-block; padding: 1px 5px; border-radius: 2px; color: var(--amber); background: var(--amber-bg); font-size: 10px; font-weight: 600; letter-spacing: 0; text-transform: none; }
 .option-wrap + .option-wrap { border-top: 1px solid var(--border); }
 .option-row { display: flex; min-height: 32px; align-items: center; justify-content: space-between; gap: 8px; }
@@ -136,6 +138,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .panel-footer p { margin: 6px 0 0; color: var(--amber); font-size: 11px; }
 .button-primary, .button-danger { min-height: 32px; padding: 0 12px; border-radius: 4px; color: var(--on-accent); background: var(--accent-solid); font-weight: 600; cursor: pointer; }
 .button-primary:hover { background: var(--accent-solid-hover); }
+.button-primary:disabled { color: var(--text-3); background: var(--bg-active); cursor: not-allowed; }
 .button-danger { color: var(--on-red); background: var(--red); }
 .button-danger:hover { background: var(--red-hover); }
 .diagnostics { width: min(100%, 760px); margin: 0 auto; padding: 24px 32px; }

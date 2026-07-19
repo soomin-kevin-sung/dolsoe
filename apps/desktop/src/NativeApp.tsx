@@ -113,6 +113,7 @@ function NativeWorkspace() {
       ? "empty"
       : state.phase;
   const runtimeStatus: RuntimeStatus = state.phase === "no-model" ? "none" : state.phase;
+  const selectedRuntimePack = runtime.runtimePacks.find((pack) => pack.id === runtime.appliedRuntime?.packId);
   const sessions: Session[] = workspace.state.conversations.map((conversation) => ({
     id: conversation.id,
     title: conversation.title,
@@ -202,7 +203,7 @@ function NativeWorkspace() {
           />
           <main className="conversation" aria-label="대화">
             {diagnosticsOpen
-              ? <NativeDiagnosticsView state={state} />
+              ? <NativeDiagnosticsView state={state} runtimePack={selectedRuntimePack} />
               : <MessageList state={viewState} messages={messages} modelName={state.modelName} backend={state.backend} loadingProgress={state.loadingProgress} error={workspace.state.storageError ?? state.error} onChooseModel={() => void runtime.chooseModel()} />}
           </main>
           {!diagnosticsOpen && (
@@ -220,7 +221,13 @@ function NativeWorkspace() {
           open={settingsOpen}
           modelName={state.modelName}
           options={runtime.options}
+          runtimePacks={runtime.runtimePacks}
+          runtimePackError={runtime.runtimePackError}
+          appliedRuntime={runtime.appliedRuntime}
+          pendingRuntime={runtime.pendingRuntime}
           onOptionsChange={runtime.setOptions}
+          onRuntimeChange={runtime.setPendingBackend}
+          onApplyRuntime={() => void runtime.applyPendingRuntime()}
           onClose={() => { setSettingsOpen(false); settingsButtonRef.current?.focus(); }}
           onChooseModel={() => void runtime.chooseModel()}
           onUnload={() => void runtime.unload()}
