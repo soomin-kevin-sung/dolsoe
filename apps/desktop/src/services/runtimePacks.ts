@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type RuntimeBackend = "cpu" | "cuda" | "vulkan";
 export type RuntimePackStatus = "ready" | "invalid";
@@ -36,11 +37,34 @@ export interface RuntimeSelection extends RuntimePreference {
   deviceIndex: number;
 }
 
-interface RuntimePackBindings {
-  invoke(command: "list_runtime_packs"): Promise<RuntimePackInventory>;
+export type RuntimeInstallPhase = "downloading" | "verifying" | "installing" | "installed" | "cancelled" | "failed";
+
+export interface AvailableRuntimePack {
+  id: string;
+  backend: RuntimeBackend;
+  releaseVersion: string;
+  sizeBytes: number;
+  installed: boolean;
 }
 
-const tauriRuntimePackBindings: RuntimePackBindings = { invoke };
+export interface RuntimeInstallProgressEvent {
+  packId: string;
+  phase: RuntimeInstallPhase;
+  downloadedBytes: number;
+  totalBytes: number;
+  error: string | null;
+}
+
+export interface RuntimeInstallState extends RuntimeInstallProgressEvent {
+  progress: number;
+}
+
+interface RuntimePackBindings {
+  invoke(command: string, args?: Record<string, unknown>): Promise<unknown>;
+  listen?<T>(event: string, handler: (event: { payload: T }) => void): Promise<UnlistenFn>;
+}
+
+const tauriRuntimePackBindings: RuntimePackBindings = { invoke, listen };
 
 export const PREFERENCE_KEY = "local-llm-wiki.runtime-pack";
 
@@ -105,10 +129,40 @@ export async function applyRuntimeSelection(
   await transition.load(transition.modelPath, selection);
 }
 
+export function reduceRuntimeInstallState(
+  _current: RuntimeInstallState | null,
+  event: RuntimeInstallProgressEvent,
+): RuntimeInstallState {
+  const progress = event.totalBytes > 0
+    ? Math.min(100, Math.max(0, Math.round((event.downloadedBytes / event.totalBytes) * 100)))
+    : event.phase === "installed" ? 100 : 0;
+  return { ...event, progress };
+}
+
 export class RuntimePackService {
   constructor(private readonly bindings: RuntimePackBindings = tauriRuntimePackBindings) {}
 
   list(): Promise<RuntimePackInventory> {
-    return this.bindings.invoke("list_runtime_packs");
+    return this.bindings.invoke("list_runtime_packs") as Promise<RuntimePackInventory>;
+  }
+
+  listAvailable(): Promise<AvailableRuntimePack[]> {
+    return this.bindings.invoke("list_available_runtime_packs") as Promise<AvailableRuntimePack[]>;
+  }
+
+  install(packId: string): Promise<void> {
+    return this.bindings.invoke("install_runtime_pack", { packId }) as Promise<void>;
+  }
+
+  cancelInstall(): Promise<void> {
+    return this.bindings.invoke("cancel_runtime_pack_install") as Promise<void>;
+  }
+
+  subscribeInstallProgress(handler: (event: RuntimeInstallProgressEvent) => void): Promise<UnlistenFn> {
+    if (!this.bindings.listen) throw new Error("runtime pack event listener is unavailable");
+    return this.bindings.listen<RuntimeInstallProgressEvent>(
+      "runtime-pack-install-progress",
+      (event) => handler(event.payload),
+    );
   }
 }

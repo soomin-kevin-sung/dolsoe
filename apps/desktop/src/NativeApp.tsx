@@ -11,6 +11,7 @@ import { NativeSettingsPanel } from "./components/NativeSettingsPanel";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { useConversationWorkspace } from "./hooks/useConversationWorkspace";
+import { useRuntimePackInstaller } from "./hooks/useRuntimePackInstaller";
 import type { StoredMessage } from "./services/conversationService";
 import type { Message, MockStateName, RuntimeSnapshot, RuntimeStatus, Session } from "./services/runtime";
 
@@ -65,6 +66,7 @@ function toMessage(message: StoredMessage): Message {
 function NativeWorkspace() {
   const workspace = useConversationWorkspace();
   const runtime = workspace.runtime;
+  const packInstaller = useRuntimePackInstaller();
   const { state } = runtime;
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -223,6 +225,9 @@ function NativeWorkspace() {
           options={runtime.options}
           runtimePacks={runtime.runtimePacks}
           runtimePackError={runtime.runtimePackError}
+          availableRuntimePacks={packInstaller.availablePacks}
+          installState={packInstaller.installState}
+          distributionError={packInstaller.error}
           appliedRuntime={runtime.appliedRuntime}
           pendingRuntime={runtime.pendingRuntime}
           onOptionsChange={runtime.setOptions}
@@ -232,6 +237,8 @@ function NativeWorkspace() {
           onChooseModel={() => void runtime.chooseModel()}
           onUnload={() => void runtime.unload()}
           onReload={() => { setDialogTargetId(null); setDialog("reload"); }}
+          onInstall={(packId) => void packInstaller.install(packId)}
+          onCancelInstall={() => void packInstaller.cancel()}
         />
       </div>
       <StatusBar snapshot={snapshot} />

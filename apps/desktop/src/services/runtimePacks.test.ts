@@ -4,6 +4,7 @@ import {
   PREFERENCE_KEY,
   RuntimePackService,
   applyRuntimeSelection,
+  reduceRuntimeInstallState,
   readRuntimePreference,
   resolveRuntimeSelection,
   type RuntimePack,
@@ -64,8 +65,42 @@ describe("runtime pack selection", () => {
 
   it("lists installed packs through the fixed command", async () => {
     const invoke = vi.fn(async () => inventory([]));
-    await new RuntimePackService({ invoke }).list();
+    await new RuntimePackService({ invoke: invoke as never }).list();
     expect(invoke).toHaveBeenCalledWith("list_runtime_packs");
+  });
+
+  it("lists, installs, and cancels release packs through fixed commands", async () => {
+    const invoke = vi.fn(async (command: string) => command === "list_available_runtime_packs"
+      ? [{ id: "cuda-1", backend: "cuda", releaseVersion: "1", sizeBytes: 1024, installed: false }]
+      : undefined);
+    const service = new RuntimePackService({ invoke: invoke as never });
+
+    expect(await service.listAvailable()).toHaveLength(1);
+    await service.install("cuda-1");
+    await service.cancelInstall();
+
+    expect(invoke).toHaveBeenNthCalledWith(1, "list_available_runtime_packs");
+    expect(invoke).toHaveBeenNthCalledWith(2, "install_runtime_pack", { packId: "cuda-1" });
+    expect(invoke).toHaveBeenNthCalledWith(3, "cancel_runtime_pack_install");
+  });
+
+  it("reduces runtime installation events without leaking an old error", () => {
+    const downloading = reduceRuntimeInstallState(null, {
+      packId: "cuda-1", phase: "downloading", downloadedBytes: 25, totalBytes: 100, error: null,
+    });
+    expect(downloading?.progress).toBe(25);
+    const verifying = reduceRuntimeInstallState(downloading, {
+      packId: "cuda-1", phase: "verifying", downloadedBytes: 100, totalBytes: 100, error: null,
+    });
+    expect(verifying).toMatchObject({ phase: "verifying", progress: 100, error: null });
+    const failed = reduceRuntimeInstallState(verifying, {
+      packId: "cuda-1", phase: "failed", downloadedBytes: 0, totalBytes: 0, error: "network",
+    });
+    expect(failed?.error).toBe("network");
+    const restarted = reduceRuntimeInstallState(failed, {
+      packId: "cuda-1", phase: "downloading", downloadedBytes: 0, totalBytes: 100, error: null,
+    });
+    expect(restarted?.error).toBeNull();
   });
 
   it("rejects a stored preference that is not ready", () => {

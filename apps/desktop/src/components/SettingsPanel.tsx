@@ -18,6 +18,7 @@ export function SettingsPanel({ open, packs, onClose, onReload }: { open: boolea
   const [theme, setTheme] = useState<ThemePreference>((document.documentElement.dataset.theme as ThemePreference) || "system");
   const selectedPack = packs.find((pack) => pack.id === runtime);
   const runtimeChanged = runtime !== "cpu";
+  const installBusy = packs.some((pack) => pack.status === "installing");
 
   function changeTheme(value: ThemePreference) {
     setTheme(value);
@@ -35,7 +36,7 @@ export function SettingsPanel({ open, packs, onClose, onReload }: { open: boolea
         <SegmentedControl<RuntimePack["id"]> label="런타임" value={runtime} onChange={setRuntime} items={runtimeItems.map((item) => ({ ...item, disabled: packs.find((pack) => pack.id === item.value)?.status !== "installed", title: packs.find((pack) => pack.id === item.value)?.status === "installed" ? undefined : `${item.label} 런타임이 설치되어 있지 않습니다.` }))} />
         <p className="device-line"><Cpu size={14} /> {runtime === "cuda" ? "NVIDIA GeForce RTX 4070" : "이 PC의 CPU"} · {selectedPack?.version}</p>
         {runtimeItems.filter((item) => packs.find((pack) => pack.id === item.value)?.status === "available").map((item) => <p className="runtime-unavailable" key={item.value}>{item.label} 런타임이 설치되어 있지 않습니다.</p>)}
-        {packs.filter((pack) => pack.status === "installing").map((pack) => <PackRow key={pack.id} pack={pack} />)}
+        {packs.filter((pack) => pack.status === "installing" || pack.status === "available").map((pack) => <PackRow key={pack.id} pack={pack} installBusy={installBusy} />)}
       </section>
       <section className="settings-section"><h3>추론 옵션</h3><OptionRow label="컨텍스트 길이" flag="--ctx-size" initial={8192} min={512} max={32768} /><OptionRow label="GPU 레이어" flag="--n-gpu-layers" initial={32} min={0} max={32} /><OptionRow label="Temperature" flag="--temp" initial={0.7} min={0} max={2} /><OptionRow label="Top-P" flag="--top-p" initial={0.9} min={0} max={1} /><OptionRow label="최대 생성 토큰" flag="--n-predict" initial={1024} min={1} max={8192} /><OptionRow label="Seed" flag="--seed" initial={-1} min={-1} max={2147483647} /></section>
       <section className="settings-section"><h3>고급 설정</h3><input className="panel-search" aria-label="옵션 검색" placeholder="옵션 검색" /><OptionRow label="배치 크기" flag="--batch-size" initial={512} min={1} max={2048} /><OptionRow label="스레드 수" flag="--threads" initial={8} min={1} max={256} /><OptionRow label="반복 페널티" flag="--repeat-penalty" initial={1.1} min={0} max={2} /><p>런타임이 제공하는 옵션 스키마를 기준으로 표시됩니다. 지원하지 않는 값은 저장 시 오류로 표시됩니다.</p></section>

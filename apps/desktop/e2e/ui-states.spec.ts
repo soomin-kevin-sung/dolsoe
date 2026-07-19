@@ -110,6 +110,17 @@ test("runtime selection exposes pending reload state", async ({ page }) => {
   await expect(page.getByRole("button", { name: "적용하고 모델 다시 로드" })).toBeVisible();
 });
 
+test("runtime pack installation shows progress and locks competing installs", async ({ page }) => {
+  await page.goto("/?state=pack-install");
+
+  const cudaPack = page.locator(".pack-row").filter({ hasText: "CUDA" });
+  await expect(cudaPack).toContainText("64%");
+  await expect(cudaPack.locator(".progress-fill")).toHaveAttribute("style", /64%/);
+
+  const vulkanPack = page.locator(".pack-row").filter({ hasText: "Vulkan" });
+  await expect(vulkanPack.getByRole("button", { name: "설치" })).toBeDisabled();
+});
+
 test("diagnostics replaces the conversation composer", async ({ page }) => {
   await page.goto("/?state=diagnostics");
   await expect(page.getByRole("heading", { name: "진단" })).toBeVisible();
