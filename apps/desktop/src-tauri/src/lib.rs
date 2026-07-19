@@ -7,6 +7,8 @@ mod runtime_packs;
 mod runtime_path;
 mod runtime_manifest;
 mod runtime_archive;
+mod runtime_download;
+mod runtime_installer;
 mod runtime_probe;
 
 use tauri::{Emitter, Manager};
