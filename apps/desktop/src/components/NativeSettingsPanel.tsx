@@ -1,7 +1,7 @@
 import { Cpu, X } from "lucide-react";
 
 import type { NativeOptions } from "../hooks/useNativeRuntime";
-import type { AvailableRuntimePack, RuntimeBackend, RuntimeInstallState, RuntimePack, RuntimeSelection } from "../services/runtimePacks";
+import { canInstallRuntimePack, type AvailableRuntimePack, type RuntimeBackend, type RuntimeInstallState, type RuntimePack, type RuntimeSelection } from "../services/runtimePacks";
 import { IconButton } from "./IconButton";
 import { OptionRow } from "./OptionRow";
 import { SegmentedControl } from "./SegmentedControl";
@@ -57,10 +57,9 @@ export function NativeSettingsPanel({ open, modelName, options, runtimePacks, ru
         {runtimePackError && <p className="runtime-pack-error">런타임 팩을 확인하지 못했습니다: {runtimePackError}</p>}
         {availableRuntimePacks.map((pack) => {
           const active = installState?.packId === pack.id ? installState : null;
-          const busy = Boolean(installState && !["installed", "cancelled", "failed"].includes(installState.phase));
           return <div className="pack-row" key={pack.id}>
             <div className="pack-heading"><strong>{pack.backend.toUpperCase()} 런타임 팩</strong><span className="mono">{formatBytes(pack.sizeBytes)}</span>
-              {!pack.installed && !active && <button className="button-secondary" type="button" disabled={busy} onClick={() => onInstall(pack.id)}>설치</button>}
+              {canInstallRuntimePack(pack.id, pack.installed, installState) && <button className="button-secondary" type="button" onClick={() => onInstall(pack.id)}>설치</button>}
               {active && active.phase === "downloading" && <button className="button-secondary" type="button" onClick={onCancelInstall}>취소</button>}
             </div>
             <div className="pack-version mono">{pack.releaseVersion} · {pack.id}</div>

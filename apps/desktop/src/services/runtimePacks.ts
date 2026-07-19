@@ -139,6 +139,18 @@ export function reduceRuntimeInstallState(
   return { ...event, progress };
 }
 
+export function canInstallRuntimePack(
+  packId: string,
+  installed: boolean,
+  state: RuntimeInstallState | null,
+): boolean {
+  if (installed) return false;
+  if (!state) return true;
+  if (["downloading", "verifying", "installing"].includes(state.phase)) return false;
+  if (state.packId !== packId) return true;
+  return state.phase === "failed" || state.phase === "cancelled";
+}
+
 export class RuntimePackService {
   constructor(private readonly bindings: RuntimePackBindings = tauriRuntimePackBindings) {}
 

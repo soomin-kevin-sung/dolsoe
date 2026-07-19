@@ -4,6 +4,7 @@ import {
   PREFERENCE_KEY,
   RuntimePackService,
   applyRuntimeSelection,
+  canInstallRuntimePack,
   reduceRuntimeInstallState,
   readRuntimePreference,
   resolveRuntimeSelection,
@@ -101,6 +102,19 @@ describe("runtime pack selection", () => {
       packId: "cuda-1", phase: "downloading", downloadedBytes: 0, totalBytes: 100, error: null,
     });
     expect(restarted?.error).toBeNull();
+  });
+
+  it("allows retry after a terminal install state but not while another install is active", () => {
+    const failed = reduceRuntimeInstallState(null, {
+      packId: "cuda-1", phase: "failed", downloadedBytes: 0, totalBytes: 0, error: "network",
+    });
+    const downloading = reduceRuntimeInstallState(null, {
+      packId: "cuda-1", phase: "downloading", downloadedBytes: 1, totalBytes: 100, error: null,
+    });
+
+    expect(canInstallRuntimePack("cuda-1", false, failed)).toBe(true);
+    expect(canInstallRuntimePack("cuda-1", false, downloading)).toBe(false);
+    expect(canInstallRuntimePack("cuda-1", true, null)).toBe(false);
   });
 
   it("rejects a stored preference that is not ready", () => {

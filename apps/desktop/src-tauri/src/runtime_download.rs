@@ -58,6 +58,14 @@ where
         fs::remove_file(target).await?;
         existing = 0;
     }
+    if existing == expected_size && existing > 0 {
+        if hash_file(target).await? == expected_sha256.to_ascii_lowercase() {
+            progress(existing, expected_size);
+            return Ok(());
+        }
+        fs::remove_file(target).await?;
+        existing = 0;
+    }
 
     let mut request = client.get(url);
     if existing > 0 {
@@ -237,6 +245,29 @@ mod tests {
 
             assert_eq!(fs::read(target).unwrap(), bytes);
         }
+    }
+
+    #[tokio::test]
+    async fn reuses_a_complete_verified_partial_without_requesting_an_invalid_range() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("complete.part");
+        let bytes = b"already complete".to_vec();
+        fs::write(&target, &bytes).unwrap();
+        let mut progress = Vec::new();
+
+        download_verified_archive(
+            &reqwest::Client::new(),
+            "http://127.0.0.1:1/must-not-be-requested",
+            &target,
+            bytes.len() as u64,
+            &hash(&bytes),
+            Arc::new(AtomicBool::new(false)),
+            |downloaded, total| progress.push((downloaded, total)),
+        )
+        .await
+        .expect("reuse complete verified archive");
+
+        assert_eq!(progress, vec![(bytes.len() as u64, bytes.len() as u64)]);
     }
 
     #[tokio::test]

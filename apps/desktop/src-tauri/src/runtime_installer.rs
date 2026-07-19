@@ -7,6 +7,7 @@ use std::{
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine};
+use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Serialize;
 use thiserror::Error;
@@ -320,11 +321,16 @@ async fn fetch_bounded(
     {
         return Err(RuntimeInstallerError::ResponseTooLarge(limit));
     }
-    let bytes = response.bytes().await?;
-    if bytes.len() > limit {
-        return Err(RuntimeInstallerError::ResponseTooLarge(limit));
+    let mut bytes = Vec::with_capacity(limit.min(64 * 1024));
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if bytes.len().saturating_add(chunk.len()) > limit {
+            return Err(RuntimeInstallerError::ResponseTooLarge(limit));
+        }
+        bytes.extend_from_slice(&chunk);
     }
-    Ok(bytes.to_vec())
+    Ok(bytes)
 }
 
 fn progress(
@@ -345,9 +351,15 @@ fn progress(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        sync::atomic::Ordering,
+        thread,
+        time::Duration,
+    };
 
-    use super::{InstallCoordinator, InstallPhase, RuntimeInstallProgress};
+    use super::{fetch_bounded, InstallCoordinator, InstallPhase, RuntimeInstallProgress};
 
     #[test]
     fn coordinator_allows_one_install_and_cleans_up_terminal_state() {
@@ -380,5 +392,38 @@ mod tests {
         assert_eq!(value["phase"], "downloading");
         assert_eq!(value["downloadedBytes"], 12);
         assert_eq!(value["totalBytes"], 24);
+    }
+
+    #[tokio::test]
+    async fn bounded_fetch_stops_reading_before_an_unbounded_response_finishes() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).unwrap();
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n800\r\n"
+            )
+            .unwrap();
+            stream.write_all(&vec![7_u8; 2048]).unwrap();
+            stream.write_all(b"\r\n").unwrap();
+            stream.flush().unwrap();
+            thread::sleep(Duration::from_secs(2));
+        });
+
+        let result = tokio::time::timeout(
+            Duration::from_millis(500),
+            fetch_bounded(
+                &reqwest::Client::new(),
+                &format!("http://{address}/manifest"),
+                1024,
+            ),
+        )
+        .await
+        .expect("bounded fetch must stop before the server closes")
+        .unwrap_err();
+        assert!(result.to_string().contains("exceeded"));
     }
 }

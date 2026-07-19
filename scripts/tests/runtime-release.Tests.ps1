@@ -90,6 +90,7 @@ try {
   $workflow = Get-Content -Raw -Encoding UTF8 $workflowPath
   Assert-True ($workflow -match 'windows-2025') 'CPU and Vulkan assets must use pinned hosted Windows runners.'
   Assert-True ($workflow -match 'self-hosted, Windows, X64, cuda') 'CUDA must use the gated private CUDA runner.'
+  Assert-True ($workflow -match "github.event_name == 'push'.*inputs.include_cuda") 'Tag releases must include CUDA; manual releases may gate it.'
   Assert-True ($workflow -match 'actions/upload-artifact@[0-9a-f]{40}') 'Build artifacts must use a commit-pinned upload action.'
   Assert-True ($workflow -match 'actions/download-artifact@[0-9a-f]{40}') 'Publish must collect commit-pinned build artifacts.'
   Assert-True ($workflow -match 'LLW_RUNTIME_SIGNING_KEY') 'Publish must use the runtime signing secret.'
