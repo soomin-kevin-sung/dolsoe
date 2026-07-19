@@ -243,7 +243,7 @@ mod tests {
   "maximumAppVersion": "0.1.x",
   "abiMajor": 1,
   "abiMinor": 1,
-  "llamaCppCommit": "6bdd77f13cf11b264b4231d320afc404f48d576e"{root_overrides},
+  "llamaCppCommit": "571d0d540df04f25298d0e159e520d9fc62ed121"{root_overrides},
   "packs": [{{
     "id": "cuda-2026.07.1",
     "backend": "cuda",

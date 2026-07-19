@@ -1,8 +1,10 @@
 # Native Runtime Validation
 
-All packs use llama.cpp `6bdd77f13cf11b264b4231d320afc404f48d576e`. A pack directory contains one
-`local_llm_runtime.dll`, `llama.dll`, `ggml.dll`, `ggml-base.dll`, `ggml-cpu.dll`, and only its selected
-GPU backend DLL/dependencies. Never combine DLLs from different build directories. Changing CPU/CUDA/Vulkan
+All packs use the official llama.cpp `b10068` release at commit
+`571d0d540df04f25298d0e159e520d9fc62ed121`. A pack directory contains the locally built
+`local_llm_runtime.dll` bridge plus the checksum-pinned official release DLL set for CPU, CUDA 12.4, or
+Vulkan. Official CPU packs contain instruction-set variants such as `ggml-cpu-x64.dll`; the loader selects
+the compatible variant. Never combine DLLs from different llama.cpp releases. Changing CPU/CUDA/Vulkan
 packs requires model unload and process/runtime restart; in-process backend-core replacement is unsupported.
 
 ## CPU
@@ -57,37 +59,26 @@ Observed results:
 
 An actual generation-time switch to a different backend was hardware-gated because this machine had only one ready pack. The conversation layer still serializes cancellation through terminal message persistence before calling the tested runtime transition helper.
 
-## CUDA compile smoke
-cmake -S native/llm-runtime -B .cmake-build/llm-cuda -A x64 -DLLW_BACKEND_PACK=CUDA
-cmake --build .cmake-build/llm-cuda --config Release
-cmake --install .cmake-build/llm-cuda --config Release --prefix .runtime-packs/cuda-release
+## Official backend pack assembly
 
-## Vulkan compile smoke
-$version = '1.4.350.0'
-$url = 'https://sdk.lunarg.com/sdk/download/1.4.350.0/windows/vulkansdk-windows-X64-1.4.350.0.exe'
-$sha256 = '855b27ba05d2d8119c5114c5d4ff870ca38f2c632b11e1bb9923b9b7e6ecfe7b'
-$installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk.exe'
-Invoke-WebRequest -Uri $url -OutFile $installer
-if ((Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant() -ne $sha256) { throw 'Vulkan SDK checksum mismatch' }
-$root = "C:\VulkanSDK\$version"
-$process = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList '--root', $root, '--accept-licenses', '--default-answer', '--confirm-command', 'install'
-if ($process.ExitCode -ne 0) { throw "Vulkan SDK installer failed: $($process.ExitCode)" }
-$env:VULKAN_SDK = $root
-cmake -S native/llm-runtime -B .cmake-build/llm-vulkan -A x64 -DLLW_BACKEND_PACK=VULKAN
-cmake --build .cmake-build/llm-vulkan --config Release
-cmake --install .cmake-build/llm-vulkan --config Release --prefix .runtime-packs/vulkan-release
+The release builder compiles the bridge against the exact release commit, downloads the matching official
+llama.cpp ZIP assets, verifies their SHA-256 digests, and places only DLLs plus the bridge test executable in
+the final archive. CUDA combines the official CUDA 12.4 and matching `cudart` assets. No CUDA Toolkit, Vulkan
+SDK, GPU, or self-hosted Actions runner is required to assemble a pack.
 
 ## Pack contents
 $packs = @(
-  @{ Path = '.runtime-packs/cpu-release'; Backend = 'ggml-cpu.dll' },
+  @{ Path = '.runtime-packs/cpu-release'; Backend = $null },
   @{ Path = '.runtime-packs/cuda-release'; Backend = 'ggml-cuda.dll' },
   @{ Path = '.runtime-packs/vulkan-release'; Backend = 'ggml-vulkan.dll' }
 )
 foreach ($entry in $packs) {
   if (-not (Test-Path $entry.Path)) { continue }
-  $required = 'local_llm_runtime.dll','llama.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll',$entry.Backend
+  $required = @('local_llm_runtime.dll','llama.dll','ggml.dll','ggml-base.dll')
+  if ($entry.Backend) { $required += $entry.Backend }
   $missing = $required | Select-Object -Unique | Where-Object { -not (Test-Path (Join-Path $entry.Path $_)) }
   if ($missing) { throw "$($entry.Path) is missing: $($missing -join ', ')" }
+  if (-not (Get-ChildItem $entry.Path -Filter 'ggml-cpu*.dll')) { throw "$($entry.Path) has no CPU backend" }
   Get-ChildItem -File $entry.Path | Sort-Object Name | Select-Object Name,Length
 }
 
@@ -97,13 +88,8 @@ $env:LLW_TEST_BACKEND = 'CUDA' # use VULKAN and its installed pack on a Vulkan-c
 & .runtime-packs/cuda-release/llw_runtime_backend_test.exe $env:LLW_TEST_GGUF
 if ($LASTEXITCODE -ne 0) { throw "hardware runtime test failed: $LASTEXITCODE" }
 
-The Vulkan SDK source, version, 324012984-byte size, and SHA-256 are pinned from
-`https://vulkan.lunarg.com/sdk/files.json`; unattended arguments are from
-`https://vulkan.lunarg.com/doc/view/1.4.350.0/windows/getting_started.html`.
-The CUDA command requires the self-hosted runner labels `Windows`, `X64`, and `cuda`, plus `nvcc` and
-`CUDA_PATH`. Compile smoke does not claim runtime GPU validation. Runtime CUDA/Vulkan tests use the explicit
-hardware-gated command above. Metal is reserved for a future ABI-compatible macOS plan and is not configured,
-compiled, or tested here.
+Pack assembly does not claim runtime GPU validation. Runtime CUDA/Vulkan tests use the explicit hardware-gated
+command above. Metal is reserved for a future ABI-compatible macOS plan and is not configured or tested here.
 
 ## Signed runtime release assets
 
@@ -115,7 +101,8 @@ Build one Windows x64 asset at a time. The script configures, tests, stages, val
 & scripts/build-runtime-release.ps1 -Version 2026.07.1 -Backend CUDA
 ```
 
-CUDA release builds run only on the private `Windows`, `X64`, `cuda` runner. The runner must provide the CUDA Toolkit and may package only redistributable DLLs allowed by its installed Toolkit EULA. Vulkan assets require the pinned LunarG SDK during compilation but rely on the graphics driver's Vulkan loader at runtime.
+All three assets run on pinned GitHub-hosted Windows runners. CUDA and Vulkan packs consume only official
+llama.cpp release ZIPs; GPU drivers remain a runtime requirement on the user's machine.
 
 Publishing requires a PKCS#8 Ed25519 private key encoded as base64. Store it only in the `LLW_RUNTIME_SIGNING_KEY` GitHub Actions secret. Never commit the private key or print the secret. To generate a signed manifest locally:
 
@@ -132,6 +119,7 @@ The command emits `runtime-manifest.json`, its detached base64 signature, and th
 
 ### Validation result (2026-07-19)
 
-The Windows 11 x64 CPU Release path completed with Visual Studio, passed the Release-compatible native CTest suite, and produced a seven-entry archive: the six required runtime files plus `THIRD_PARTY_NOTICES.txt`. Development headers, import libraries, CMake metadata, and duplicate `bin/` files from the upstream install stage were excluded from the ZIP. The generated manifest fixture was signed with a temporary Ed25519 key and its archive/file hashes were verified by the script tests.
-
-The CUDA Toolkit was not installed on this workstation, so no local CUDA compile or hardware runtime result is claimed. CUDA publication remains gated on the private runner and requires `CUDA_PATH`, `nvcc`, and the permitted `cublas`, `cublasLt`, and `cudart` redistributable DLLs. Vulkan publication remains gated on installation of the checksum-pinned LunarG SDK in the hosted workflow.
+The Windows 11 x64 CPU Release path completed with Visual Studio, passed the native CTest suite, assembled the
+official `b10068` CPU DLL variants, and loaded the checksum-pinned Tiny Random GGUF through the packaged bridge.
+The manifest fixture and Rust archive installer accept the official CPU variant naming. No local CUDA or Vulkan
+hardware runtime result is claimed; those checks remain hardware-gated.

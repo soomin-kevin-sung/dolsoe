@@ -7,12 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       vulkan_compile_smoke:
-        description: Install LunarG SDK 1.4.350.0 and compile the Vulkan pack
+        description: Assemble the official llama.cpp Vulkan DLL pack
         required: true
         type: boolean
         default: false
       cuda_compile_smoke:
-        description: Compile on a self-hosted Windows CUDA runner
+        description: Assemble the official llama.cpp CUDA 12.4 DLL pack
         required: true
         type: boolean
         default: false
@@ -89,62 +89,18 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && inputs.vulkan_compile_smoke
     runs-on: windows-2025
     timeout-minutes: 90
-    env:
-      VULKAN_SDK_VERSION: 1.4.350.0
-      VULKAN_SDK_URL: https://sdk.lunarg.com/sdk/download/1.4.350.0/windows/vulkansdk-windows-X64-1.4.350.0.exe
-      VULKAN_SDK_SHA256: 855b27ba05d2d8119c5114c5d4ff870ca38f2c632b11e1bb9923b9b7e6ecfe7b
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Install pinned LunarG Vulkan SDK
+      - name: Build bridge and assemble Vulkan pack
         shell: pwsh
-        run: |
-          $installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk.exe'
-          Invoke-WebRequest -Uri $env:VULKAN_SDK_URL -OutFile $installer
-          $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
-          if ($actual -ne $env:VULKAN_SDK_SHA256) { throw "Vulkan SDK checksum mismatch: $actual" }
-          $root = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          $process = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList '--root', $root, '--accept-licenses', '--default-answer', '--confirm-command', 'install'
-          if ($process.ExitCode -ne 0) { throw "Vulkan SDK installer failed: $($process.ExitCode)" }
-          "VULKAN_SDK=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "$root\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append
-      - name: Configure Vulkan runtime pack
-        run: cmake -S native/llm-runtime -B .cmake-build/llm-vulkan -A x64 -DLLW_BACKEND_PACK=VULKAN
-      - name: Compile Vulkan runtime pack
-        run: cmake --build .cmake-build/llm-vulkan --config Release
-      - name: Stage and verify Vulkan runtime pack
-        shell: pwsh
-        run: |
-          cmake --install .cmake-build/llm-vulkan --config Release --prefix .runtime-packs/vulkan-release
-          $pack = '.runtime-packs/vulkan-release'
-          $required = 'local_llm_runtime.dll','llama.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll','ggml-vulkan.dll'
-          $missing = $required | Where-Object { -not (Test-Path (Join-Path $pack $_)) }
-          if ($missing) { throw "Vulkan pack is missing: $($missing -join ', ')" }
-          if (Test-Path (Join-Path $pack 'ggml-cuda.dll')) { throw 'Vulkan pack contains ggml-cuda.dll' }
-          Get-ChildItem -File $pack | Sort-Object Name | Select-Object Name,Length
+        run: scripts/build-runtime-release.ps1 -Version 0.0.0-ci -Backend VULKAN -OutputRoot .runtime-release
 
   windows-cuda-compile:
     if: github.event_name == 'workflow_dispatch' && inputs.cuda_compile_smoke
-    runs-on: [self-hosted, Windows, X64, cuda]
+    runs-on: windows-2025
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - name: Verify pre-provisioned CUDA toolkit
+      - name: Build bridge and assemble CUDA pack
         shell: pwsh
-        run: |
-          if (-not $env:CUDA_PATH) { throw 'CUDA_PATH is not set on the self-hosted runner' }
-          $nvcc = Get-Command nvcc -ErrorAction Stop
-          & $nvcc.Source --version
-      - name: Configure CUDA runtime pack
-        run: cmake -S native/llm-runtime -B .cmake-build/llm-cuda -A x64 -DLLW_BACKEND_PACK=CUDA
-      - name: Compile CUDA runtime pack
-        run: cmake --build .cmake-build/llm-cuda --config Release
-      - name: Stage and verify CUDA runtime pack
-        shell: pwsh
-        run: |
-          cmake --install .cmake-build/llm-cuda --config Release --prefix .runtime-packs/cuda-release
-          $pack = '.runtime-packs/cuda-release'
-          $required = 'local_llm_runtime.dll','llama.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll','ggml-cuda.dll'
-          $missing = $required | Where-Object { -not (Test-Path (Join-Path $pack $_)) }
-          if ($missing) { throw "CUDA pack is missing: $($missing -join ', ')" }
-          if (Test-Path (Join-Path $pack 'ggml-vulkan.dll')) { throw 'CUDA pack contains ggml-vulkan.dll' }
-          Get-ChildItem -File $pack | Sort-Object Name | Select-Object Name,Length
+        run: scripts/build-runtime-release.ps1 -Version 0.0.0-ci -Backend CUDA -OutputRoot .runtime-release

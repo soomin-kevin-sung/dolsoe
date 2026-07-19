@@ -22,8 +22,14 @@ const COMMON_REQUIRED: &[&str] = &[
     "llama.dll",
     "ggml.dll",
     "ggml-base.dll",
-    "ggml-cpu.dll",
 ];
+
+fn is_cpu_backend_file(path: &str) -> bool {
+    path == "ggml-cpu.dll"
+        || path
+            .strip_prefix("ggml-cpu-")
+            .is_some_and(|suffix| suffix.ends_with(".dll") && suffix.len() > 4)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallArchiveResult {
@@ -96,19 +102,25 @@ fn validate_declared_pack(pack: &RuntimeManifestPack) -> Result<(), ArchiveInsta
             )));
         }
     }
+    if !paths.iter().any(|path| is_cpu_backend_file(path)) {
+        return Err(ArchiveInstallError::Invalid(
+            "missing CPU backend DLL".into(),
+        ));
+    }
     let selected = match pack.backend.as_str() {
-        "cpu" => "ggml-cpu.dll",
-        "cuda" => "ggml-cuda.dll",
-        "vulkan" => "ggml-vulkan.dll",
+        "cpu" => None,
+        "cuda" => Some("ggml-cuda.dll"),
+        "vulkan" => Some("ggml-vulkan.dll"),
         _ => return Err(ArchiveInstallError::Invalid("unknown backend".into())),
     };
-    if !paths.contains(selected) {
+    if selected.is_some_and(|file| !paths.contains(file)) {
         return Err(ArchiveInstallError::Invalid(format!(
-            "missing backend file {selected}"
+            "missing backend file {}",
+            selected.unwrap()
         )));
     }
     for forbidden in ["ggml-cuda.dll", "ggml-vulkan.dll"] {
-        if forbidden != selected && paths.contains(forbidden) {
+        if Some(forbidden) != selected && paths.contains(forbidden) {
             return Err(ArchiveInstallError::Invalid(format!(
                 "mixed backend file {forbidden}"
             )));
@@ -358,6 +370,18 @@ mod tests {
             .file_name()
             .to_string_lossy()
             .contains("staging")));
+    }
+
+    #[test]
+    fn accepts_official_cpu_variant_dll_names() {
+        let root = TempDir::new().expect("runtime root");
+        let archive = root.path().join("pack.zip");
+        let mut files = REQUIRED.to_vec();
+        files[4] = ("ggml-cpu-x64.dll", b"cpu variant");
+        zip(&archive, &files);
+
+        install_verified_archive(&archive, root.path(), &pack(&files))
+            .expect("install official llama.cpp layout");
     }
 
     #[test]

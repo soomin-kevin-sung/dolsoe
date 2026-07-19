@@ -771,7 +771,7 @@ int main() {
     };
 
     CHECK(std::strcmp(llw_runtime_version(), "0.2.0") == 0);
-    CHECK(std::strcmp(llw_llama_cpp_commit(), "6bdd77f13cf11b264b4231d320afc404f48d576e") == 0);
+    CHECK(std::strcmp(llw_llama_cpp_commit(), "571d0d540df04f25298d0e159e520d9fc62ed121") == 0);
     CHECK(llw_get_abi_info(&query, &info, &error) == LLW_OK);
     CHECK(info.abi_major == LLW_ABI_MAJOR);
     CHECK(info.abi_minor == LLW_ABI_MINOR);

@@ -7,7 +7,9 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
 
-set(LLAMA_CPP_COMMIT "6bdd77f13cf11b264b4231d320afc404f48d576e")
+# Keep this commit aligned with the official binary release consumed by
+# scripts/build-runtime-release.ps1 (llama.cpp b10068).
+set(LLAMA_CPP_COMMIT "571d0d540df04f25298d0e159e520d9fc62ed121")
 
 set(LLW_BACKEND_PACK "CPU" CACHE STRING "Runtime backend pack: CPU, CUDA, or VULKAN")
 set_property(CACHE LLW_BACKEND_PACK PROPERTY STRINGS CPU CUDA VULKAN)
@@ -26,12 +28,6 @@ set(GGML_CPU ON CACHE BOOL "" FORCE)
 set(GGML_CUDA OFF CACHE BOOL "" FORCE)
 set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
 set(GGML_METAL OFF CACHE BOOL "" FORCE)
-
-if(LLW_BACKEND_PACK STREQUAL "CUDA")
-  set(GGML_CUDA ON CACHE BOOL "" FORCE)
-elseif(LLW_BACKEND_PACK STREQUAL "VULKAN")
-  set(GGML_VULKAN ON CACHE BOOL "" FORCE)
-endif()
 
 FetchContent_Declare(
   llama_cpp

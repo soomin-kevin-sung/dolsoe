@@ -47,11 +47,14 @@ $packs = foreach ($asset in $assets) {
   }
 
   $names = @($files | ForEach-Object { $_.path })
-  $required = @('local_llm_runtime.dll', 'llama.dll', 'ggml.dll', 'ggml-base.dll', 'ggml-cpu.dll', 'llw_runtime_backend_test.exe')
+  $required = @('local_llm_runtime.dll', 'llama.dll', 'ggml.dll', 'ggml-base.dll', 'llw_runtime_backend_test.exe')
   if ($backend -eq 'cuda') { $required += 'ggml-cuda.dll' }
   if ($backend -eq 'vulkan') { $required += 'ggml-vulkan.dll' }
   $missing = $required | Where-Object { $_ -notin $names }
   if ($missing) { throw "$($asset.Name) is missing required files: $($missing -join ', ')" }
+  if (-not ($names | Where-Object { $_ -match '^ggml-cpu(?:-.+)?\.dll$' })) {
+    throw "$($asset.Name) is missing a CPU backend DLL."
+  }
   $forbidden = @('ggml-cuda.dll', 'ggml-vulkan.dll') | Where-Object { $_ -ne "ggml-$backend.dll" }
   if ($backend -eq 'cpu') { $forbidden = @('ggml-cuda.dll', 'ggml-vulkan.dll') }
   $mixed = $forbidden | Where-Object { $_ -in $names }
@@ -80,7 +83,7 @@ $manifest = [ordered]@{
   maximumAppVersion = $MaximumAppVersion
   abiMajor = 1
   abiMinor = 1
-  llamaCppCommit = '6bdd77f13cf11b264b4231d320afc404f48d576e'
+  llamaCppCommit = '571d0d540df04f25298d0e159e520d9fc62ed121'
   packs = @($packs)
 }
 

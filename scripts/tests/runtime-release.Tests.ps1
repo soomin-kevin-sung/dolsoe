@@ -12,6 +12,7 @@ $cudaOutput = Join-Path $temporaryRoot 'cuda-output'
 $version = '2026.07.1'
 $workflowPath = Join-Path $repositoryRoot '.github/workflows/runtime-release.yml'
 $ciWorkflowPath = Join-Path $repositoryRoot '.github/workflows/ci.yml'
+$builderSource = Get-Content -Raw -Encoding UTF8 $builder
 
 function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw $Message }
@@ -92,9 +93,13 @@ try {
   $ciWorkflow = Get-Content -Raw -Encoding UTF8 $ciWorkflowPath
   Assert-True ($workflow -notmatch 'Visual Studio 17 2022') 'Runtime release must not force an unavailable Visual Studio generator.'
   Assert-True ($ciWorkflow -notmatch 'Visual Studio 17 2022') 'CI must not force an unavailable Visual Studio generator.'
-  Assert-True ($workflow -match 'windows-2025') 'CPU and Vulkan assets must use pinned hosted Windows runners.'
-  Assert-True ($workflow -match 'self-hosted, Windows, X64, cuda') 'CUDA must use the gated private CUDA runner.'
-  Assert-True ($workflow -match "github.event_name == 'push'.*inputs.include_cuda") 'Tag releases must include CUDA; manual releases may gate it.'
+  Assert-True ($workflow -match 'windows-2025') 'Runtime assets must use pinned hosted Windows runners.'
+  Assert-True ($workflow -notmatch 'self-hosted') 'Official llama.cpp DLL packs must not require a private runner.'
+  Assert-True ($workflow -notmatch 'CUDA_PATH|nvcc|VULKAN_SDK') 'Runtime packaging must not install vendor toolkits.'
+  Assert-True ($ciWorkflow -notmatch 'self-hosted|CUDA_PATH|nvcc|VULKAN_SDK') 'CI backend packaging must not require vendor toolkits.'
+  Assert-True ($builderSource -match 'llama-b10068-bin-win-cuda-12.4-x64.zip') 'CUDA must use the pinned official llama.cpp release asset.'
+  Assert-True ($builderSource -match 'cudart-llama-bin-win-cuda-12.4-x64.zip') 'CUDA must include the matching official CUDA runtime asset.'
+  Assert-True ($builderSource -notmatch 'CUDA_PATH|nvcc|VULKAN_SDK') 'Runtime builder must not use locally installed vendor toolkits.'
   Assert-True ($workflow -match 'actions/upload-artifact@[0-9a-f]{40}') 'Build artifacts must use a commit-pinned upload action.'
   Assert-True ($workflow -match 'actions/download-artifact@[0-9a-f]{40}') 'Publish must collect commit-pinned build artifacts.'
   Assert-True ($workflow -match 'LLW_RUNTIME_SIGNING_KEY') 'Publish must use the runtime signing secret.'

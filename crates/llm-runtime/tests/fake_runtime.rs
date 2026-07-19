@@ -12,7 +12,7 @@ fn probes_native_runtime_contract() {
     assert_eq!(info.runtime_version, "0.2.0");
     assert_eq!(
         info.llama_cpp_commit,
-        "6bdd77f13cf11b264b4231d320afc404f48d576e"
+        "571d0d540df04f25298d0e159e520d9fc62ed121"
     );
     assert!(info.capabilities.supports_cpu);
     assert_eq!(info.capabilities.max_parallel_slots, 4);
