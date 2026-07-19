@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "releaseTag": "b10068",
+  "commit": "571d0d540df04f25298d0e159e520d9fc62ed121",
+  "abiMajor": 1,
+  "abiMinor": 1,
+  "platform": "windows",
+  "arch": "x86_64",
+  "assets": {
+    "cpu": [
+      {
+        "name": "llama-b10068-bin-win-cpu-x64.zip",
+        "sha256": "01d5f30876acfb4a0be59396710f450213495c7181d8fbcce2fad045835ceb89"
+      }
+    ],
+    "cuda": [
+      {
+        "name": "llama-b10068-bin-win-cuda-12.4-x64.zip",
+        "sha256": "a249fb8d3f072d2746e8bd93af3f901eadaff7dedc7ff27a415af488da2d8411"
+      },
+      {
+        "name": "cudart-llama-bin-win-cuda-12.4-x64.zip",
+        "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6"
+      }
+    ],
+    "vulkan": [
+      {
+        "name": "llama-b10068-bin-win-vulkan-x64.zip",
+        "sha256": "4f3e6fd215fdf22d2fd6232a5501f9e791a93d9193db4faf59e391eff90f6169"
+      }
+    ]
+  }
+}

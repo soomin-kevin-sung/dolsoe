@@ -10,19 +10,16 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$llamaReleaseTag = 'b10068'
+$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$baselinePath = Join-Path $repositoryRoot 'native/llm-runtime/llama-baseline.json'
+$baseline = Get-Content -Raw -Encoding UTF8 $baselinePath | ConvertFrom-Json
+if ($baseline.schemaVersion -ne 1) { throw "Unsupported llama.cpp baseline schema: $($baseline.schemaVersion)" }
+$llamaReleaseTag = $baseline.releaseTag
 $llamaReleaseBaseUrl = "https://github.com/ggml-org/llama.cpp/releases/download/$llamaReleaseTag"
 $llamaReleaseAssets = @{
-  CPU = @(
-    @{ Name = 'llama-b10068-bin-win-cpu-x64.zip'; Sha256 = '01d5f30876acfb4a0be59396710f450213495c7181d8fbcce2fad045835ceb89' }
-  )
-  VULKAN = @(
-    @{ Name = 'llama-b10068-bin-win-vulkan-x64.zip'; Sha256 = '4f3e6fd215fdf22d2fd6232a5501f9e791a93d9193db4faf59e391eff90f6169' }
-  )
-  CUDA = @(
-    @{ Name = 'llama-b10068-bin-win-cuda-12.4-x64.zip'; Sha256 = 'a249fb8d3f072d2746e8bd93af3f901eadaff7dedc7ff27a415af488da2d8411' },
-    @{ Name = 'cudart-llama-bin-win-cuda-12.4-x64.zip'; Sha256 = '8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6' }
-  )
+  CPU = @($baseline.assets.cpu)
+  CUDA = @($baseline.assets.cuda)
+  VULKAN = @($baseline.assets.vulkan)
 }
 
 function Install-LlamaReleaseDlls([string]$Pack, [string]$BackendName, [string]$CacheRoot) {
@@ -62,7 +59,6 @@ if ($Version -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') {
   throw 'Version must be a semantic version without a leading v.'
 }
 
-$repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $outputRootPath = [IO.Path]::GetFullPath($OutputRoot)
 New-Item -ItemType Directory -Force -Path $outputRootPath | Out-Null
 $backendLower = $Backend.ToLowerInvariant()
@@ -116,6 +112,31 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::Open($temporaryAsset, [IO.Compression.ZipArchiveMode]::Create)
 try {
   $files = Get-ChildItem -LiteralPath $packPath -File | Where-Object { $_.Name -ne 'THIRD_PARTY_NOTICES.txt' } | Sort-Object Name
+  $notice = Get-Item -LiteralPath (Join-Path $repositoryRoot 'THIRD_PARTY_NOTICES.txt')
+  $payloadFiles = @($files | ForEach-Object {
+    [ordered]@{
+      path = $_.Name
+      size = [long]$_.Length
+      sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant()
+    }
+  }) + @([ordered]@{
+    path = 'THIRD_PARTY_NOTICES.txt'
+    size = [long]$notice.Length
+    sha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $notice.FullName).Hash.ToLowerInvariant()
+  })
+  $packManifest = [ordered]@{
+    schemaVersion = 1
+    id = $backendLower
+    backend = $backendLower
+    packVersion = $Version
+    platform = $baseline.platform
+    arch = $baseline.arch
+    llamaCppRelease = $baseline.releaseTag
+    llamaCppCommit = $baseline.commit
+    abiMajor = [int]$baseline.abiMajor
+    abiMinor = [int]$baseline.abiMinor
+    files = @($payloadFiles)
+  }
   foreach ($file in $files) {
     $entry = $archive.CreateEntry($file.Name, [IO.Compression.CompressionLevel]::Optimal)
     $entry.LastWriteTime = [DateTimeOffset]::new(2020, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
@@ -123,12 +144,16 @@ try {
     $output = $entry.Open()
     try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
   }
-  $notice = Get-Item -LiteralPath (Join-Path $repositoryRoot 'THIRD_PARTY_NOTICES.txt')
   $entry = $archive.CreateEntry('THIRD_PARTY_NOTICES.txt', [IO.Compression.CompressionLevel]::Optimal)
   $entry.LastWriteTime = [DateTimeOffset]::new(2020, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
   $input = $notice.OpenRead()
   $output = $entry.Open()
   try { $input.CopyTo($output) } finally { $output.Dispose(); $input.Dispose() }
+  $manifestBytes = [Text.UTF8Encoding]::new($false).GetBytes(($packManifest | ConvertTo-Json -Depth 8))
+  $entry = $archive.CreateEntry('runtime-pack.json', [IO.Compression.CompressionLevel]::Optimal)
+  $entry.LastWriteTime = [DateTimeOffset]::new(2020, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
+  $output = $entry.Open()
+  try { $output.Write($manifestBytes, 0, $manifestBytes.Length) } finally { $output.Dispose() }
 } finally {
   $archive.Dispose()
 }

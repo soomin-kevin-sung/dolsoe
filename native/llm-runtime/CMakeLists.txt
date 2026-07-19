@@ -7,9 +7,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 include(FetchContent)
 
-# Keep this commit aligned with the official binary release consumed by
-# scripts/build-runtime-release.ps1 (llama.cpp b10068).
-set(LLAMA_CPP_COMMIT "571d0d540df04f25298d0e159e520d9fc62ed121")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/llama-baseline.json" LLW_LLAMA_BASELINE_JSON)
+string(JSON LLAMA_CPP_COMMIT GET "${LLW_LLAMA_BASELINE_JSON}" commit)
 
 set(LLW_BACKEND_PACK "CPU" CACHE STRING "Runtime backend pack: CPU, CUDA, or VULKAN")
 set_property(CACHE LLW_BACKEND_PACK PROPERTY STRINGS CPU CUDA VULKAN)
