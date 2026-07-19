@@ -3,6 +3,7 @@ mod conversation_store;
 mod llm_commands;
 mod llm_dto;
 mod llm_worker;
+mod runtime_packs;
 mod runtime_path;
 mod runtime_probe;
 
@@ -21,6 +22,7 @@ pub fn run() {
             let app_data = app.path().app_local_data_dir()?;
             std::fs::create_dir_all(&app_data)?;
             let runtime_root = app_data.join("runtime-packs");
+            std::fs::create_dir_all(&runtime_root)?;
             let conversation_store = ConversationStore::open(app_data.join("local-llm-wiki.db"))
                 .map_err(std::io::Error::other)?;
             let app_handle = app.handle().clone();
@@ -37,6 +39,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             runtime_probe::probe_runtime,
+            runtime_packs::list_runtime_packs,
             llm_commands::llm_get_status,
             llm_commands::llm_load_model,
             llm_commands::llm_unload_model,
