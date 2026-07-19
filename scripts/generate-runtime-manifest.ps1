@@ -2,12 +2,14 @@ param(
   [Parameter(Mandatory)][string]$Version,
   [Parameter(Mandatory)][string]$AssetDirectory,
   [string]$OutputDirectory = $AssetDirectory,
+  [string]$Repository = 'soomin-sung-estsoft/local-llm-wiki',
   [string]$MinimumAppVersion = '0.1.0',
   [string]$MaximumAppVersion = '0.1.x'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($Repository -notmatch '^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$') { throw 'Repository must be owner/name.' }
 
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $baseline = Get-Content -Raw -Encoding UTF8 (Join-Path $repositoryRoot 'native/llm-runtime/llama-baseline.json') | ConvertFrom-Json
@@ -66,4 +68,14 @@ $manifest = [ordered]@{
 $manifestPath = Join-Path $outputRoot 'runtime-manifest.json'
 $manifestBytes = [Text.UTF8Encoding]::new($false).GetBytes(($manifest | ConvertTo-Json -Depth 8))
 [IO.File]::WriteAllBytes($manifestPath, $manifestBytes)
+$source = [ordered]@{
+  schemaVersion = 1
+  provider = 'github-release'
+  repository = $Repository
+  releaseTag = "runtime-v$Version"
+  manifestAsset = 'runtime-manifest.json'
+  manifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash.ToLowerInvariant()
+}
+$sourceBytes = [Text.UTF8Encoding]::new($false).GetBytes(($source | ConvertTo-Json -Depth 4))
+[IO.File]::WriteAllBytes((Join-Path $outputRoot 'runtime-source.json'), $sourceBytes)
 Write-Output $manifestPath

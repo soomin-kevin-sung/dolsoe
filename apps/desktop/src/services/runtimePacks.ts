@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type RuntimeBackend = "cpu" | "cuda" | "vulkan";
-export type RuntimePackStatus = "ready" | "invalid";
+export type RuntimePackStatus = "ready" | "not-installed" | "replacement-pending" | "repair-required" | "unavailable";
 
 export interface RuntimeDevice {
   index: number;
@@ -37,6 +37,13 @@ export interface RuntimeSelection extends RuntimePreference {
   deviceIndex: number;
 }
 
+export interface RuntimeSelectionState {
+  schemaVersion: number;
+  activeBackend: RuntimeBackend;
+  pendingActivation: RuntimeBackend | null;
+  lastActivationError: string | null;
+}
+
 export type RuntimeInstallPhase = "downloading" | "verifying" | "installing" | "installed" | "cancelled" | "failed";
 
 export interface AvailableRuntimePack {
@@ -44,6 +51,8 @@ export interface AvailableRuntimePack {
   backend: RuntimeBackend;
   releaseVersion: string;
   sizeBytes: number;
+  llamaCppRelease: string;
+  llamaCppCommit: string;
   installed: boolean;
 }
 
@@ -109,10 +118,17 @@ export function resolveRuntimeSelection(
   return selectionFor(inventory.packs.find((pack) => pack.id === inventory.fallbackPackId));
 }
 
+export function selectionForBackend(
+  inventory: RuntimePackInventory,
+  backend: RuntimeBackend,
+): RuntimeSelection | null {
+  return selectionFor(inventory.packs.find((pack) => pack.id === backend), backend);
+}
+
 interface RuntimeTransition {
   modelPath: string | null;
   unload(): Promise<void>;
-  persist(selection: RuntimeSelection): void;
+  persist(selection: RuntimeSelection): void | Promise<void>;
   load(modelPath: string, selection: RuntimeSelection): Promise<void>;
 }
 
@@ -121,11 +137,11 @@ export async function applyRuntimeSelection(
   transition: RuntimeTransition,
 ): Promise<void> {
   if (!transition.modelPath) {
-    transition.persist(selection);
+    await transition.persist(selection);
     return;
   }
   await transition.unload();
-  transition.persist(selection);
+  await transition.persist(selection);
   await transition.load(transition.modelPath, selection);
 }
 
@@ -168,6 +184,22 @@ export class RuntimePackService {
 
   cancelInstall(): Promise<void> {
     return this.bindings.invoke("cancel_runtime_pack_install") as Promise<void>;
+  }
+
+  getSelection(): Promise<RuntimeSelectionState> {
+    return this.bindings.invoke("get_runtime_selection") as Promise<RuntimeSelectionState>;
+  }
+
+  requestActivation(backend: RuntimeBackend): Promise<void> {
+    return this.bindings.invoke("request_runtime_activation", { backend }) as Promise<void>;
+  }
+
+  setActive(backend: RuntimeBackend): Promise<void> {
+    return this.bindings.invoke("set_active_runtime_backend", { backend }) as Promise<void>;
+  }
+
+  restart(): Promise<void> {
+    return this.bindings.invoke("restart_runtime_app") as Promise<void>;
   }
 
   subscribeInstallProgress(handler: (event: RuntimeInstallProgressEvent) => void): Promise<UnlistenFn> {

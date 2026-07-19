@@ -23,22 +23,22 @@ class MemoryStorage implements Storage {
   setItem(key: string, value: string) { this.values.set(key, value); }
 }
 
-function pack(id: string, backend: "cpu" | "cuda", status: "ready" | "invalid"): RuntimePack {
+function pack(id: string, backend: "cpu" | "cuda", status: "ready" | "repair-required"): RuntimePack {
   return {
     id,
-    backend: status === "ready" ? backend : null,
+    backend,
     status,
     runtimeVersion: status === "ready" ? "0.1.0" : null,
     llamaCppCommit: status === "ready" ? "test-commit" : null,
     abiMajor: status === "ready" ? 1 : null,
     abiMinor: status === "ready" ? 0 : null,
     devices: status === "ready" ? [{ index: 0, id: `${backend}:0`, name: backend, vendor: "Test" }] : [],
-    error: status === "invalid" ? "probe failed" : null,
+    error: status === "repair-required" ? "probe failed" : null,
   };
 }
 
 function inventory(packs: RuntimePack[]): RuntimePackInventory {
-  return { packs, fallbackPackId: "cpu-dev" };
+  return { packs, fallbackPackId: "cpu" };
 }
 
 describe("runtime pack selection", () => {
@@ -72,16 +72,16 @@ describe("runtime pack selection", () => {
 
   it("lists, installs, and cancels release packs through fixed commands", async () => {
     const invoke = vi.fn(async (command: string) => command === "list_available_runtime_packs"
-      ? [{ id: "cuda-1", backend: "cuda", releaseVersion: "1", sizeBytes: 1024, installed: false }]
+      ? [{ id: "cuda", backend: "cuda", releaseVersion: "1", sizeBytes: 1024, llamaCppRelease: "b10068", llamaCppCommit: "commit", installed: false }]
       : undefined);
     const service = new RuntimePackService({ invoke: invoke as never });
 
     expect(await service.listAvailable()).toHaveLength(1);
-    await service.install("cuda-1");
+    await service.install("cuda");
     await service.cancelInstall();
 
     expect(invoke).toHaveBeenNthCalledWith(1, "list_available_runtime_packs");
-    expect(invoke).toHaveBeenNthCalledWith(2, "install_runtime_pack", { packId: "cuda-1" });
+    expect(invoke).toHaveBeenNthCalledWith(2, "install_runtime_pack", { packId: "cuda" });
     expect(invoke).toHaveBeenNthCalledWith(3, "cancel_runtime_pack_install");
   });
 
@@ -118,19 +118,19 @@ describe("runtime pack selection", () => {
   });
 
   it("rejects a stored preference that is not ready", () => {
-    const value = inventory([pack("cuda-broken", "cuda", "invalid"), pack("cpu-dev", "cpu", "ready")]);
+    const value = inventory([pack("cuda", "cuda", "repair-required"), pack("cpu", "cpu", "ready")]);
 
     expect(resolveRuntimeSelection(value, { packId: "cuda-broken", backend: "cuda" }))
-      .toEqual({ packId: "cpu-dev", backend: "cpu", deviceIndex: 0 });
+      .toEqual({ packId: "cpu", backend: "cpu", deviceIndex: 0 });
   });
 
   it("leaves an invalid stored preference intact while using fallback", () => {
     const storage = new MemoryStorage();
     storage.setItem(PREFERENCE_KEY, JSON.stringify({ packId: "missing", backend: "cuda" }));
-    const value = inventory([pack("cpu-dev", "cpu", "ready")]);
+    const value = inventory([pack("cpu", "cpu", "ready")]);
 
     expect(resolveRuntimeSelection(value, readRuntimePreference(storage)))
-      .toEqual({ packId: "cpu-dev", backend: "cpu", deviceIndex: 0 });
+      .toEqual({ packId: "cpu", backend: "cpu", deviceIndex: 0 });
     expect(storage.getItem(PREFERENCE_KEY)).toContain("missing");
   });
 
@@ -138,5 +138,19 @@ describe("runtime pack selection", () => {
     const storage = new MemoryStorage();
     storage.setItem(PREFERENCE_KEY, "not-json");
     expect(readRuntimePreference(storage)).toBeNull();
+  });
+
+  it("reads and persists Rust-owned backend selection", async () => {
+    const invoke = vi.fn(async (command: string) => command === "get_runtime_selection"
+      ? { schemaVersion: 1, activeBackend: "cpu", pendingActivation: null, lastActivationError: null }
+      : undefined);
+    const service = new RuntimePackService({ invoke: invoke as never });
+
+    expect((await service.getSelection()).activeBackend).toBe("cpu");
+    await service.requestActivation("cuda");
+    await service.setActive("cpu");
+
+    expect(invoke).toHaveBeenNthCalledWith(2, "request_runtime_activation", { backend: "cuda" });
+    expect(invoke).toHaveBeenNthCalledWith(3, "set_active_runtime_backend", { backend: "cpu" });
   });
 });

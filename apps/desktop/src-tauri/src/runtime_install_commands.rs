@@ -51,6 +51,8 @@ pub struct AvailableRuntimePackDto {
     pub backend: String,
     pub release_version: String,
     pub size_bytes: u64,
+    pub llama_cpp_release: String,
+    pub llama_cpp_commit: String,
     pub installed: bool,
 }
 
@@ -67,6 +69,8 @@ pub fn available_pack_dtos(
             backend: pack.backend,
             release_version: release_version.into(),
             size_bytes: pack.size,
+            llama_cpp_release: pack.llama_cpp_release,
+            llama_cpp_commit: pack.llama_cpp_commit,
         })
         .collect();
     values.sort_by(|left, right| left.id.cmp(&right.id));

@@ -51,7 +51,6 @@ jobs:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      LLW_RUNTIME_SIGNING_KEY: ${{ secrets.LLW_RUNTIME_SIGNING_KEY }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -65,7 +64,7 @@ jobs:
           $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { '${{ github.ref_name }}'.Replace('runtime-v', '') }
           "LLW_RUNTIME_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
           "LLW_RUNTIME_TAG=runtime-v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
-      - name: Sign exact runtime manifest bytes
+      - name: Generate pinned runtime catalog
         shell: pwsh
         run: scripts/generate-runtime-manifest.ps1 -Version $env:LLW_RUNTIME_VERSION -AssetDirectory .runtime-release -OutputDirectory .runtime-release
       - name: Publish immutable GitHub Release
@@ -75,7 +74,7 @@ jobs:
             echo "Refusing to overwrite existing release $LLW_RUNTIME_TAG" >&2
             exit 1
           fi
-          gh release create "$LLW_RUNTIME_TAG" .runtime-release/*.zip .runtime-release/runtime-manifest.json .runtime-release/runtime-manifest.json.sig .runtime-release/runtime-manifest.public-key \
+          gh release create "$LLW_RUNTIME_TAG" .runtime-release/*.zip .runtime-release/runtime-manifest.json .runtime-release/runtime-source.json \
             --target "$GITHUB_SHA" \
             --title "Runtime packs $LLW_RUNTIME_VERSION" \
-            --notes "Signed Windows x64 runtime packs for Local LLM Wiki."
+            --notes "Pinned Windows x64 runtime packs for Local LLM Wiki."

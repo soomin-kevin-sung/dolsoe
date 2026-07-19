@@ -135,6 +135,26 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .pack-status { margin-top: 6px; color: var(--text-2); font-size: 11px; }
 .pack-row .progress-track { margin-top: 10px; }
 .settings-section .runtime-installed { color: var(--accent); }
+.runtime-backend-list { display: grid; gap: 8px; }
+.runtime-backend-row { position: relative; padding: 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); }
+.runtime-backend-row.selected { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.runtime-backend-main { display: flex; width: 100%; min-height: 36px; align-items: center; gap: 9px; color: var(--text-1); background: transparent; text-align: left; cursor: pointer; }
+.runtime-backend-main:disabled { cursor: not-allowed; opacity: 0.65; }
+.runtime-backend-copy { display: grid; flex: 1; gap: 2px; }
+.runtime-backend-copy strong { font-size: 12px; }
+.runtime-backend-copy small, .runtime-backend-meta { color: var(--text-3); font-size: 10px; }
+.runtime-active-mark { display: flex; align-items: center; gap: 3px; color: var(--accent); font-size: 10px; font-weight: 600; }
+.runtime-backend-meta { display: flex; flex-wrap: wrap; gap: 8px; padding: 3px 0 0 27px; }
+.runtime-backend-row .runtime-pack-error { display: flex; align-items: flex-start; gap: 5px; padding-left: 27px; }
+.runtime-row-action { display: inline-flex; min-height: 28px; margin: 8px 0 0 27px; padding: 0 9px; align-items: center; gap: 5px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-1); background: var(--bg-inset); cursor: pointer; }
+.runtime-row-action:disabled { cursor: not-allowed; opacity: 0.5; }
+.runtime-install-progress { display: grid; grid-template-columns: 1fr auto auto; margin: 9px 0 0 27px; align-items: center; gap: 8px; color: var(--text-2); font-size: 10px; }
+.runtime-restart-notice { margin-top: 10px; padding: 10px; border-left: 3px solid var(--amber); background: var(--amber-bg); }
+.runtime-restart-notice strong { font-size: 12px; }
+.runtime-install-dialog dl { display: grid; gap: 6px; margin: 14px 0; }
+.runtime-install-dialog dl div { display: grid; grid-template-columns: 90px 1fr; gap: 8px; font-size: 11px; }
+.runtime-install-dialog dt { color: var(--text-3); }
+.runtime-install-dialog dd { margin: 0; overflow-wrap: anywhere; color: var(--text-1); }
 .panel-footer { flex: none; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--bg-surface); }
 .panel-footer .button-primary { width: 100%; }
 .panel-footer p { margin: 6px 0 0; color: var(--amber); font-size: 11px; }

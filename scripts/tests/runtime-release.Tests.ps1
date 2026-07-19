@@ -4,6 +4,7 @@ Set-StrictMode -Version Latest
 $repositoryRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $builder = Join-Path $repositoryRoot 'scripts/build-runtime-release.ps1'
 $generator = Join-Path $repositoryRoot 'scripts/generate-runtime-manifest.ps1'
+$bundler = Join-Path $repositoryRoot 'scripts/prepare-bundled-cpu-runtime.ps1'
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) "llw-runtime-release-tests-$PID"
 $fixture = Join-Path $temporaryRoot 'cpu-pack'
 $output = Join-Path $temporaryRoot 'output'
@@ -91,7 +92,9 @@ try {
 
   & $generator -Version $version -AssetDirectory $output -OutputDirectory $output
   $manifestPath = Join-Path $output 'runtime-manifest.json'
+  $sourcePath = Join-Path $output 'runtime-source.json'
   Assert-True (Test-Path -LiteralPath $manifestPath -PathType Leaf) 'Manifest was not generated.'
+  Assert-True (Test-Path -LiteralPath $sourcePath -PathType Leaf) 'Runtime source was not generated.'
 
   $manifest = Get-Content -Raw -Encoding UTF8 $manifestPath | ConvertFrom-Json
   Assert-True ($manifest.schemaVersion -eq 1) 'Unexpected manifest schema version.'
@@ -101,6 +104,13 @@ try {
   Assert-True ($manifest.packs[0].assetName -eq $assetName) 'Catalog asset name does not match the deterministic asset name.'
   Assert-True ($manifest.packs[0].sha256 -eq (Get-FileHash -Algorithm SHA256 $assetPath).Hash.ToLowerInvariant()) 'Archive hash mismatch.'
   Assert-True ('files' -notin $manifest.packs[0].PSObject.Properties.Name) 'Catalog must not duplicate payload file hashes.'
+  $source = Get-Content -Raw -Encoding UTF8 $sourcePath | ConvertFrom-Json
+  Assert-True ($source.manifestSha256 -eq (Get-FileHash -Algorithm SHA256 $manifestPath).Hash.ToLowerInvariant()) 'Runtime source did not pin the exact catalog hash.'
+
+  $bundleResources = Join-Path $temporaryRoot 'bundle-resources'
+  & $bundler -RuntimeAsset $assetPath -Catalog $manifestPath -ResourceDirectory $bundleResources
+  Assert-True (Test-Path -LiteralPath (Join-Path $bundleResources 'cpu.zip') -PathType Leaf) 'CPU bundle archive was not prepared.'
+  Assert-True (Test-Path -LiteralPath (Join-Path $bundleResources 'cpu-index.json') -PathType Leaf) 'CPU bundle index was not prepared.'
 
   Assert-True (Test-Path -LiteralPath $workflowPath -PathType Leaf) 'Runtime release workflow is missing.'
   $workflow = Get-Content -Raw -Encoding UTF8 $workflowPath
@@ -116,7 +126,8 @@ try {
   Assert-True ($builderSource -notmatch 'CUDA_PATH|nvcc|VULKAN_SDK') 'Runtime builder must not use locally installed vendor toolkits.'
   Assert-True ($workflow -match 'actions/upload-artifact@[0-9a-f]{40}') 'Build artifacts must use a commit-pinned upload action.'
   Assert-True ($workflow -match 'actions/download-artifact@[0-9a-f]{40}') 'Publish must collect commit-pinned build artifacts.'
-  Assert-True ($workflow -match 'LLW_RUNTIME_SIGNING_KEY') 'Publish must use the runtime signing secret.'
+  Assert-True ($workflow -notmatch 'LLW_RUNTIME_SIGNING_KEY|runtime-manifest\.json\.sig|runtime-manifest\.public-key') 'Runtime publishing must not require signing keys or detached signature assets.'
+  Assert-True ($workflow -match '\.runtime-release/runtime-manifest\.json') 'Publish must include the pinned runtime catalog.'
   Assert-True ($workflow -match 'contents: write') 'Only the publish job may write release contents.'
   Assert-True ($workflow -match 'Refusing to overwrite existing release') 'Publishing must refuse to overwrite a release.'
 

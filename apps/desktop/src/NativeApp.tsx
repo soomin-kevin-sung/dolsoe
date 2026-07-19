@@ -78,6 +78,10 @@ function NativeWorkspace() {
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
+    if (settingsOpen) void packInstaller.refresh();
+  }, [packInstaller.refresh, settingsOpen]);
+
+  useEffect(() => {
     const theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
     document.documentElement.dataset.theme = theme;
   }, []);
@@ -239,6 +243,11 @@ function NativeWorkspace() {
           onReload={() => { setDialogTargetId(null); setDialog("reload"); }}
           onInstall={(packId) => void packInstaller.install(packId)}
           onCancelInstall={() => void packInstaller.cancel()}
+          onRestart={() => void (async () => {
+            if (workspace.state.activeTurn) await workspace.stop();
+            await runtime.restartApp();
+          })()}
+          onDismissInstall={packInstaller.dismiss}
         />
       </div>
       <StatusBar snapshot={snapshot} />

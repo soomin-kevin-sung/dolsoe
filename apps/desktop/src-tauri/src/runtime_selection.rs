@@ -69,6 +69,17 @@ impl RuntimeSelectionStore {
         persist(&self.path, &state)
     }
 
+    pub fn set_active(&self, backend: RuntimeBackend) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "runtime selection lock poisoned")?;
+        state.active_backend = backend;
+        state.pending_activation = None;
+        state.last_activation_error = None;
+        persist(&self.path, &state)
+    }
+
     pub fn consume_pending<F>(&self, mut activate: F) -> Result<(), String>
     where
         F: FnMut(RuntimeBackend) -> bool,
@@ -128,6 +139,14 @@ pub fn request_runtime_activation(
     backend: RuntimeBackend,
 ) -> Result<(), String> {
     state.request_activation(backend)
+}
+
+#[tauri::command]
+pub fn set_active_runtime_backend(
+    state: State<'_, RuntimeSelectionStore>,
+    backend: RuntimeBackend,
+) -> Result<(), String> {
+    state.set_active(backend)
 }
 
 #[tauri::command]

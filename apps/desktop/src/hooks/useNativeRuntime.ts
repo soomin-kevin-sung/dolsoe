@@ -5,9 +5,7 @@ import { applyNativeEvent, createNativeState, nativeReducer, TokenDecoders } fro
 import {
   RuntimePackService,
   applyRuntimeSelection,
-  readRuntimePreference,
-  resolveRuntimeSelection,
-  writeRuntimePreference,
+  selectionForBackend,
   type RuntimeBackend,
   type RuntimePack,
   type RuntimeSelection,
@@ -86,10 +84,11 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
 
   useEffect(() => {
     let disposed = false;
-    void runtimePackService.list()
-      .then((inventory) => {
+    void Promise.all([runtimePackService.list(), runtimePackService.getSelection()])
+      .then(([inventory, selectionState]) => {
         if (disposed) return;
-        const selection = resolveRuntimeSelection(inventory, readRuntimePreference(window.localStorage));
+        const selection = selectionForBackend(inventory, selectionState.activeBackend)
+          ?? selectionForBackend(inventory, "cpu");
         setRuntimePacks(inventory.packs);
         setAppliedRuntime(selection);
         setPendingRuntime(selection);
@@ -209,8 +208,8 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
           decoders.current.clear();
           setState((current) => nativeReducer(current, { type: "status", status }));
         },
-        persist: (selection) => {
-          writeRuntimePreference(window.localStorage, selection);
+        persist: async (selection) => {
+          await runtimePackService.setActive(selection.backend);
           setAppliedRuntime(selection);
           setPendingRuntime(selection);
         },
@@ -219,7 +218,9 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     } catch (error) {
       setState((current) => nativeReducer(current, { type: "load-failed", error: errorText(error) }));
     }
-  }, [loadPath, pendingRuntime, service, state.modelPath]);
+  }, [loadPath, pendingRuntime, runtimePackService, service, state.modelPath]);
+
+  const restartApp = useCallback(() => runtimePackService.restart(), [runtimePackService]);
 
   return {
     state,
@@ -231,6 +232,7 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     pendingRuntime,
     setPendingBackend,
     applyPendingRuntime,
+    restartApp,
     reportError,
     chooseModel,
     submit,

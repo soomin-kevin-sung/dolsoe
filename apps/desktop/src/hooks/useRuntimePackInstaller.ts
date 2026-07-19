@@ -24,7 +24,6 @@ export function useRuntimePackInstaller(service: RuntimePackService = defaultSer
   }, [service]);
 
   useEffect(() => {
-    void refresh();
     let disposed = false;
     let unlisten: (() => void) | undefined;
     void service.subscribeInstallProgress((event) => {
@@ -54,5 +53,7 @@ export function useRuntimePackInstaller(service: RuntimePackService = defaultSer
     }
   }, [service]);
 
-  return useMemo(() => ({ availablePacks, installState, error, refresh, install, cancel }), [availablePacks, cancel, error, install, installState, refresh]);
+  const dismiss = useCallback(() => setInstallState(null), []);
+
+  return useMemo(() => ({ availablePacks, installState, error, refresh, install, cancel, dismiss }), [availablePacks, cancel, dismiss, error, install, installState, refresh]);
 }

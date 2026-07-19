@@ -88,6 +88,7 @@ pub fn run() {
             runtime_install_commands::cancel_runtime_pack_install,
             runtime_selection::get_runtime_selection,
             runtime_selection::request_runtime_activation,
+            runtime_selection::set_active_runtime_backend,
             runtime_selection::restart_runtime_app,
             llm_commands::llm_get_status,
             llm_commands::llm_load_model,
