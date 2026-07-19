@@ -52,7 +52,7 @@ std::vector<DeviceRecord> enumerate_pack_devices_unlocked(const std::string& dir
         record.device = device;
         record.id = properties.device_id ? properties.device_id
                                          : std::to_string(backend) + ":pending";
-        record.name = ggml_backend_dev_name(device) ? ggml_backend_dev_name(device) : "unknown";
+        record.name = device_display_name(properties, ggml_backend_dev_name(device));
         record.vendor = registry ? registry : "ggml";
         result.push_back(std::move(record));
     }
@@ -99,6 +99,12 @@ std::vector<uint8_t> token_piece(const llama_vocab* vocab, llama_token token) {
 }
 
 } // namespace
+
+std::string device_display_name(const ggml_backend_dev_props& properties, const char* fallback) {
+    if (properties.description && properties.description[0] != '\0') return properties.description;
+    if (properties.name && properties.name[0] != '\0') return properties.name;
+    return fallback ? fallback : "unknown";
+}
 
 struct LlamaEngine::Sequence {
     llw_handle_t handle{};

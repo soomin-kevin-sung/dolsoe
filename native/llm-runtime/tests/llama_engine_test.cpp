@@ -95,6 +95,13 @@ int main() {
     CHECK(select_device(cpu_only, LLW_BACKEND_AUTO, 0, LLW_BACKEND_CUDA)->id == "cpu:only");
     CHECK(!select_device(devices, LLW_BACKEND_VULKAN, 0, LLW_BACKEND_CUDA).has_value());
 
+    ggml_backend_dev_props display_props{};
+    display_props.name = "CPU";
+    display_props.description = "AMD Ryzen Test CPU";
+    CHECK(device_display_name(display_props, "unknown") == "AMD Ryzen Test CPU");
+    display_props.description = "";
+    CHECK(device_display_name(display_props, "unknown") == "CPU");
+
     const std::vector<llama_token> first_tokens = {10, 11, 12};
     const std::vector<llama_token> second_tokens = {20, 21};
     const std::vector<SequenceView> prompt_views = {

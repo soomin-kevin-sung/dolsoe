@@ -68,6 +68,7 @@ struct StopMatch {
 
 llw_result_t validate_model_config(const ModelConfig&, std::string&);
 std::vector<DeviceRecord> assign_device_indices(std::vector<DeviceRecord>);
+std::string device_display_name(const ggml_backend_dev_props&, const char* fallback);
 std::optional<DeviceRecord> select_device(
     const std::vector<DeviceRecord>&, int32_t, uint32_t, int32_t);
 std::vector<DeviceRecord> enumerate_pack_devices(const std::string& backend_directory);
