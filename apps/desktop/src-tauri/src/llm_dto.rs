@@ -30,6 +30,8 @@ pub struct LlmStatusDto {
 #[serde(rename_all = "camelCase")]
 pub struct LoadModelRequest {
     pub runtime_pack_id: String,
+    pub backend: String,
+    pub device_index: u32,
     pub model_path: String,
     pub context_size: u32,
     pub batch_size: u32,

@@ -165,6 +165,18 @@ pub fn generation_seed(seed: i64) -> WorkerResult<u32> {
     u32::try_from(seed).map_err(|_| "seed must be -1 or an unsigned 32-bit integer".into())
 }
 
+fn model_target(
+    backend: &str,
+    device_index: u32,
+) -> WorkerResult<(Backend, u32, i32, &'static str)> {
+    match backend {
+        "cpu" => Ok((Backend::Cpu, device_index, 0, "CPU")),
+        "cuda" => Ok((Backend::Cuda, device_index, -1, "CUDA")),
+        "vulkan" => Ok((Backend::Vulkan, device_index, -1, "Vulkan")),
+        _ => Err("backend must be cpu, cuda, or vulkan".into()),
+    }
+}
+
 enum RelayCommand {
     Terminal(RuntimeEvent, Sender<()>),
     Shutdown(Sender<()>),
@@ -376,15 +388,17 @@ impl NativeState {
             self.runtime = Some(runtime);
             self.relay = Some(relay);
 
+            let (backend, device_index, n_gpu_layers, backend_label) =
+                model_target(&request.backend, request.device_index)?;
             let options = ModelOptions {
-                backend: Backend::Cpu,
-                device_index: 0,
+                backend,
+                device_index,
                 context_tokens_per_slot: request.context_size,
                 logical_batch_tokens: request.batch_size,
                 physical_batch_tokens: request.physical_batch_size,
                 n_threads: request.threads,
                 n_threads_batch: request.threads,
-                n_gpu_layers: 0,
+                n_gpu_layers,
                 use_mmap: request.use_mmap,
                 use_mlock: false,
                 check_tensors: false,
@@ -403,7 +417,7 @@ impl NativeState {
                 model_name: model_path
                     .file_name()
                     .map(|value| value.to_string_lossy().into_owned()),
-                backend: Some("CPU".into()),
+                backend: Some(backend_label.into()),
                 loading_progress: Some(1.0),
                 active_request_handle: None,
                 last_error: None,
@@ -702,14 +716,37 @@ mod tests {
     use std::time::Duration;
 
     use crossbeam_channel::bounded;
-    use llm_runtime::{EventKind, RuntimeEvent};
+    use llm_runtime::{Backend, EventKind, RuntimeEvent};
 
     use crate::llm_dto::LlmPhase;
 
     use super::{
-        generation_seed, spawn_event_relay, validate_model_path, WorkerError, WorkerGuard,
-        WORKER_COMMAND_CAPACITY,
+        generation_seed, model_target, spawn_event_relay, validate_model_path, WorkerError,
+        WorkerGuard, WORKER_COMMAND_CAPACITY,
     };
+
+    #[test]
+    fn model_target_maps_backend_and_gpu_layers() {
+        let (cpu, cpu_index, cpu_layers, cpu_label) = model_target("cpu", 0).unwrap();
+        let (cuda, cuda_index, cuda_layers, cuda_label) = model_target("cuda", 2).unwrap();
+        let (vulkan, vulkan_index, vulkan_layers, vulkan_label) =
+            model_target("vulkan", 1).unwrap();
+
+        assert!(matches!(cpu, Backend::Cpu));
+        assert_eq!((cpu_index, cpu_layers, cpu_label), (0, 0, "CPU"));
+        assert!(matches!(cuda, Backend::Cuda));
+        assert_eq!((cuda_index, cuda_layers, cuda_label), (2, -1, "CUDA"));
+        assert!(matches!(vulkan, Backend::Vulkan));
+        assert_eq!(
+            (vulkan_index, vulkan_layers, vulkan_label),
+            (1, -1, "Vulkan")
+        );
+    }
+
+    #[test]
+    fn model_target_rejects_unknown_backend() {
+        assert!(model_target("metal", 0).is_err());
+    }
 
     fn event(kind: EventKind, handle: u64, sequence: u64, bytes: &[u8]) -> RuntimeEvent {
         RuntimeEvent {
