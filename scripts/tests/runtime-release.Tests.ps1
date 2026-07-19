@@ -11,6 +11,7 @@ $cudaFixture = Join-Path $temporaryRoot 'cuda-pack'
 $cudaOutput = Join-Path $temporaryRoot 'cuda-output'
 $version = '2026.07.1'
 $workflowPath = Join-Path $repositoryRoot '.github/workflows/runtime-release.yml'
+$ciWorkflowPath = Join-Path $repositoryRoot '.github/workflows/ci.yml'
 
 function Assert-True([bool]$Condition, [string]$Message) {
   if (-not $Condition) { throw $Message }
@@ -88,6 +89,9 @@ try {
 
   Assert-True (Test-Path -LiteralPath $workflowPath -PathType Leaf) 'Runtime release workflow is missing.'
   $workflow = Get-Content -Raw -Encoding UTF8 $workflowPath
+  $ciWorkflow = Get-Content -Raw -Encoding UTF8 $ciWorkflowPath
+  Assert-True ($workflow -notmatch 'Visual Studio 17 2022') 'Runtime release must not force an unavailable Visual Studio generator.'
+  Assert-True ($ciWorkflow -notmatch 'Visual Studio 17 2022') 'CI must not force an unavailable Visual Studio generator.'
   Assert-True ($workflow -match 'windows-2025') 'CPU and Vulkan assets must use pinned hosted Windows runners.'
   Assert-True ($workflow -match 'self-hosted, Windows, X64, cuda') 'CUDA must use the gated private CUDA runner.'
   Assert-True ($workflow -match "github.event_name == 'push'.*inputs.include_cuda") 'Tag releases must include CUDA; manual releases may gate it.'

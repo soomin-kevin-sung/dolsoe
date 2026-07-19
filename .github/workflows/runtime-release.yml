@@ -18,11 +18,6 @@ on:
 permissions:
   contents: read
 
-env:
-  CMAKE_GENERATOR: Visual Studio 17 2022
-  CMAKE_GENERATOR_PLATFORM: x64
-  CMAKE_GENERATOR_TOOLSET: v143
-
 jobs:
   build-cpu:
     runs-on: windows-2025
