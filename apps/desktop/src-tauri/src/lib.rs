@@ -26,13 +26,14 @@ pub fn run() {
             let conversation_store = ConversationStore::open(app_data.join("local-llm-wiki.db"))
                 .map_err(std::io::Error::other)?;
             let app_handle = app.handle().clone();
-            let worker =
-                WorkerHandle::spawn(RuntimePackResolver::new(runtime_root), move |event| {
-                    app_handle
-                        .emit("llm://event", event)
-                        .map_err(|error| error.to_string())
-                })
+            let resolver = RuntimePackResolver::trusted(&app_data, runtime_root)
                 .map_err(std::io::Error::other)?;
+            let worker = WorkerHandle::spawn(resolver, move |event| {
+                app_handle
+                    .emit("llm://event", event)
+                    .map_err(|error| error.to_string())
+            })
+            .map_err(std::io::Error::other)?;
             app.manage(conversation_store);
             app.manage(worker);
             Ok(())

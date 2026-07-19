@@ -32,14 +32,15 @@ pub async fn probe_runtime(
     app: tauri::AppHandle,
     runtime_pack_id: String,
 ) -> Result<RuntimeInfoDto, String> {
-    let runtime_root = app
+    let app_data = app
         .path()
         .app_local_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("runtime-packs");
+        .map_err(|error| error.to_string())?;
+    let runtime_root = app_data.join("runtime-packs");
 
     tauri::async_runtime::spawn_blocking(move || {
-        let path = RuntimePackResolver::new(runtime_root).resolve(&runtime_pack_id)?;
+        let path =
+            RuntimePackResolver::trusted(&app_data, runtime_root)?.resolve(&runtime_pack_id)?;
         // The backend/runtime installer exclusively owns writes to this trusted root.
         // SAFETY: `path` is the canonical path of a project-managed, ABI-conforming runtime pack.
         let runtime = unsafe { llm_runtime::RuntimeLibrary::load(&path) }

@@ -12,6 +12,19 @@ impl RuntimePackResolver {
         Self { runtime_root }
     }
 
+    pub fn trusted(app_local_data: &Path, runtime_root: PathBuf) -> Result<Self, String> {
+        let canonical_app_data = app_local_data
+            .canonicalize()
+            .map_err(|error| format!("failed to canonicalize app-local data: {error}"))?;
+        let canonical_runtime_root = runtime_root
+            .canonicalize()
+            .map_err(|error| format!("failed to canonicalize trusted runtime root: {error}"))?;
+        if canonical_runtime_root.parent() != Some(canonical_app_data.as_path()) {
+            return Err("trusted runtime root must be a direct child of app-local data".into());
+        }
+        Ok(Self::new(canonical_runtime_root))
+    }
+
     pub fn runtime_root(&self) -> &Path {
         &self.runtime_root
     }
@@ -166,5 +179,29 @@ mod tests {
             .unwrap_err();
 
         assert!(error.contains(&root.join("cpu-dev").display().to_string()));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn rejects_runtime_root_junction_outside_app_data() {
+        use std::process::Command;
+
+        let temp = tempfile::tempdir().expect("create temporary directory");
+        let app_data = temp.path().join("app-data");
+        let runtime_root = app_data.join("runtime-packs");
+        let outside = temp.path().join("outside-runtime-packs");
+        fs::create_dir(&app_data).expect("create app data");
+        fs::create_dir(&outside).expect("create outside root");
+        let output = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&runtime_root)
+            .arg(&outside)
+            .output()
+            .expect("run mklink");
+        assert!(output.status.success(), "create runtime root junction");
+
+        let error = RuntimePackResolver::trusted(&app_data, runtime_root).unwrap_err();
+
+        assert!(error.contains("direct child of app-local data"));
     }
 }

@@ -154,13 +154,20 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
 
   const stop = useCallback(async () => {
     if (state.activeRequestHandle) {
-      await service.cancel(state.activeRequestHandle).catch((error) => {
+      try {
+        await service.cancel(state.activeRequestHandle);
+      } catch (error) {
         setState((current) => nativeReducer(current, { type: "submit-failed", error: errorText(error) }));
-      });
+        throw error;
+      }
     } else if (state.pendingSubmit) {
       cancelWhenAccepted.current = true;
     }
   }, [service, state.activeRequestHandle, state.pendingSubmit]);
+
+  const reportError = useCallback((error: unknown) => {
+    setState((current) => nativeReducer(current, { type: "load-failed", error: errorText(error) }));
+  }, []);
 
   const reset = useCallback(async () => {
     if (state.activeRequestHandle) await service.cancel(state.activeRequestHandle).catch(() => undefined);
@@ -224,6 +231,7 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     pendingRuntime,
     setPendingBackend,
     applyPendingRuntime,
+    reportError,
     chooseModel,
     submit,
     stop,

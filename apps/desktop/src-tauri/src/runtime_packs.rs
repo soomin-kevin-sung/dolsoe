@@ -180,13 +180,13 @@ fn probe_runtime_pack(resolver: &RuntimePackResolver, id: &str) -> Result<Probed
 
 #[tauri::command]
 pub async fn list_runtime_packs(app: tauri::AppHandle) -> Result<RuntimePackInventoryDto, String> {
-    let runtime_root = app
+    let app_data = app
         .path()
         .app_local_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("runtime-packs");
+        .map_err(|error| error.to_string())?;
+    let runtime_root = app_data.join("runtime-packs");
     tauri::async_runtime::spawn_blocking(move || {
-        let resolver = RuntimePackResolver::new(runtime_root.clone());
+        let resolver = RuntimePackResolver::trusted(&app_data, runtime_root.clone())?;
         scan_runtime_packs(&runtime_root, |id, _| probe_runtime_pack(&resolver, id))
     })
     .await

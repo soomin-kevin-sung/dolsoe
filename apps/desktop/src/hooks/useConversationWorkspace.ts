@@ -15,6 +15,7 @@ import {
 } from "../services/conversationState";
 import type { LlmEventDto } from "../services/nativeRuntime";
 import { TokenDecoders } from "../services/nativeState";
+import { TerminalWaiters } from "../services/terminalWaiters";
 import { useNativeRuntime } from "./useNativeRuntime";
 
 function errorText(error: unknown): string {
@@ -25,7 +26,7 @@ export function useConversationWorkspace() {
   const service = useMemo(() => new ConversationService(), []);
   const decoders = useRef(new TokenDecoders());
   const stateRef = useRef<ConversationState>(createConversationState());
-  const terminalWaiter = useRef<(() => void) | null>(null);
+  const terminalWaiters = useRef(new TerminalWaiters());
   const [state, setState] = useState(stateRef.current);
 
   const apply = useCallback((action: ConversationAction) => {
@@ -63,11 +64,9 @@ export function useConversationWorkspace() {
     const status: TerminalMessageStatus = event.kind === "done" ? "complete" : event.kind;
     const content = assistant.content + tail;
     apply({ type: "terminal", requestHandle: handle, status, tail });
-    const waiter = terminalWaiter.current;
-    terminalWaiter.current = null;
     void service.finishTurn(active.assistantMessageId, content, status)
       .catch((error) => apply({ type: "storage-error", error: errorText(error) }))
-      .finally(() => waiter?.());
+      .finally(() => terminalWaiters.current.resolveAll());
   }, [apply, service]);
 
   const runtime = useNativeRuntime(onNativeEvent);
@@ -80,6 +79,7 @@ export function useConversationWorkspace() {
     return () => {
       disposed = true;
       decoders.current.clear();
+      terminalWaiters.current.resolveAll();
     };
   }, [apply, service]);
 
@@ -121,15 +121,24 @@ export function useConversationWorkspace() {
   const cancelSource = useCallback(async (conversationId: string) => {
     const active = stateRef.current.activeTurn;
     if (!active || active.conversationId !== conversationId) return;
-    const terminal = new Promise<void>((resolve) => { terminalWaiter.current = resolve; });
-    await runtime.stop();
-    await terminal;
+    const terminal = terminalWaiters.current.wait();
+    try {
+      await runtime.stop();
+      await terminal.promise;
+    } catch (error) {
+      terminal.cancel();
+      throw error;
+    }
   }, [runtime]);
 
   const applyPendingRuntime = useCallback(async () => {
     const active = stateRef.current.activeTurn;
-    if (active) await cancelSource(active.conversationId);
-    await runtime.applyPendingRuntime();
+    try {
+      if (active) await cancelSource(active.conversationId);
+      await runtime.applyPendingRuntime();
+    } catch (error) {
+      runtime.reportError(error);
+    }
   }, [cancelSource, runtime]);
 
   const workspaceRuntime = useMemo(
@@ -175,7 +184,11 @@ export function useConversationWorkspace() {
         if (active?.assistantMessageId === turn.assistant.id) {
           const message = errorText(error);
           apply({ type: "turn-failed", error: message });
-          await service.finishTurn(turn.assistant.id, message, "error");
+          try {
+            await service.finishTurn(turn.assistant.id, message, "error");
+          } finally {
+            terminalWaiters.current.resolveAll();
+          }
         }
       }
     } catch (error) {
