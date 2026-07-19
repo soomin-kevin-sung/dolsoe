@@ -33,6 +33,7 @@ tauri-plugin-opener = "2"
 thiserror.workspace = true
 url = "2"
 uuid = { version = "1.24.0", features = ["v4"] }
+zip = { version = "4", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 ed25519-dalek = { version = "2", features = ["pkcs8", "rand_core"] }
