@@ -3,18 +3,20 @@ mod conversation_store;
 mod llm_commands;
 mod llm_dto;
 mod llm_worker;
-mod runtime_packs;
-mod runtime_path;
-mod runtime_manifest;
 mod runtime_archive;
 mod runtime_download;
+mod runtime_install_commands;
 mod runtime_installer;
+mod runtime_manifest;
+mod runtime_packs;
+mod runtime_path;
 mod runtime_probe;
 
 use tauri::{Emitter, Manager};
 
 use crate::conversation_store::ConversationStore;
 use crate::llm_worker::WorkerHandle;
+use crate::runtime_install_commands::RuntimeInstallerState;
 use crate::runtime_path::RuntimePackResolver;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -30,7 +32,7 @@ pub fn run() {
             let conversation_store = ConversationStore::open(app_data.join("local-llm-wiki.db"))
                 .map_err(std::io::Error::other)?;
             let app_handle = app.handle().clone();
-            let resolver = RuntimePackResolver::trusted(&app_data, runtime_root)
+            let resolver = RuntimePackResolver::trusted(&app_data, runtime_root.clone())
                 .map_err(std::io::Error::other)?;
             let worker = WorkerHandle::spawn(resolver, move |event| {
                 app_handle
@@ -40,11 +42,15 @@ pub fn run() {
             .map_err(std::io::Error::other)?;
             app.manage(conversation_store);
             app.manage(worker);
+            app.manage(RuntimeInstallerState::from_compile_time(runtime_root));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             runtime_probe::probe_runtime,
             runtime_packs::list_runtime_packs,
+            runtime_install_commands::list_available_runtime_packs,
+            runtime_install_commands::install_runtime_pack,
+            runtime_install_commands::cancel_runtime_pack_install,
             llm_commands::llm_get_status,
             llm_commands::llm_load_model,
             llm_commands::llm_unload_model,

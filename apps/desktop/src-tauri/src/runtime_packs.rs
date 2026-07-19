@@ -95,6 +95,9 @@ where
             continue;
         }
         let id = entry.file_name().to_string_lossy().into_owned();
+        if id.starts_with('.') || id.contains(".staging-") || id.contains(".backup-") {
+            continue;
+        }
         let result = validate_runtime_pack_id(&id)
             .and_then(|_| probe(&id, &entry.path()))
             .and_then(|value| {

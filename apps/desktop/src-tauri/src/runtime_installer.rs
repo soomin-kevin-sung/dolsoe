@@ -118,12 +118,16 @@ impl InstallCoordinator {
 
     pub fn finish(&self, pack_id: &str) {
         if let Ok(mut active) = self.active.lock() {
-            if active.as_ref().is_some_and(|active| active.pack_id == pack_id) {
+            if active
+                .as_ref()
+                .is_some_and(|active| active.pack_id == pack_id)
+            {
                 *active = None;
             }
         }
     }
 
+    #[cfg(test)]
     pub fn active_pack_id(&self) -> Option<String> {
         self.active
             .lock()
@@ -157,6 +161,12 @@ pub struct RuntimeInstaller {
     coordinator: Arc<InstallCoordinator>,
 }
 
+#[derive(Debug, Clone)]
+pub struct AvailableRuntimeRelease {
+    pub release_version: String,
+    pub packs: Vec<RuntimeManifestPack>,
+}
+
 impl RuntimeInstaller {
     pub fn new(runtime_root: PathBuf, config: RuntimeDistributionConfig) -> Self {
         Self {
@@ -167,16 +177,20 @@ impl RuntimeInstaller {
         }
     }
 
-    pub async fn available_packs(&self) -> Result<Vec<RuntimeManifestPack>, RuntimeInstallerError> {
+    pub async fn available_packs(&self) -> Result<AvailableRuntimeRelease, RuntimeInstallerError> {
         let manifest = self.fetch_manifest().await?;
-        Ok(manifest
+        let release_version = manifest.release_version.clone();
+        let packs = manifest
             .packs
             .into_iter()
             .filter(|pack| {
-                pack.platform == self.config.policy.platform
-                    && pack.arch == self.config.policy.arch
+                pack.platform == self.config.policy.platform && pack.arch == self.config.policy.arch
             })
-            .collect())
+            .collect();
+        Ok(AvailableRuntimeRelease {
+            release_version,
+            packs,
+        })
     }
 
     pub async fn install<F>(&self, pack_id: &str, emit: F) -> Result<(), RuntimeInstallerError>
@@ -191,13 +205,9 @@ impl RuntimeInstaller {
         self.coordinator.finish(pack_id);
         match &result {
             Ok(()) => emit(progress(pack_id, InstallPhase::Installed, 0, 0, None)),
-            Err(RuntimeInstallerError::Download(DownloadError::Cancelled)) => emit(progress(
-                pack_id,
-                InstallPhase::Cancelled,
-                0,
-                0,
-                None,
-            )),
+            Err(RuntimeInstallerError::Download(DownloadError::Cancelled)) => {
+                emit(progress(pack_id, InstallPhase::Cancelled, 0, 0, None))
+            }
             Err(error) => emit(progress(
                 pack_id,
                 InstallPhase::Failed,
@@ -225,6 +235,7 @@ impl RuntimeInstaller {
         let pack = self
             .available_packs()
             .await?
+            .packs
             .into_iter()
             .find(|pack| pack.id == pack_id)
             .ok_or_else(|| RuntimeInstallerError::UnknownPack(pack_id.into()))?;
@@ -279,9 +290,14 @@ impl RuntimeInstaller {
     }
 
     async fn fetch_manifest(&self) -> Result<SignedRuntimeManifest, RuntimeInstallerError> {
-        let raw = fetch_bounded(&self.client, &self.config.manifest_url, MAX_MANIFEST_BYTES).await?;
-        let signature =
-            fetch_bounded(&self.client, &self.config.signature_url, MAX_SIGNATURE_BYTES).await?;
+        let raw =
+            fetch_bounded(&self.client, &self.config.manifest_url, MAX_MANIFEST_BYTES).await?;
+        let signature = fetch_bounded(
+            &self.client,
+            &self.config.signature_url,
+            MAX_SIGNATURE_BYTES,
+        )
+        .await?;
         SignedRuntimeManifest::verify_and_parse(
             &raw,
             &signature,
@@ -298,7 +314,10 @@ async fn fetch_bounded(
     limit: usize,
 ) -> Result<Vec<u8>, RuntimeInstallerError> {
     let response = client.get(url).send().await?.error_for_status()?;
-    if response.content_length().is_some_and(|length| length > limit as u64) {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
         return Err(RuntimeInstallerError::ResponseTooLarge(limit));
     }
     let bytes = response.bytes().await?;
@@ -334,7 +353,10 @@ mod tests {
     fn coordinator_allows_one_install_and_cleans_up_terminal_state() {
         let coordinator = InstallCoordinator::default();
         let first = coordinator.begin("cuda-1").expect("begin first install");
-        assert!(coordinator.begin("vulkan-1").unwrap_err().contains("progress"));
+        assert!(coordinator
+            .begin("vulkan-1")
+            .unwrap_err()
+            .contains("progress"));
         assert_eq!(coordinator.active_pack_id().as_deref(), Some("cuda-1"));
 
         coordinator.cancel().expect("cancel active install");
