@@ -37,6 +37,26 @@ Validate the native workflow in this order:
 
 The SQLite database is stored at `app_local_data_dir/local-llm-wiki.db`. Startup migrations are repeatable, and assistant messages left in `streaming` state are recovered as `interrupted`.
 
+## Installed runtime selection smoke
+
+Validated on 2026-07-19 with Windows 11 x64 and an AMD Ryzen 5 5600X:
+
+```powershell
+& scripts/prepare-dev-cpu-pack.ps1
+$env:LLW_TEST_GGUF = & scripts/acquire-test-model.ps1
+npm --prefix apps/desktop run tauri -- dev
+```
+
+Observed results:
+
+1. Settings discovered `cpu-dev` under the managed app-local runtime root and displayed `AMD Ryzen 5 5600X 6-Core Processor`.
+2. CPU was selected; CUDA and Vulkan were disabled with an installed-pack explanation because no ready GPU packs were present.
+3. `tiny-random-f16.gguf` loaded through the selected CPU pack and reached `CPU · 준비됨`.
+4. Restart rediscovered the CPU fallback and returned to the expected no-model state without a stale model path.
+5. Diagnostics and automated tests covered pack ID/version/commit/ABI mapping, invalid preference fallback, and the `unload -> persist -> reload` transition order.
+
+An actual generation-time switch to a different backend was hardware-gated because this machine had only one ready pack. The conversation layer still serializes cancellation through terminal message persistence before calling the tested runtime transition helper.
+
 ## CUDA compile smoke
 cmake -S native/llm-runtime -B .cmake-build/llm-cuda -A x64 -DLLW_BACKEND_PACK=CUDA
 cmake --build .cmake-build/llm-cuda --config Release
