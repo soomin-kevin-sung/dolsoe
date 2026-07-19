@@ -1,12 +1,12 @@
 use std::path::Path;
 
 use llm_runtime::{Backend, RuntimeLibrary};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-use crate::runtime_path::{validate_runtime_pack_id, RuntimePackResolver};
+use crate::runtime_path::RuntimePackResolver;
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum RuntimeBackend {
     Cpu,
@@ -15,10 +15,13 @@ pub enum RuntimeBackend {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "kebab-case")]
 pub enum RuntimePackStatus {
     Ready,
-    Invalid,
+    NotInstalled,
+    ReplacementPending,
+    RepairRequired,
+    Unavailable,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -61,17 +64,22 @@ struct ProbedPack {
     devices: Vec<RuntimeDeviceDto>,
 }
 
-fn invalid_pack(id: String, error: String) -> RuntimePackDto {
+fn status_pack(
+    id: &str,
+    backend: RuntimeBackend,
+    status: RuntimePackStatus,
+    error: Option<String>,
+) -> RuntimePackDto {
     RuntimePackDto {
-        id,
-        backend: None,
-        status: RuntimePackStatus::Invalid,
+        id: id.into(),
+        backend: Some(backend),
+        status,
         runtime_version: None,
         llama_cpp_commit: None,
         abi_major: None,
         abi_minor: None,
         devices: Vec::new(),
-        error: Some(error),
+        error,
     }
 }
 
@@ -79,51 +87,57 @@ fn scan_runtime_packs<F>(root: &Path, mut probe: F) -> Result<RuntimePackInvento
 where
     F: FnMut(&str, &Path) -> Result<ProbedPack, String>,
 {
-    let entries = std::fs::read_dir(root).map_err(|error| {
-        format!(
-            "failed to read runtime pack root {}: {error}",
-            root.display()
-        )
-    })?;
     let mut packs = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("failed to read runtime pack entry: {error}"))?;
-        let file_type = entry
-            .file_type()
-            .map_err(|error| format!("failed to inspect runtime pack entry: {error}"))?;
-        if !file_type.is_dir() {
-            continue;
-        }
-        let id = entry.file_name().to_string_lossy().into_owned();
-        if id.starts_with('.') || id.contains(".staging-") || id.contains(".backup-") {
-            continue;
-        }
-        let result = validate_runtime_pack_id(&id)
-            .and_then(|_| probe(&id, &entry.path()))
-            .and_then(|value| {
-                if value.devices.is_empty() {
-                    Err("runtime pack has no device for its selected backend".into())
-                } else {
-                    Ok(value)
-                }
-            });
-        let pack = match result {
-            Ok(value) => RuntimePackDto {
+    for (id, expected_backend) in [
+        ("cpu", RuntimeBackend::Cpu),
+        ("cuda", RuntimeBackend::Cuda),
+        ("vulkan", RuntimeBackend::Vulkan),
+    ] {
+        let path = root.join(id);
+        let replacement_pending = root
+            .join(".transactions")
+            .join(format!("{id}.json"))
+            .is_file();
+        if !path.is_dir() {
+            packs.push(status_pack(
                 id,
-                backend: Some(value.backend),
-                status: RuntimePackStatus::Ready,
-                runtime_version: Some(value.runtime_version),
-                llama_cpp_commit: Some(value.llama_cpp_commit),
-                abi_major: Some(value.abi_major),
-                abi_minor: Some(value.abi_minor),
-                devices: value.devices,
-                error: None,
-            },
-            Err(error) => invalid_pack(id, error),
+                expected_backend,
+                RuntimePackStatus::NotInstalled,
+                None,
+            ));
+            continue;
+        }
+        let pack = match probe(id, &path) {
+            Ok(value) => {
+                let unavailable = value.devices.is_empty();
+                RuntimePackDto {
+                    id: id.into(),
+                    backend: Some(value.backend),
+                    status: if replacement_pending {
+                        RuntimePackStatus::ReplacementPending
+                    } else if unavailable {
+                        RuntimePackStatus::Unavailable
+                    } else {
+                        RuntimePackStatus::Ready
+                    },
+                    runtime_version: Some(value.runtime_version),
+                    llama_cpp_commit: Some(value.llama_cpp_commit),
+                    abi_major: Some(value.abi_major),
+                    abi_minor: Some(value.abi_minor),
+                    devices: value.devices,
+                    error: unavailable
+                        .then(|| "runtime pack has no available device or driver".into()),
+                }
+            }
+            Err(error) => status_pack(
+                id,
+                expected_backend,
+                RuntimePackStatus::RepairRequired,
+                Some(error),
+            ),
         };
         packs.push(pack);
     }
-    packs.sort_by(|left, right| left.id.cmp(&right.id));
     let fallback_pack_id = select_fallback(&packs).map(|pack| pack.id.clone());
     Ok(RuntimePackInventoryDto {
         packs,
@@ -132,18 +146,9 @@ where
 }
 
 fn select_fallback(packs: &[RuntimePackDto]) -> Option<&RuntimePackDto> {
-    let ready = |pack: &&RuntimePackDto| pack.status == RuntimePackStatus::Ready;
     packs
         .iter()
-        .find(|pack| pack.id == "cpu-dev" && pack.backend == Some(RuntimeBackend::Cpu))
-        .filter(ready)
-        .or_else(|| {
-            packs
-                .iter()
-                .filter(ready)
-                .find(|pack| pack.backend == Some(RuntimeBackend::Cpu))
-        })
-        .or_else(|| packs.iter().find(ready))
+        .find(|pack| pack.id == "cpu" && pack.status == RuntimePackStatus::Ready)
 }
 
 fn probe_runtime_pack(resolver: &RuntimePackResolver, id: &str) -> Result<ProbedPack, String> {
@@ -160,6 +165,15 @@ fn probe_runtime_pack(resolver: &RuntimePackResolver, id: &str) -> Result<Probed
     } else {
         return Err("runtime pack reports no supported backend".into());
     };
+    let expected = match id {
+        "cpu" => RuntimeBackend::Cpu,
+        "cuda" => RuntimeBackend::Cuda,
+        "vulkan" => RuntimeBackend::Vulkan,
+        _ => return Err("unsupported runtime backend ID".into()),
+    };
+    if backend != expected {
+        return Err("runtime pack capability does not match its backend ID".into());
+    }
     let devices = runtime
         .devices(native_backend)
         .map_err(|error| error.to_string())?
@@ -249,67 +263,82 @@ mod tests {
     #[test]
     fn inventory_keeps_invalid_packs_without_failing_ready_packs() {
         let root = TempDir::new().expect("create trusted runtime root");
-        create_pack(&root, "broken");
-        create_pack(&root, "cpu-dev");
+        create_pack(&root, "cuda");
+        create_pack(&root, "cpu");
 
         let inventory = scan_runtime_packs(root.path(), |id, _| match id {
-            "cpu-dev" => Ok(probed_cpu("CPU 0")),
+            "cpu" => Ok(probed_cpu("CPU 0")),
             _ => Err("ABI mismatch".into()),
         })
         .expect("scan runtime packs");
 
-        assert_eq!(inventory.packs.len(), 2);
-        assert_eq!(inventory.packs[0].id, "broken");
-        assert_eq!(inventory.packs[0].status, RuntimePackStatus::Invalid);
-        assert_eq!(inventory.packs[0].error.as_deref(), Some("ABI mismatch"));
-        assert_eq!(inventory.packs[1].id, "cpu-dev");
-        assert_eq!(inventory.packs[1].backend, Some(RuntimeBackend::Cpu));
-        assert_eq!(inventory.fallback_pack_id.as_deref(), Some("cpu-dev"));
+        assert_eq!(inventory.packs.len(), 3);
+        assert_eq!(inventory.packs[0].id, "cpu");
+        assert_eq!(inventory.packs[0].status, RuntimePackStatus::Ready);
+        assert_eq!(inventory.packs[1].id, "cuda");
+        assert_eq!(inventory.packs[1].status, RuntimePackStatus::RepairRequired);
+        assert_eq!(inventory.packs[1].error.as_deref(), Some("ABI mismatch"));
+        assert_eq!(inventory.packs[2].status, RuntimePackStatus::NotInstalled);
+        assert_eq!(inventory.fallback_pack_id.as_deref(), Some("cpu"));
     }
 
     #[test]
-    fn fallback_prefers_cpu_dev_then_other_cpu_then_any_ready_pack() {
+    fn fallback_uses_only_ready_stable_cpu() {
         let packs = vec![
             ready("vulkan-a", RuntimeBackend::Vulkan),
-            ready("cpu-z", RuntimeBackend::Cpu),
-            ready("cpu-dev", RuntimeBackend::Cpu),
+            ready("cpu", RuntimeBackend::Cpu),
         ];
         assert_eq!(
             select_fallback(&packs).map(|pack| pack.id.as_str()),
-            Some("cpu-dev")
-        );
-
-        let packs = vec![
-            ready("vulkan-a", RuntimeBackend::Vulkan),
-            ready("cpu-z", RuntimeBackend::Cpu),
-        ];
-        assert_eq!(
-            select_fallback(&packs).map(|pack| pack.id.as_str()),
-            Some("cpu-z")
+            Some("cpu")
         );
 
         let packs = vec![ready("vulkan-a", RuntimeBackend::Vulkan)];
-        assert_eq!(
-            select_fallback(&packs).map(|pack| pack.id.as_str()),
-            Some("vulkan-a")
-        );
+        assert_eq!(select_fallback(&packs), None);
     }
 
     #[test]
     fn ready_pack_requires_at_least_one_device() {
         let root = TempDir::new().expect("create trusted runtime root");
-        create_pack(&root, "cpu-empty");
+        create_pack(&root, "cpu");
         let mut probe = probed_cpu("unused");
         probe.devices.clear();
 
         let inventory =
             scan_runtime_packs(root.path(), |_, _| Ok(probe.clone())).expect("scan runtime packs");
 
-        assert_eq!(inventory.packs[0].status, RuntimePackStatus::Invalid);
+        assert_eq!(inventory.packs[0].status, RuntimePackStatus::Unavailable);
         assert!(inventory.packs[0]
             .error
             .as_deref()
             .is_some_and(|error| error.contains("device")));
         assert_eq!(inventory.fallback_pack_id, None);
+    }
+
+    #[test]
+    fn production_inventory_uses_only_stable_backend_ids_and_cpu_fallback() {
+        let root = TempDir::new().expect("create trusted runtime root");
+        create_pack(&root, "cpu");
+        create_pack(&root, "cpu-dev");
+        create_pack(&root, "rogue");
+
+        let inventory = scan_runtime_packs(root.path(), |id, _| {
+            if id == "cpu" {
+                Ok(probed_cpu("CPU 0"))
+            } else {
+                Err("unexpected".into())
+            }
+        })
+        .unwrap();
+
+        assert_eq!(
+            inventory
+                .packs
+                .iter()
+                .map(|pack| pack.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["cpu", "cuda", "vulkan"]
+        );
+        assert_eq!(inventory.fallback_pack_id.as_deref(), Some("cpu"));
     }
 }

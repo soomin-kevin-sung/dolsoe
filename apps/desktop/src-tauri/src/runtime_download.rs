@@ -7,7 +7,10 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use reqwest::{header::{CONTENT_RANGE, RANGE}, Client, StatusCode};
+use reqwest::{
+    header::{CONTENT_RANGE, RANGE},
+    Client, StatusCode,
+};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
@@ -140,7 +143,12 @@ where
 }
 
 fn content_range_start(value: &str) -> Option<u64> {
-    value.strip_prefix("bytes ")?.split_once('-')?.0.parse().ok()
+    value
+        .strip_prefix("bytes ")?
+        .split_once('-')?
+        .0
+        .parse()
+        .ok()
 }
 
 async fn hash_file(path: &Path) -> Result<String, std::io::Error> {
@@ -202,7 +210,15 @@ mod tests {
                 stream,
                 "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n",
                 payload.len(),
-                if status.starts_with("206") { format!("Content-Range: bytes {start}-{}/{}\r\n", body.len() - 1, body.len()) } else { String::new() }
+                if status.starts_with("206") {
+                    format!(
+                        "Content-Range: bytes {start}-{}/{}\r\n",
+                        body.len() - 1,
+                        body.len()
+                    )
+                } else {
+                    String::new()
+                }
             )
             .unwrap();
             stream.write_all(payload).unwrap();
@@ -304,9 +320,16 @@ mod tests {
         let url = serve_wrong_range(bytes.clone());
 
         download_verified_archive(
-            &reqwest::Client::new(), &url, &target, bytes.len() as u64, &hash(&bytes),
-            Arc::new(AtomicBool::new(false)), |_, _| {},
-        ).await.expect("restart mismatched range from zero");
+            &reqwest::Client::new(),
+            &url,
+            &target,
+            bytes.len() as u64,
+            &hash(&bytes),
+            Arc::new(AtomicBool::new(false)),
+            |_, _| {},
+        )
+        .await
+        .expect("restart mismatched range from zero");
 
         assert_eq!(fs::read(target).unwrap(), bytes);
     }

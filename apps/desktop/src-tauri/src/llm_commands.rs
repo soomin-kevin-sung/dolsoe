@@ -3,7 +3,7 @@ use tauri::State;
 use crate::llm_dto::{
     LlmMetricsDto, LlmStatusDto, LoadModelRequest, SubmitRequest, SubmitResponse,
 };
-use crate::llm_worker::WorkerHandle;
+use crate::runtime_host::RuntimeHost;
 
 pub fn parse_request_handle(value: &str) -> Result<u64, String> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -25,14 +25,14 @@ where
 }
 
 #[tauri::command]
-pub async fn llm_get_status(state: State<'_, WorkerHandle>) -> Result<LlmStatusDto, String> {
+pub async fn llm_get_status(state: State<'_, RuntimeHost>) -> Result<LlmStatusDto, String> {
     let worker = state.inner().clone();
     blocking(move || worker.status()).await
 }
 
 #[tauri::command]
 pub async fn llm_load_model(
-    state: State<'_, WorkerHandle>,
+    state: State<'_, RuntimeHost>,
     request: LoadModelRequest,
 ) -> Result<LlmStatusDto, String> {
     let worker = state.inner().clone();
@@ -40,14 +40,14 @@ pub async fn llm_load_model(
 }
 
 #[tauri::command]
-pub async fn llm_unload_model(state: State<'_, WorkerHandle>) -> Result<LlmStatusDto, String> {
+pub async fn llm_unload_model(state: State<'_, RuntimeHost>) -> Result<LlmStatusDto, String> {
     let worker = state.inner().clone();
     blocking(move || worker.unload_model()).await
 }
 
 #[tauri::command]
 pub async fn llm_submit(
-    state: State<'_, WorkerHandle>,
+    state: State<'_, RuntimeHost>,
     request: SubmitRequest,
 ) -> Result<SubmitResponse, String> {
     let worker = state.inner().clone();
@@ -56,7 +56,7 @@ pub async fn llm_submit(
 
 #[tauri::command]
 pub async fn llm_cancel(
-    state: State<'_, WorkerHandle>,
+    state: State<'_, RuntimeHost>,
     request_handle: String,
 ) -> Result<(), String> {
     let handle = parse_request_handle(&request_handle)?;
@@ -65,7 +65,7 @@ pub async fn llm_cancel(
 }
 
 #[tauri::command]
-pub async fn llm_get_metrics(state: State<'_, WorkerHandle>) -> Result<LlmMetricsDto, String> {
+pub async fn llm_get_metrics(state: State<'_, RuntimeHost>) -> Result<LlmMetricsDto, String> {
     let worker = state.inner().clone();
     blocking(move || worker.metrics()).await
 }

@@ -102,8 +102,8 @@ pub fn load_runtime_source(
 
 #[cfg(test)]
 mod tests {
-    use tempfile::TempDir;
     use super::*;
+    use tempfile::TempDir;
 
     const HASH: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
@@ -151,8 +151,11 @@ mod tests {
     #[test]
     fn local_override_replaces_the_default_as_a_whole() {
         let root = TempDir::new().unwrap();
-        std::fs::write(root.path().join("runtime-source.json"), source_json("moved/repo"))
-            .unwrap();
+        std::fs::write(
+            root.path().join("runtime-source.json"),
+            source_json("moved/repo"),
+        )
+        .unwrap();
         let source = load_runtime_source(root.path(), &source_json("default/repo")).unwrap();
         assert_eq!(source.repository, "moved/repo");
 

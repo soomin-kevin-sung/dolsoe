@@ -75,7 +75,11 @@ pub enum ManifestError {
     #[error("unsupported runtime manifest schema {0}")]
     Schema(u32),
     #[error("app version {actual} is outside runtime manifest range {minimum}..={maximum}")]
-    AppVersion { actual: String, minimum: String, maximum: String },
+    AppVersion {
+        actual: String,
+        minimum: String,
+        maximum: String,
+    },
     #[error("runtime pack identity does not match the supported baseline: {0}")]
     Identity(String),
     #[error("invalid SHA-256 for {0}")]
@@ -97,7 +101,11 @@ impl RuntimeCatalog {
         if self.schema_version != SCHEMA_VERSION {
             return Err(ManifestError::Schema(self.schema_version));
         }
-        if !app_version_matches(&policy.app_version, &self.minimum_app_version, &self.maximum_app_version) {
+        if !app_version_matches(
+            &policy.app_version,
+            &self.minimum_app_version,
+            &self.maximum_app_version,
+        ) {
             return Err(ManifestError::AppVersion {
                 actual: policy.app_version.clone(),
                 minimum: self.minimum_app_version.clone(),
@@ -155,7 +163,9 @@ impl RuntimeManifestPack {
 fn validate_asset_name(value: &str) -> Result<(), ManifestError> {
     if value.is_empty()
         || value.len() > 200
-        || !value.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
         return Err(ManifestError::Field("asset name".into()));
     }
@@ -164,7 +174,9 @@ fn validate_asset_name(value: &str) -> Result<(), ManifestError> {
 
 pub fn validate_sha256(value: &str) -> Result<(), ()> {
     if value.len() == 64
-        && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         Ok(())
     } else {
@@ -173,11 +185,17 @@ pub fn validate_sha256(value: &str) -> Result<(), ()> {
 }
 
 fn app_version_matches(actual: &str, minimum: &str, maximum: &str) -> bool {
-    let (Ok(actual), Ok(minimum)) = (Version::parse(actual), Version::parse(minimum)) else { return false; };
-    if actual < minimum { return false; }
+    let (Ok(actual), Ok(minimum)) = (Version::parse(actual), Version::parse(minimum)) else {
+        return false;
+    };
+    if actual < minimum {
+        return false;
+    }
     if let Some(prefix) = maximum.strip_suffix(".x") {
         let mut parts = prefix.split('.');
-        let (Some(major), Some(minor), None) = (parts.next(), parts.next(), parts.next()) else { return false; };
+        let (Some(major), Some(minor), None) = (parts.next(), parts.next(), parts.next()) else {
+            return false;
+        };
         return actual.major.to_string() == major && actual.minor.to_string() == minor;
     }
     Version::parse(maximum).is_ok_and(|maximum| actual <= maximum)
@@ -191,8 +209,11 @@ mod tests {
 
     fn policy() -> ManifestPolicy {
         ManifestPolicy {
-            app_version: "0.1.0".into(), abi_major: 1, abi_minor: 1,
-            platform: "windows".into(), arch: "x86_64".into(),
+            app_version: "0.1.0".into(),
+            abi_major: 1,
+            abi_minor: 1,
+            platform: "windows".into(),
+            arch: "x86_64".into(),
             llama_cpp_release: "b10068".into(),
             llama_cpp_commit: "571d0d540df04f25298d0e159e520d9fc62ed121".into(),
         }
@@ -217,8 +238,13 @@ mod tests {
             (HASH, "ABCDEF"),
             ("cuda.zip", "../cuda.zip"),
         ] {
-            let value = String::from_utf8(catalog("")).unwrap().replacen(from, to, 1);
-            assert!(RuntimeCatalog::parse(value.as_bytes(), &policy()).is_err(), "accepted {from} -> {to}");
+            let value = String::from_utf8(catalog(""))
+                .unwrap()
+                .replacen(from, to, 1);
+            assert!(
+                RuntimeCatalog::parse(value.as_bytes(), &policy()).is_err(),
+                "accepted {from} -> {to}"
+            );
         }
         let mut incompatible = policy();
         incompatible.app_version = "0.2.0".into();
@@ -227,11 +253,22 @@ mod tests {
 
     #[test]
     fn external_and_internal_identity_must_match() {
-        let external = RuntimeCatalog::parse(&catalog(""), &policy()).unwrap().packs.remove(0);
+        let external = RuntimeCatalog::parse(&catalog(""), &policy())
+            .unwrap()
+            .packs
+            .remove(0);
         let mut internal = RuntimePackManifest {
-            schema_version: 1, id: "cuda".into(), backend: "cuda".into(), pack_version: "2026.07.1".into(),
-            platform: "windows".into(), arch: "x86_64".into(), llama_cpp_release: "b10068".into(),
-            llama_cpp_commit: policy().llama_cpp_commit, abi_major: 1, abi_minor: 1, files: vec![],
+            schema_version: 1,
+            id: "cuda".into(),
+            backend: "cuda".into(),
+            pack_version: "2026.07.1".into(),
+            platform: "windows".into(),
+            arch: "x86_64".into(),
+            llama_cpp_release: "b10068".into(),
+            llama_cpp_commit: policy().llama_cpp_commit,
+            abi_major: 1,
+            abi_minor: 1,
+            files: vec![],
         };
         assert!(external.matches_internal(&internal));
         internal.abi_minor = 2;

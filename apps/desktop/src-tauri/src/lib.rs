@@ -4,21 +4,28 @@ mod llm_commands;
 mod llm_dto;
 mod llm_worker;
 mod runtime_archive;
+mod runtime_bootstrap;
 mod runtime_download;
+mod runtime_host;
 mod runtime_install_commands;
 mod runtime_installer;
 mod runtime_manifest;
 mod runtime_packs;
 mod runtime_path;
 mod runtime_probe;
+mod runtime_selection;
 mod runtime_source;
+mod runtime_transaction;
 
 use tauri::{Emitter, Manager};
 
 use crate::conversation_store::ConversationStore;
 use crate::llm_worker::WorkerHandle;
+use crate::runtime_bootstrap::BootstrapState;
+use crate::runtime_host::RuntimeHost;
 use crate::runtime_install_commands::RuntimeInstallerState;
 use crate::runtime_path::RuntimePackResolver;
+use crate::runtime_selection::RuntimeSelectionStore;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -30,20 +37,47 @@ pub fn run() {
             std::fs::create_dir_all(&app_data)?;
             let runtime_root = app_data.join("runtime-packs");
             std::fs::create_dir_all(&runtime_root)?;
+            runtime_transaction::recover_transactions(
+                &runtime_root,
+                runtime_archive::validate_installed_pack_self,
+            )
+            .map_err(std::io::Error::other)?;
+            let resource_root = app.path().resource_dir()?.join("runtime-packs");
+            let bootstrap = runtime_bootstrap::bootstrap_cpu(&runtime_root, &resource_root);
             let conversation_store = ConversationStore::open(app_data.join("local-llm-wiki.db"))
+                .map_err(std::io::Error::other)?;
+            let selection_store =
+                RuntimeSelectionStore::open(app_data.join("runtime-selection.json"))
+                    .map_err(std::io::Error::other)?;
+            selection_store
+                .consume_pending(|backend| {
+                    runtime_archive::validate_installed_pack(
+                        &runtime_root.join(backend.as_str()),
+                        backend.as_str(),
+                    )
+                })
                 .map_err(std::io::Error::other)?;
             let app_handle = app.handle().clone();
             let resolver = RuntimePackResolver::trusted(&app_data, runtime_root.clone())
                 .map_err(std::io::Error::other)?;
-            let worker = WorkerHandle::spawn(resolver, move |event| {
-                app_handle
-                    .emit("llm://event", event)
-                    .map_err(|error| error.to_string())
-            })
-            .map_err(std::io::Error::other)?;
+            let host = match bootstrap {
+                BootstrapState::Ready => RuntimeHost::ready(
+                    WorkerHandle::spawn(resolver, move |event| {
+                        app_handle
+                            .emit("llm://event", event)
+                            .map_err(|error| error.to_string())
+                    })
+                    .map_err(std::io::Error::other)?,
+                ),
+                BootstrapState::RecoveryRequired(error) => RuntimeHost::recovery(error),
+            };
             app.manage(conversation_store);
-            app.manage(worker);
-            app.manage(RuntimeInstallerState::from_app_data(&app_data, runtime_root));
+            app.manage(selection_store);
+            app.manage(host);
+            app.manage(RuntimeInstallerState::from_app_data(
+                &app_data,
+                runtime_root,
+            ));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -52,6 +86,9 @@ pub fn run() {
             runtime_install_commands::list_available_runtime_packs,
             runtime_install_commands::install_runtime_pack,
             runtime_install_commands::cancel_runtime_pack_install,
+            runtime_selection::get_runtime_selection,
+            runtime_selection::request_runtime_activation,
+            runtime_selection::restart_runtime_app,
             llm_commands::llm_get_status,
             llm_commands::llm_load_model,
             llm_commands::llm_unload_model,

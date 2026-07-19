@@ -6,6 +6,8 @@ use tauri::{AppHandle, Emitter, State};
 use crate::{
     runtime_installer::{RuntimeDistributionConfig, RuntimeInstaller},
     runtime_manifest::RuntimeManifestPack,
+    runtime_packs::RuntimeBackend,
+    runtime_selection::RuntimeSelectionStore,
 };
 
 pub struct RuntimeInstallerState {
@@ -92,15 +94,23 @@ pub async fn list_available_runtime_packs(
 pub async fn install_runtime_pack(
     app: AppHandle,
     state: State<'_, RuntimeInstallerState>,
+    selection: State<'_, RuntimeSelectionStore>,
     pack_id: String,
 ) -> Result<(), String> {
+    let backend = match pack_id.as_str() {
+        "cuda" => RuntimeBackend::Cuda,
+        "vulkan" => RuntimeBackend::Vulkan,
+        _ => return Err("only CUDA and Vulkan runtime packs can be downloaded".into()),
+    };
+    let defer_replacement = selection.snapshot()?.active_backend == backend;
     let installer = state.installer()?;
     installer
-        .install(&pack_id, move |progress| {
+        .install(&pack_id, defer_replacement, move |progress| {
             let _ = app.emit("runtime-pack-install-progress", progress);
         })
         .await
-        .map_err(|error| error.to_string())
+        .map_err(|error| error.to_string())?;
+    selection.request_activation(backend)
 }
 
 #[tauri::command]

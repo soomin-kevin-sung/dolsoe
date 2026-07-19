@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    runtime_archive::install_verified_archive,
+    runtime_archive::install_verified_archive_with_mode,
     runtime_download::{download_verified_archive, DownloadError},
     runtime_manifest::{ManifestPolicy, RuntimeCatalog, RuntimeManifestPack},
     runtime_source::{load_runtime_source, RuntimeSource},
@@ -63,12 +63,28 @@ impl RuntimeDistributionConfig {
             source,
             policy: ManifestPolicy {
                 app_version: env!("CARGO_PKG_VERSION").into(),
-                abi_major: baseline["abiMajor"].as_u64().ok_or("baseline abiMajor is missing")? as u32,
-                abi_minor: baseline["abiMinor"].as_u64().ok_or("baseline abiMinor is missing")? as u32,
-                platform: baseline["platform"].as_str().ok_or("baseline platform is missing")?.into(),
-                arch: baseline["arch"].as_str().ok_or("baseline arch is missing")?.into(),
-                llama_cpp_release: baseline["releaseTag"].as_str().ok_or("baseline releaseTag is missing")?.into(),
-                llama_cpp_commit: baseline["commit"].as_str().ok_or("baseline commit is missing")?.into(),
+                abi_major: baseline["abiMajor"]
+                    .as_u64()
+                    .ok_or("baseline abiMajor is missing")? as u32,
+                abi_minor: baseline["abiMinor"]
+                    .as_u64()
+                    .ok_or("baseline abiMinor is missing")? as u32,
+                platform: baseline["platform"]
+                    .as_str()
+                    .ok_or("baseline platform is missing")?
+                    .into(),
+                arch: baseline["arch"]
+                    .as_str()
+                    .ok_or("baseline arch is missing")?
+                    .into(),
+                llama_cpp_release: baseline["releaseTag"]
+                    .as_str()
+                    .ok_or("baseline releaseTag is missing")?
+                    .into(),
+                llama_cpp_commit: baseline["commit"]
+                    .as_str()
+                    .ok_or("baseline commit is missing")?
+                    .into(),
             },
         })
     }
@@ -188,7 +204,12 @@ impl RuntimeInstaller {
         })
     }
 
-    pub async fn install<F>(&self, pack_id: &str, emit: F) -> Result<(), RuntimeInstallerError>
+    pub async fn install<F>(
+        &self,
+        pack_id: &str,
+        defer_replacement: bool,
+        emit: F,
+    ) -> Result<(), RuntimeInstallerError>
     where
         F: Fn(RuntimeInstallProgress) + Send + Sync,
     {
@@ -196,7 +217,9 @@ impl RuntimeInstaller {
             .coordinator
             .begin(pack_id)
             .map_err(RuntimeInstallerError::Busy)?;
-        let result = self.install_inner(pack_id, &token, &emit).await;
+        let result = self
+            .install_inner(pack_id, defer_replacement, &token, &emit)
+            .await;
         self.coordinator.finish(pack_id);
         match &result {
             Ok(()) => emit(progress(pack_id, InstallPhase::Installed, 0, 0, None)),
@@ -221,6 +244,7 @@ impl RuntimeInstaller {
     async fn install_inner<F>(
         &self,
         pack_id: &str,
+        defer_replacement: bool,
         token: &ActiveInstall,
         emit: &F,
     ) -> Result<(), RuntimeInstallerError>
@@ -278,7 +302,12 @@ impl RuntimeInstaller {
         let runtime_root = self.runtime_root.clone();
         let archive_for_install = archive_path.clone();
         tokio::task::spawn_blocking(move || {
-            install_verified_archive(&archive_for_install, &runtime_root, &pack)
+            install_verified_archive_with_mode(
+                &archive_for_install,
+                &runtime_root,
+                &pack,
+                defer_replacement,
+            )
         })
         .await
         .map_err(|error| RuntimeInstallerError::Install(error.to_string()))?
@@ -361,14 +390,18 @@ mod tests {
         time::Duration,
     };
 
-    use super::{archive_partial_path, fetch_bounded, InstallCoordinator, InstallPhase, RuntimeInstallProgress};
+    use super::{
+        archive_partial_path, fetch_bounded, InstallCoordinator, InstallPhase,
+        RuntimeInstallProgress,
+    };
 
     #[test]
     fn partial_download_name_is_bound_to_backend_and_archive_digest() {
         let root = std::path::Path::new("runtime-packs");
         assert_eq!(
             archive_partial_path(root, "cuda", &"a".repeat(64)),
-            root.join(".downloads").join(format!("cuda-{}.zip.part", "a".repeat(64)))
+            root.join(".downloads")
+                .join(format!("cuda-{}.zip.part", "a".repeat(64)))
         );
     }
 
