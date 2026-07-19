@@ -300,6 +300,7 @@ enum WorkerCommand {
     Shutdown,
 }
 
+#[derive(Default)]
 struct NativeState {
     runtime: Option<InferenceRuntime>,
     model: Option<Model>,
@@ -308,20 +309,6 @@ struct NativeState {
     relay: Option<EventRelayHandle>,
     guard: WorkerGuard,
     status: LlmStatusDto,
-}
-
-impl Default for NativeState {
-    fn default() -> Self {
-        Self {
-            runtime: None,
-            model: None,
-            request: None,
-            request_terminal: None,
-            relay: None,
-            guard: WorkerGuard::default(),
-            status: LlmStatusDto::default(),
-        }
-    }
 }
 
 impl NativeState {

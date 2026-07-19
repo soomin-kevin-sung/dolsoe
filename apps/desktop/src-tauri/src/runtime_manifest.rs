@@ -94,9 +94,12 @@ impl SignedRuntimeManifest {
         public_key: &[u8],
         policy: &ManifestPolicy,
     ) -> Result<Self, ManifestError> {
-        let key_bytes: [u8; 32] = public_key.try_into().map_err(|_| ManifestError::Signature)?;
+        let key_bytes: [u8; 32] = public_key
+            .try_into()
+            .map_err(|_| ManifestError::Signature)?;
         let key = VerifyingKey::from_bytes(&key_bytes).map_err(|_| ManifestError::Signature)?;
-        let encoded = std::str::from_utf8(signature_base64).map_err(|_| ManifestError::Signature)?;
+        let encoded =
+            std::str::from_utf8(signature_base64).map_err(|_| ManifestError::Signature)?;
         let decoded = STANDARD
             .decode(encoded.trim())
             .map_err(|_| ManifestError::Signature)?;
@@ -146,7 +149,8 @@ impl SignedRuntimeManifest {
                     pack.backend
                 )));
             }
-            validate_asset_url(&pack.asset_url).map_err(|_| ManifestError::AssetUrl(pack.id.clone()))?;
+            validate_asset_url(&pack.asset_url)
+                .map_err(|_| ManifestError::AssetUrl(pack.id.clone()))?;
             validate_sha256(&pack.sha256)
                 .map_err(|_| ManifestError::Sha256(format!("{} archive", pack.id)))?;
             if pack.size == 0 || pack.files.is_empty() {
@@ -350,7 +354,9 @@ mod tests {
                 "https://example.com/runtime.zip",
             )
             .into_bytes();
-        assert!(verify(&invalid_url, policy()).unwrap_err().contains("asset URL"));
+        assert!(verify(&invalid_url, policy())
+            .unwrap_err()
+            .contains("asset URL"));
         let invalid_hash = String::from_utf8(manifest("", ""))
             .unwrap()
             .replacen(HASH, "bad", 1)

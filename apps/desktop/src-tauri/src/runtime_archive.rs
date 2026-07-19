@@ -150,9 +150,9 @@ fn extract_verified(
                 "duplicate ZIP entry {name}"
             )));
         }
-        let expected = declared.get(name.as_str()).ok_or_else(|| {
-            ArchiveInstallError::Invalid(format!("undeclared ZIP entry {name}"))
-        })?;
+        let expected = declared
+            .get(name.as_str())
+            .ok_or_else(|| ArchiveInstallError::Invalid(format!("undeclared ZIP entry {name}")))?;
         if entry.size() != expected.size {
             return Err(ArchiveInstallError::Invalid(format!(
                 "size mismatch for {name}"
@@ -263,9 +263,7 @@ fn safe_relative_path(value: &str) -> Result<PathBuf, ArchiveInstallError> {
             .components()
             .any(|component| !matches!(component, Component::Normal(_)))
     {
-        return Err(ArchiveInstallError::Invalid(format!(
-            "unsafe path {value}"
-        )));
+        return Err(ArchiveInstallError::Invalid(format!("unsafe path {value}")));
     }
     Ok(path.to_path_buf())
 }
@@ -355,11 +353,11 @@ mod tests {
             fs::read(root.path().join("cuda-2026.07.1/ggml-cuda.dll")).unwrap(),
             b"cuda"
         );
-        assert!(!root
-            .path()
-            .read_dir()
+        assert!(!root.path().read_dir().unwrap().any(|entry| entry
             .unwrap()
-            .any(|entry| entry.unwrap().file_name().to_string_lossy().contains("staging")));
+            .file_name()
+            .to_string_lossy()
+            .contains("staging")));
     }
 
     #[test]
@@ -378,7 +376,9 @@ mod tests {
         let archive = root.path().join("duplicate.zip");
         zip(&archive, REQUIRED);
         let mut duplicate_manifest = pack(REQUIRED);
-        duplicate_manifest.files.push(duplicate_manifest.files[0].clone());
+        duplicate_manifest
+            .files
+            .push(duplicate_manifest.files[0].clone());
         assert!(install_verified_archive(&archive, root.path(), &duplicate_manifest).is_err());
     }
 
@@ -416,11 +416,7 @@ mod tests {
             InstallArchiveResult::AlreadyInstalled
         );
 
-        fs::write(
-            root.path().join("cuda-2026.07.1/ggml-cuda.dll"),
-            b"changed",
-        )
-        .unwrap();
+        fs::write(root.path().join("cuda-2026.07.1/ggml-cuda.dll"), b"changed").unwrap();
         assert!(install_verified_archive(&archive, root.path(), &manifest).is_err());
     }
 }

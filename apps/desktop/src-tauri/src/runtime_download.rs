@@ -144,10 +144,7 @@ mod tests {
         fs,
         io::{Read, Write},
         net::TcpListener,
-        sync::{
-            atomic::AtomicBool,
-            Arc,
-        },
+        sync::{atomic::AtomicBool, Arc},
         thread,
     };
 
@@ -170,7 +167,10 @@ mod tests {
             let request = String::from_utf8_lossy(&request[..count]);
             let range = request
                 .lines()
-                .find_map(|line| line.strip_prefix("range: bytes=").or_else(|| line.strip_prefix("Range: bytes=")))
+                .find_map(|line| {
+                    line.strip_prefix("range: bytes=")
+                        .or_else(|| line.strip_prefix("Range: bytes="))
+                })
                 .and_then(|value| value.trim_end_matches('-').parse::<usize>().ok());
             let start = if honor_range { range.unwrap_or(0) } else { 0 };
             let status = if honor_range && range.is_some() {
