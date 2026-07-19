@@ -7,7 +7,7 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use reqwest::{header::RANGE, Client, StatusCode};
+use reqwest::{header::{CONTENT_RANGE, RANGE}, Client, StatusCode};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{
@@ -72,7 +72,14 @@ where
         request = request.header(RANGE, format!("bytes={existing}-"));
     }
     let response = request.send().await?.error_for_status()?;
-    let append = existing > 0 && response.status() == StatusCode::PARTIAL_CONTENT;
+    let range_start = response
+        .headers()
+        .get(CONTENT_RANGE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(content_range_start);
+    let append = existing > 0
+        && response.status() == StatusCode::PARTIAL_CONTENT
+        && range_start == Some(existing);
     if !append {
         existing = 0;
     }
@@ -132,6 +139,10 @@ where
     Ok(())
 }
 
+fn content_range_start(value: &str) -> Option<u64> {
+    value.strip_prefix("bytes ")?.split_once('-')?.0.parse().ok()
+}
+
 async fn hash_file(path: &Path) -> Result<String, std::io::Error> {
     let mut file = fs::File::open(path).await?;
     let mut hasher = Sha256::new();
@@ -189,11 +200,25 @@ mod tests {
             let payload = &body[start..];
             write!(
                 stream,
-                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                payload.len()
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\n{}Connection: close\r\n\r\n",
+                payload.len(),
+                if status.starts_with("206") { format!("Content-Range: bytes {start}-{}/{}\r\n", body.len() - 1, body.len()) } else { String::new() }
             )
             .unwrap();
             stream.write_all(payload).unwrap();
+        });
+        format!("http://{address}/pack.zip")
+    }
+
+    fn serve_wrong_range(body: Vec<u8>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind fixture server");
+        let address = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut request = [0_u8; 4096];
+            let _ = stream.read(&mut request).expect("read request");
+            write!(stream, "HTTP/1.1 206 Partial Content\r\nContent-Length: {}\r\nContent-Range: bytes 0-{}/{}\r\nConnection: close\r\n\r\n", body.len(), body.len() - 1, body.len()).unwrap();
+            stream.write_all(&body).unwrap();
         });
         format!("http://{address}/pack.zip")
     }
@@ -268,6 +293,22 @@ mod tests {
         .expect("reuse complete verified archive");
 
         assert_eq!(progress, vec![(bytes.len() as u64, bytes.len() as u64)]);
+    }
+
+    #[tokio::test]
+    async fn restarts_when_partial_content_begins_at_the_wrong_offset() {
+        let root = TempDir::new().unwrap();
+        let target = root.path().join("pack.part");
+        let bytes = b"0123456789abcdef".to_vec();
+        fs::write(&target, &bytes[..6]).unwrap();
+        let url = serve_wrong_range(bytes.clone());
+
+        download_verified_archive(
+            &reqwest::Client::new(), &url, &target, bytes.len() as u64, &hash(&bytes),
+            Arc::new(AtomicBool::new(false)), |_, _| {},
+        ).await.expect("restart mismatched range from zero");
+
+        assert_eq!(fs::read(target).unwrap(), bytes);
     }
 
     #[tokio::test]

@@ -11,6 +11,7 @@ mod runtime_manifest;
 mod runtime_packs;
 mod runtime_path;
 mod runtime_probe;
+mod runtime_source;
 
 use tauri::{Emitter, Manager};
 
@@ -42,7 +43,7 @@ pub fn run() {
             .map_err(std::io::Error::other)?;
             app.manage(conversation_store);
             app.manage(worker);
-            app.manage(RuntimeInstallerState::from_compile_time(runtime_root));
+            app.manage(RuntimeInstallerState::from_app_data(&app_data, runtime_root));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

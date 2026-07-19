@@ -11,12 +11,13 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 use crate::{
-    runtime_manifest::{RuntimeManifestFile, RuntimeManifestPack},
+    runtime_manifest::{RuntimeManifestFile, RuntimeManifestPack, RuntimePackManifest},
     runtime_path::validate_runtime_pack_id,
 };
 
 const MAX_FILES: usize = 4096;
 const MAX_TOTAL_SIZE: u64 = 16 * 1024 * 1024 * 1024;
+const PACK_MANIFEST_NAME: &str = "runtime-pack.json";
 const COMMON_REQUIRED: &[&str] = &[
     "local_llm_runtime.dll",
     "llama.dll",
@@ -55,12 +56,18 @@ pub fn install_verified_archive(
     pack: &RuntimeManifestPack,
 ) -> Result<InstallArchiveResult, ArchiveInstallError> {
     validate_runtime_pack_id(&pack.id).map_err(ArchiveInstallError::Invalid)?;
-    validate_declared_pack(pack)?;
+    let internal = read_pack_manifest(archive_path)?;
+    if !pack.matches_internal(&internal) {
+        return Err(ArchiveInstallError::Invalid(
+            "catalog and runtime-pack identity mismatch".into(),
+        ));
+    }
+    validate_declared_pack(&internal)?;
     fs::create_dir_all(runtime_root)?;
 
     let final_path = direct_child(runtime_root, &pack.id)?;
     if final_path.exists() {
-        return if existing_matches(&final_path, &pack.files)? {
+        return if existing_matches(&final_path, &internal)? {
             Ok(InstallArchiveResult::AlreadyInstalled)
         } else {
             Err(ArchiveInstallError::Conflict(pack.id.clone()))
@@ -70,7 +77,7 @@ pub fn install_verified_archive(
     let staging_name = format!("{}.staging-{}", pack.id, Uuid::new_v4());
     let staging_path = direct_child(runtime_root, &staging_name)?;
     fs::create_dir(&staging_path)?;
-    let result = extract_verified(archive_path, &staging_path, &pack.files)
+    let result = extract_verified(archive_path, &staging_path, &internal.files)
         .and_then(|_| fs::rename(&staging_path, &final_path).map_err(ArchiveInstallError::Io));
     if result.is_err() && staging_path.exists() {
         let _ = fs::remove_dir_all(&staging_path);
@@ -78,7 +85,7 @@ pub fn install_verified_archive(
     result.map(|_| InstallArchiveResult::Installed)
 }
 
-fn validate_declared_pack(pack: &RuntimeManifestPack) -> Result<(), ArchiveInstallError> {
+fn validate_declared_pack(pack: &RuntimePackManifest) -> Result<(), ArchiveInstallError> {
     if pack.files.len() > MAX_FILES {
         return Err(ArchiveInstallError::Invalid("too many files".into()));
     }
@@ -132,6 +139,23 @@ fn validate_declared_pack(pack: &RuntimeManifestPack) -> Result<(), ArchiveInsta
     Ok(())
 }
 
+fn read_pack_manifest(archive_path: &Path) -> Result<RuntimePackManifest, ArchiveInstallError> {
+    let archive_file = fs::File::open(archive_path)?;
+    let mut archive = ZipArchive::new(archive_file)?;
+    let mut entry = archive
+        .by_name(PACK_MANIFEST_NAME)
+        .map_err(|_| ArchiveInstallError::Invalid("missing runtime-pack.json".into()))?;
+    if entry.size() > 1024 * 1024 {
+        return Err(ArchiveInstallError::Invalid(
+            "runtime-pack.json is too large".into(),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut bytes)?;
+    serde_json::from_slice(&bytes)
+        .map_err(|error| ArchiveInstallError::Invalid(format!("invalid runtime-pack.json: {error}")))
+}
+
 fn extract_verified(
     archive_path: &Path,
     staging_path: &Path,
@@ -162,9 +186,15 @@ fn extract_verified(
                 "duplicate ZIP entry {name}"
             )));
         }
-        let expected = declared
-            .get(name.as_str())
-            .ok_or_else(|| ArchiveInstallError::Invalid(format!("undeclared ZIP entry {name}")))?;
+        if name == PACK_MANIFEST_NAME {
+            let target = staging_path.join(PACK_MANIFEST_NAME);
+            let mut output = fs::File::create(target)?;
+            std::io::copy(&mut entry, &mut output)?;
+            continue;
+        }
+        let expected = declared.get(name.as_str()).ok_or_else(|| {
+            ArchiveInstallError::Invalid(format!("undeclared ZIP entry {name}"))
+        })?;
         if entry.size() != expected.size {
             return Err(ArchiveInstallError::Invalid(format!(
                 "size mismatch for {name}"
@@ -199,7 +229,7 @@ fn extract_verified(
             )));
         }
     }
-    if seen.len() != declared.len() {
+    if seen.len() != declared.len() + 1 || !seen.contains(PACK_MANIFEST_NAME) {
         return Err(ArchiveInstallError::Invalid(
             "archive is missing declared files".into(),
         ));
@@ -209,11 +239,22 @@ fn extract_verified(
 
 fn existing_matches(
     directory: &Path,
-    declared_files: &[RuntimeManifestFile],
+    expected_manifest: &RuntimePackManifest,
 ) -> Result<bool, ArchiveInstallError> {
+    let manifest_path = directory.join(PACK_MANIFEST_NAME);
+    let Ok(bytes) = fs::read(&manifest_path) else {
+        return Ok(false);
+    };
+    let Ok(actual_manifest) = serde_json::from_slice::<RuntimePackManifest>(&bytes) else {
+        return Ok(false);
+    };
+    if &actual_manifest != expected_manifest {
+        return Ok(false);
+    }
+    let declared_files = &expected_manifest.files;
     let mut actual_files = Vec::new();
     collect_files(directory, directory, &mut actual_files)?;
-    if actual_files.len() != declared_files.len() {
+    if actual_files.len() != declared_files.len() + 1 {
         return Ok(false);
     }
     let declared: HashMap<&str, &RuntimeManifestFile> = declared_files
@@ -221,6 +262,9 @@ fn existing_matches(
         .map(|file| (file.path.as_str(), file))
         .collect();
     for (relative, path) in actual_files {
+        if relative == PACK_MANIFEST_NAME {
+            continue;
+        }
         let Some(expected) = declared.get(relative.as_str()) else {
             return Ok(false);
         };
@@ -302,7 +346,9 @@ mod tests {
     use tempfile::TempDir;
     use zip::{write::SimpleFileOptions, ZipWriter};
 
-    use crate::runtime_manifest::{RuntimeManifestFile, RuntimeManifestPack};
+    use crate::runtime_manifest::{
+        RuntimeManifestFile, RuntimeManifestPack, RuntimePackManifest,
+    };
 
     use super::{install_verified_archive, InstallArchiveResult};
 
@@ -319,15 +365,35 @@ mod tests {
         format!("{:x}", Sha256::digest(bytes))
     }
 
-    fn pack(files: &[(&str, &[u8])]) -> RuntimeManifestPack {
+    fn pack(_files: &[(&str, &[u8])]) -> RuntimeManifestPack {
         RuntimeManifestPack {
-            id: "cuda-2026.07.1".into(),
+            id: "cuda".into(),
             backend: "cuda".into(),
+            pack_version: "2026.07.1".into(),
             platform: "windows".into(),
             arch: "x86_64".into(),
-            asset_url: "https://github.com/soomin-sung-estsoft/local-llm-wiki/releases/download/runtime-v2026.07.1/cuda.zip".into(),
+            llama_cpp_release: "b10068".into(),
+            llama_cpp_commit: "571d0d540df04f25298d0e159e520d9fc62ed121".into(),
+            abi_major: 1,
+            abi_minor: 1,
+            asset_name: "cuda.zip".into(),
             size: 1,
             sha256: "0".repeat(64),
+        }
+    }
+
+    fn internal(files: &[(&str, &[u8])]) -> RuntimePackManifest {
+        RuntimePackManifest {
+            schema_version: 1,
+            id: "cuda".into(),
+            backend: "cuda".into(),
+            pack_version: "2026.07.1".into(),
+            platform: "windows".into(),
+            arch: "x86_64".into(),
+            llama_cpp_release: "b10068".into(),
+            llama_cpp_commit: "571d0d540df04f25298d0e159e520d9fc62ed121".into(),
+            abi_major: 1,
+            abi_minor: 1,
             files: files
                 .iter()
                 .map(|(path, bytes)| RuntimeManifestFile {
@@ -339,9 +405,15 @@ mod tests {
         }
     }
 
-    fn zip(path: &Path, files: &[(&str, &[u8])]) {
+    fn zip_with_manifest(path: &Path, files: &[(&str, &[u8])], manifest: &RuntimePackManifest) {
         let file = fs::File::create(path).expect("create zip");
         let mut writer = ZipWriter::new(file);
+        writer
+            .start_file("runtime-pack.json", SimpleFileOptions::default())
+            .expect("start pack manifest");
+        writer
+            .write_all(&serde_json::to_vec(manifest).unwrap())
+            .expect("write pack manifest");
         for (name, contents) in files {
             writer
                 .start_file(*name, SimpleFileOptions::default())
@@ -349,6 +421,10 @@ mod tests {
             writer.write_all(contents).expect("write zip file");
         }
         writer.finish().expect("finish zip");
+    }
+
+    fn zip(path: &Path, files: &[(&str, &[u8])]) {
+        zip_with_manifest(path, files, &internal(files));
     }
 
     #[test]
@@ -362,7 +438,7 @@ mod tests {
 
         assert_eq!(result, InstallArchiveResult::Installed);
         assert_eq!(
-            fs::read(root.path().join("cuda-2026.07.1/ggml-cuda.dll")).unwrap(),
+            fs::read(root.path().join("cuda/ggml-cuda.dll")).unwrap(),
             b"cuda"
         );
         assert!(!root.path().read_dir().unwrap().any(|entry| entry
@@ -391,19 +467,20 @@ mod tests {
             let archive = root.path().join("pack.zip");
             let mut files = REQUIRED.to_vec();
             files.push((extra, b"bad"));
-            zip(&archive, &files);
+            zip_with_manifest(&archive, &files, &internal(REQUIRED));
             assert!(install_verified_archive(&archive, root.path(), &pack(REQUIRED)).is_err());
-            assert!(!root.path().join("cuda-2026.07.1").exists());
+            assert!(!root.path().join("cuda").exists());
         }
 
         let root = TempDir::new().expect("runtime root");
         let archive = root.path().join("duplicate.zip");
         zip(&archive, REQUIRED);
-        let mut duplicate_manifest = pack(REQUIRED);
+        let mut duplicate_manifest = internal(REQUIRED);
         duplicate_manifest
             .files
             .push(duplicate_manifest.files[0].clone());
-        assert!(install_verified_archive(&archive, root.path(), &duplicate_manifest).is_err());
+        zip_with_manifest(&archive, REQUIRED, &duplicate_manifest);
+        assert!(install_verified_archive(&archive, root.path(), &pack(REQUIRED)).is_err());
     }
 
     #[test]
@@ -416,9 +493,10 @@ mod tests {
         let root = TempDir::new().expect("runtime root");
         let archive = root.path().join("hash.zip");
         zip(&archive, REQUIRED);
-        let mut bad_pack = pack(REQUIRED);
-        bad_pack.files[0].sha256 = "f".repeat(64);
-        assert!(install_verified_archive(&archive, root.path(), &bad_pack).is_err());
+        let mut bad_manifest = internal(REQUIRED);
+        bad_manifest.files[0].sha256 = "f".repeat(64);
+        zip_with_manifest(&archive, REQUIRED, &bad_manifest);
+        assert!(install_verified_archive(&archive, root.path(), &pack(REQUIRED)).is_err());
 
         let root = TempDir::new().expect("runtime root");
         let archive = root.path().join("mixed.zip");
@@ -440,7 +518,17 @@ mod tests {
             InstallArchiveResult::AlreadyInstalled
         );
 
-        fs::write(root.path().join("cuda-2026.07.1/ggml-cuda.dll"), b"changed").unwrap();
+        fs::write(root.path().join("cuda/ggml-cuda.dll"), b"changed").unwrap();
         assert!(install_verified_archive(&archive, root.path(), &manifest).is_err());
+    }
+
+    #[test]
+    fn rejects_catalog_and_internal_identity_mismatch() {
+        let root = TempDir::new().expect("runtime root");
+        let archive = root.path().join("pack.zip");
+        let mut manifest = internal(REQUIRED);
+        manifest.abi_minor = 2;
+        zip_with_manifest(&archive, REQUIRED, &manifest);
+        assert!(install_verified_archive(&archive, root.path(), &pack(REQUIRED)).is_err());
     }
 }

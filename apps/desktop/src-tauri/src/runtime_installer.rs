@@ -6,20 +6,20 @@ use std::{
     },
 };
 
-use base64::{engine::general_purpose::STANDARD, Engine};
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
     runtime_archive::install_verified_archive,
     runtime_download::{download_verified_archive, DownloadError},
-    runtime_manifest::{ManifestPolicy, RuntimeManifestPack, SignedRuntimeManifest},
+    runtime_manifest::{ManifestPolicy, RuntimeCatalog, RuntimeManifestPack},
+    runtime_source::{load_runtime_source, RuntimeSource},
 };
 
 const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
-const MAX_SIGNATURE_BYTES: usize = 1024;
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -44,37 +44,31 @@ pub struct RuntimeInstallProgress {
 
 #[derive(Debug, Clone)]
 pub struct RuntimeDistributionConfig {
-    pub manifest_url: String,
-    pub signature_url: String,
-    pub public_key: [u8; 32],
+    pub source: RuntimeSource,
     pub policy: ManifestPolicy,
 }
 
 impl RuntimeDistributionConfig {
-    pub fn from_compile_time() -> Result<Self, String> {
-        let manifest_url = option_env!("LLW_RUNTIME_MANIFEST_URL")
-            .ok_or("runtime distribution manifest URL is not configured")?
-            .to_owned();
-        let signature_url = option_env!("LLW_RUNTIME_MANIFEST_SIGNATURE_URL")
-            .ok_or("runtime distribution signature URL is not configured")?
-            .to_owned();
-        let encoded_key = option_env!("LLW_RUNTIME_MANIFEST_PUBLIC_KEY")
-            .ok_or("runtime distribution public key is not configured")?;
-        let decoded = STANDARD
-            .decode(encoded_key)
-            .map_err(|_| "runtime distribution public key is not valid base64")?;
-        let public_key = decoded
-            .try_into()
-            .map_err(|_| "runtime distribution public key must contain 32 bytes")?;
+    pub fn from_app_data(app_data: &std::path::Path) -> Result<Self, String> {
+        let source = load_runtime_source(
+            app_data,
+            include_bytes!("../resources/runtime-source.default.json"),
+        )
+        .map_err(|error| error.to_string())?;
+        let baseline: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../native/llm-runtime/llama-baseline.json"
+        ))
+        .map_err(|error| format!("invalid bundled llama.cpp baseline: {error}"))?;
         Ok(Self {
-            manifest_url,
-            signature_url,
-            public_key,
+            source,
             policy: ManifestPolicy {
                 app_version: env!("CARGO_PKG_VERSION").into(),
-                abi_major: 1,
-                platform: "windows".into(),
-                arch: "x86_64".into(),
+                abi_major: baseline["abiMajor"].as_u64().ok_or("baseline abiMajor is missing")? as u32,
+                abi_minor: baseline["abiMinor"].as_u64().ok_or("baseline abiMinor is missing")? as u32,
+                platform: baseline["platform"].as_str().ok_or("baseline platform is missing")?.into(),
+                arch: baseline["arch"].as_str().ok_or("baseline arch is missing")?.into(),
+                llama_cpp_release: baseline["releaseTag"].as_str().ok_or("baseline releaseTag is missing")?.into(),
+                llama_cpp_commit: baseline["commit"].as_str().ok_or("baseline commit is missing")?.into(),
             },
         })
     }
@@ -240,11 +234,14 @@ impl RuntimeInstaller {
             .into_iter()
             .find(|pack| pack.id == pack_id)
             .ok_or_else(|| RuntimeInstallerError::UnknownPack(pack_id.into()))?;
-        let download_directory = self.runtime_root.join(".downloads");
-        let archive_path = download_directory.join(format!("{}.zip.part", pack.id));
+        let archive_path = archive_partial_path(&self.runtime_root, &pack.id, &pack.sha256);
         download_verified_archive(
             &self.client,
-            &pack.asset_url,
+            &self
+                .config
+                .source
+                .asset_url(&pack.asset_name)
+                .map_err(|error| RuntimeInstallerError::Manifest(error.to_string()))?,
             &archive_path,
             pack.size,
             &pack.sha256,
@@ -290,23 +287,28 @@ impl RuntimeInstaller {
         Ok(())
     }
 
-    async fn fetch_manifest(&self) -> Result<SignedRuntimeManifest, RuntimeInstallerError> {
-        let raw =
-            fetch_bounded(&self.client, &self.config.manifest_url, MAX_MANIFEST_BYTES).await?;
-        let signature = fetch_bounded(
-            &self.client,
-            &self.config.signature_url,
-            MAX_SIGNATURE_BYTES,
-        )
-        .await?;
-        SignedRuntimeManifest::verify_and_parse(
-            &raw,
-            &signature,
-            &self.config.public_key,
-            &self.config.policy,
-        )
-        .map_err(|error| RuntimeInstallerError::Manifest(error.to_string()))
+    async fn fetch_manifest(&self) -> Result<RuntimeCatalog, RuntimeInstallerError> {
+        let url = self
+            .config
+            .source
+            .manifest_url()
+            .map_err(|error| RuntimeInstallerError::Manifest(error.to_string()))?;
+        let raw = fetch_bounded(&self.client, &url, MAX_MANIFEST_BYTES).await?;
+        let actual = format!("{:x}", Sha256::digest(&raw));
+        if actual != self.config.source.manifest_sha256 {
+            return Err(RuntimeInstallerError::Manifest(
+                "runtime catalog SHA-256 does not match the pinned source".into(),
+            ));
+        }
+        RuntimeCatalog::parse(&raw, &self.config.policy)
+            .map_err(|error| RuntimeInstallerError::Manifest(error.to_string()))
     }
+}
+
+fn archive_partial_path(runtime_root: &std::path::Path, pack_id: &str, sha256: &str) -> PathBuf {
+    runtime_root
+        .join(".downloads")
+        .join(format!("{pack_id}-{sha256}.zip.part"))
 }
 
 async fn fetch_bounded(
@@ -359,7 +361,16 @@ mod tests {
         time::Duration,
     };
 
-    use super::{fetch_bounded, InstallCoordinator, InstallPhase, RuntimeInstallProgress};
+    use super::{archive_partial_path, fetch_bounded, InstallCoordinator, InstallPhase, RuntimeInstallProgress};
+
+    #[test]
+    fn partial_download_name_is_bound_to_backend_and_archive_digest() {
+        let root = std::path::Path::new("runtime-packs");
+        assert_eq!(
+            archive_partial_path(root, "cuda", &"a".repeat(64)),
+            root.join(".downloads").join(format!("cuda-{}.zip.part", "a".repeat(64)))
+        );
+    }
 
     #[test]
     fn coordinator_allows_one_install_and_cleans_up_terminal_state() {

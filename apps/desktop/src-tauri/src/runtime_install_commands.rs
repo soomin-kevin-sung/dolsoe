@@ -15,8 +15,8 @@ pub struct RuntimeInstallerState {
 }
 
 impl RuntimeInstallerState {
-    pub fn from_compile_time(runtime_root: PathBuf) -> Self {
-        match RuntimeDistributionConfig::from_compile_time() {
+    pub fn from_app_data(app_data: &std::path::Path, runtime_root: PathBuf) -> Self {
+        match RuntimeDistributionConfig::from_app_data(app_data) {
             Ok(config) => Self {
                 installer: Some(Arc::new(RuntimeInstaller::new(
                     runtime_root.clone(),
@@ -125,7 +125,7 @@ fn installed_pack_ids(runtime_root: &PathBuf) -> Result<HashSet<String>, String>
 mod tests {
     use std::collections::HashSet;
 
-    use crate::runtime_manifest::{RuntimeManifestFile, RuntimeManifestPack};
+    use crate::runtime_manifest::RuntimeManifestPack;
 
     use super::available_pack_dtos;
 
@@ -133,29 +133,29 @@ mod tests {
         RuntimeManifestPack {
             id: id.into(),
             backend: backend.into(),
+            pack_version: "2026.07.1".into(),
             platform: "windows".into(),
             arch: "x86_64".into(),
-            asset_url: "https://github.com/soomin-sung-estsoft/local-llm-wiki/releases/download/runtime-v1/pack.zip".into(),
+            llama_cpp_release: "b10068".into(),
+            llama_cpp_commit: "571d0d540df04f25298d0e159e520d9fc62ed121".into(),
+            abi_major: 1,
+            abi_minor: 1,
+            asset_name: "pack.zip".into(),
             size: 1024,
             sha256: "0".repeat(64),
-            files: vec![RuntimeManifestFile {
-                path: "local_llm_runtime.dll".into(),
-                size: 1,
-                sha256: "0".repeat(64),
-            }],
         }
     }
 
     #[test]
     fn maps_available_packs_and_installed_state_to_camel_case_dtos() {
-        let installed = HashSet::from(["cpu-1".to_owned()]);
+        let installed = HashSet::from(["cpu".to_owned()]);
         let dtos = available_pack_dtos(
-            vec![pack("cuda-1", "cuda"), pack("cpu-1", "cpu")],
+            vec![pack("cuda", "cuda"), pack("cpu", "cpu")],
             &installed,
             "2026.07.1",
         );
 
-        assert_eq!(dtos[0].id, "cpu-1");
+        assert_eq!(dtos[0].id, "cpu");
         assert!(dtos[0].installed);
         assert_eq!(dtos[1].backend, "cuda");
         assert!(!dtos[1].installed);
