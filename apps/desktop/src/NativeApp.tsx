@@ -243,10 +243,7 @@ function NativeWorkspace() {
           onReload={() => { setDialogTargetId(null); setDialog("reload"); }}
           onInstall={(packId) => void packInstaller.install(packId)}
           onCancelInstall={() => void packInstaller.cancel()}
-          onRestart={() => void (async () => {
-            if (workspace.state.activeTurn) await workspace.stop();
-            await runtime.restartApp();
-          })()}
+          onRestart={() => void runtime.restartApp()}
           onDismissInstall={packInstaller.dismiss}
         />
       </div>

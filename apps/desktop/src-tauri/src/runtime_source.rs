@@ -136,10 +136,7 @@ mod tests {
 
     #[test]
     fn rejects_non_lowercase_or_wrong_length_manifest_digest() {
-        let uppercase = source_json("owner/repo")
-            .iter()
-            .copied()
-            .collect::<Vec<_>>();
+        let uppercase = source_json("owner/repo").to_vec();
         let mut value = String::from_utf8(uppercase).unwrap();
         value = value.replace(HASH, &HASH.to_uppercase());
         assert!(RuntimeSource::parse(value.as_bytes()).is_err());

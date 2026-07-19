@@ -1,12 +1,13 @@
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
     runtime_installer::{RuntimeDistributionConfig, RuntimeInstaller},
     runtime_manifest::RuntimeManifestPack,
-    runtime_packs::RuntimeBackend,
+    runtime_packs::{backend_ready, RuntimeBackend},
+    runtime_path::RuntimePackResolver,
     runtime_selection::RuntimeSelectionStore,
 };
 
@@ -108,13 +109,22 @@ pub async fn install_runtime_pack(
     };
     let defer_replacement = selection.snapshot()?.active_backend == backend;
     let installer = state.installer()?;
+    let progress_app = app.clone();
     installer
         .install(&pack_id, defer_replacement, move |progress| {
-            let _ = app.emit("runtime-pack-install-progress", progress);
+            let _ = progress_app.emit("runtime-pack-install-progress", progress);
         })
         .await
         .map_err(|error| error.to_string())?;
-    selection.request_activation(backend)
+    let app_data = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?;
+    let resolver = RuntimePackResolver::trusted(&app_data, state.runtime_root.clone())?;
+    if backend_ready(&resolver, backend) {
+        selection.request_activation(backend)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]

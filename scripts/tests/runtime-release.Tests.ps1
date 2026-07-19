@@ -12,7 +12,9 @@ $cudaFixture = Join-Path $temporaryRoot 'cuda-pack'
 $cudaOutput = Join-Path $temporaryRoot 'cuda-output'
 $version = '2026.07.1'
 $workflowPath = Join-Path $repositoryRoot '.github/workflows/runtime-release.yml'
+$desktopWorkflowPath = Join-Path $repositoryRoot '.github/workflows/desktop-release.yml'
 $ciWorkflowPath = Join-Path $repositoryRoot '.github/workflows/ci.yml'
+$desktopBuildScriptPath = Join-Path $repositoryRoot 'apps/desktop/src-tauri/build.rs'
 $builderSource = Get-Content -Raw -Encoding UTF8 $builder
 $baselinePath = Join-Path $repositoryRoot 'native/llm-runtime/llama-baseline.json'
 
@@ -130,6 +132,22 @@ try {
   Assert-True ($workflow -match '\.runtime-release/runtime-manifest\.json') 'Publish must include the pinned runtime catalog.'
   Assert-True ($workflow -match 'contents: write') 'Only the publish job may write release contents.'
   Assert-True ($workflow -match 'Refusing to overwrite existing release') 'Publishing must refuse to overwrite a release.'
+
+  Assert-True (Test-Path -LiteralPath $desktopWorkflowPath -PathType Leaf) 'Desktop release workflow is missing.'
+  $desktopWorkflow = Get-Content -Raw -Encoding UTF8 $desktopWorkflowPath
+  $desktopBuildScript = Get-Content -Raw -Encoding UTF8 $desktopBuildScriptPath
+  Assert-True ($desktopWorkflow -match 'runtime_tag') 'Desktop release must select an immutable runtime release tag.'
+  Assert-True ($desktopWorkflow -match 'gh release download') 'Desktop release must download runtime release assets.'
+  Assert-True ($desktopWorkflow -match 'runtime-source\.default\.json') 'Desktop release must inject the pinned runtime source.'
+  Assert-True ($desktopWorkflow -match 'Get-FileHash' -and $desktopWorkflow -match 'manifestSha256') 'Desktop release must bind runtime-source.json to the downloaded catalog bytes.'
+  Assert-True ($desktopWorkflow -match 'prepare-bundled-cpu-runtime\.ps1') 'Desktop release must prepare the bundled CPU pack.'
+  Assert-True ($desktopWorkflow -match 'tauri -- build') 'Desktop release must build the Tauri installer after preparing runtime resources.'
+  Assert-True ($desktopWorkflow -match 'target/release/bundle/\*\*/\*') 'Desktop release must upload bundles from the workspace Cargo target.'
+  Assert-True ($desktopWorkflow -notmatch 'tauri version') 'Desktop release must not call the read-only Tauri version command to mutate configuration.'
+  Assert-True ($desktopBuildScript -match 'PROFILE') 'The Tauri build script must distinguish release packaging.'
+  Assert-True ($desktopBuildScript -match 'cpu\.zip' -and $desktopBuildScript -match 'cpu-index\.json') 'Release builds must require bundled CPU resources.'
+  Assert-True ($desktopBuildScript -match '0000000000000000000000000000000000000000000000000000000000000000') 'Release builds must reject the placeholder runtime source digest.'
+  Assert-True ($desktopBuildScript -match 'len\(\) != 64' -and $desktopBuildScript -match 'is_ascii') 'Release builds must reject malformed non-placeholder source digests.'
 
   Write-Output 'runtime release fixture tests passed'
 } finally {

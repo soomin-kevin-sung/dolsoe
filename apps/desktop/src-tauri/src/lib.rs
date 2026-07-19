@@ -49,17 +49,12 @@ pub fn run() {
             let selection_store =
                 RuntimeSelectionStore::open(app_data.join("runtime-selection.json"))
                     .map_err(std::io::Error::other)?;
-            selection_store
-                .consume_pending(|backend| {
-                    runtime_archive::validate_installed_pack(
-                        &runtime_root.join(backend.as_str()),
-                        backend.as_str(),
-                    )
-                })
-                .map_err(std::io::Error::other)?;
-            let app_handle = app.handle().clone();
             let resolver = RuntimePackResolver::trusted(&app_data, runtime_root.clone())
                 .map_err(std::io::Error::other)?;
+            selection_store
+                .consume_pending(|backend| runtime_packs::backend_ready(&resolver, backend))
+                .map_err(std::io::Error::other)?;
+            let app_handle = app.handle().clone();
             let host = match bootstrap {
                 BootstrapState::Ready => RuntimeHost::ready(
                     WorkerHandle::spawn(resolver, move |event| {
@@ -107,4 +102,19 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+pub fn run_runtime_probe_cli_if_requested() -> Option<i32> {
+    runtime_packs::run_runtime_probe_cli(&std::env::args().collect::<Vec<_>>()).map(|result| {
+        match result {
+            Ok(json) => {
+                println!("{json}");
+                0
+            }
+            Err(error) => {
+                eprintln!("{error}");
+                1
+            }
+        }
+    })
 }

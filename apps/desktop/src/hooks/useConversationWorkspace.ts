@@ -15,7 +15,7 @@ import {
 } from "../services/conversationState";
 import type { LlmEventDto } from "../services/nativeRuntime";
 import { TokenDecoders } from "../services/nativeState";
-import { TerminalWaiters } from "../services/terminalWaiters";
+import { restartAfterTerminalPersistence, TerminalWaiters } from "../services/terminalWaiters";
 import { useNativeRuntime } from "./useNativeRuntime";
 
 function errorText(error: unknown): string {
@@ -65,8 +65,12 @@ export function useConversationWorkspace() {
     const content = assistant.content + tail;
     apply({ type: "terminal", requestHandle: handle, status, tail });
     void service.finishTurn(active.assistantMessageId, content, status)
-      .catch((error) => apply({ type: "storage-error", error: errorText(error) }))
-      .finally(() => terminalWaiters.current.resolveAll());
+      .then(() => terminalWaiters.current.resolveAll())
+      .catch((error) => {
+        const message = errorText(error);
+        apply({ type: "storage-error", error: message });
+        terminalWaiters.current.rejectAll(new Error(message));
+      });
   }, [apply, service]);
 
   const runtime = useNativeRuntime(onNativeEvent);
@@ -141,9 +145,24 @@ export function useConversationWorkspace() {
     }
   }, [cancelSource, runtime]);
 
+  const restartApp = useCallback(async () => {
+    const active = stateRef.current.activeTurn;
+    try {
+      await restartAfterTerminalPersistence(
+        Boolean(active),
+        async () => {
+          if (active) await cancelSource(active.conversationId);
+        },
+        runtime.restartApp,
+      );
+    } catch (error) {
+      runtime.reportError(error);
+    }
+  }, [cancelSource, runtime]);
+
   const workspaceRuntime = useMemo(
-    () => ({ ...runtime, applyPendingRuntime }),
-    [applyPendingRuntime, runtime],
+    () => ({ ...runtime, applyPendingRuntime, restartApp }),
+    [applyPendingRuntime, restartApp, runtime],
   );
 
   const clear = useCallback(async (conversationId: string) => {
@@ -186,8 +205,10 @@ export function useConversationWorkspace() {
           apply({ type: "turn-failed", error: message });
           try {
             await service.finishTurn(turn.assistant.id, message, "error");
-          } finally {
             terminalWaiters.current.resolveAll();
+          } catch (storageError) {
+            terminalWaiters.current.rejectAll(new Error(errorText(storageError)));
+            throw storageError;
           }
         }
       }

@@ -11,9 +11,11 @@ use uuid::Uuid;
 use zip::ZipArchive;
 
 use crate::{
-    runtime_manifest::{RuntimeManifestFile, RuntimeManifestPack, RuntimePackManifest},
+    runtime_manifest::{
+        bundled_manifest_policy, RuntimeManifestFile, RuntimeManifestPack, RuntimePackManifest,
+    },
     runtime_path::validate_runtime_pack_id,
-    runtime_transaction::{replace_staged, ReplacementOutcome},
+    runtime_transaction::{clear_repair_marker, replace_staged, ReplacementOutcome},
 };
 
 const MAX_FILES: usize = 4096;
@@ -50,6 +52,7 @@ pub enum ArchiveInstallError {
     Zip(#[from] zip::result::ZipError),
 }
 
+#[cfg(test)]
 pub fn install_verified_archive(
     archive_path: &Path,
     runtime_root: &Path,
@@ -58,12 +61,32 @@ pub fn install_verified_archive(
     install_verified_archive_with_mode(archive_path, runtime_root, pack, false)
 }
 
+#[cfg(test)]
 pub fn install_verified_archive_with_mode(
     archive_path: &Path,
     runtime_root: &Path,
     pack: &RuntimeManifestPack,
     defer_replacement: bool,
 ) -> Result<InstallArchiveResult, ArchiveInstallError> {
+    install_verified_archive_with_mode_and_probe(
+        archive_path,
+        runtime_root,
+        pack,
+        defer_replacement,
+        |_, _| Ok(()),
+    )
+}
+
+pub(crate) fn install_verified_archive_with_mode_and_probe<F>(
+    archive_path: &Path,
+    runtime_root: &Path,
+    pack: &RuntimeManifestPack,
+    defer_replacement: bool,
+    live_probe: F,
+) -> Result<InstallArchiveResult, ArchiveInstallError>
+where
+    F: Fn(&Path, &str) -> Result<(), String>,
+{
     validate_runtime_pack_id(&pack.id).map_err(ArchiveInstallError::Invalid)?;
     let internal = read_pack_manifest(archive_path)?;
     if !pack.matches_internal(&internal) {
@@ -76,27 +99,34 @@ pub fn install_verified_archive_with_mode(
 
     let final_path = direct_child(runtime_root, &pack.id)?;
     if final_path.exists() && existing_matches(&final_path, &internal)? {
+        live_probe(&final_path, &pack.id).map_err(ArchiveInstallError::Invalid)?;
+        clear_repair_marker(runtime_root, &pack.id)
+            .map_err(|error| ArchiveInstallError::Invalid(error.to_string()))?;
         return Ok(InstallArchiveResult::AlreadyInstalled);
     }
 
     let staging_name = format!(".staging-{}-{}", pack.id, Uuid::new_v4());
     let staging_path = direct_child(runtime_root, &staging_name)?;
     fs::create_dir(&staging_path)?;
-    let result = extract_verified(archive_path, &staging_path, &internal.files).and_then(|_| {
-        replace_staged(
-            runtime_root,
-            &pack.id,
-            &staging_path,
-            &pack.sha256,
-            defer_replacement,
-            |candidate| validate_installed_pack(candidate, &pack.id),
-        )
-        .map_err(|error| ArchiveInstallError::Invalid(error.to_string()))
-        .map(|outcome| match outcome {
-            ReplacementOutcome::Installed => InstallArchiveResult::Installed,
-            ReplacementOutcome::DeferredUntilRestart => InstallArchiveResult::DeferredUntilRestart,
-        })
-    });
+    let result = extract_verified(archive_path, &staging_path, &internal.files)
+        .and_then(|_| live_probe(&staging_path, &pack.id).map_err(ArchiveInstallError::Invalid))
+        .and_then(|_| {
+            replace_staged(
+                runtime_root,
+                &pack.id,
+                &staging_path,
+                &pack.sha256,
+                defer_replacement,
+                |candidate| validate_installed_pack(candidate, &pack.id),
+            )
+            .map_err(|error| ArchiveInstallError::Invalid(error.to_string()))
+            .map(|outcome| match outcome {
+                ReplacementOutcome::Installed => InstallArchiveResult::Installed,
+                ReplacementOutcome::DeferredUntilRestart => {
+                    InstallArchiveResult::DeferredUntilRestart
+                }
+            })
+        });
     if result.is_err() && staging_path.exists() {
         let _ = fs::remove_dir_all(&staging_path);
     }
@@ -110,8 +140,12 @@ pub fn validate_installed_pack(directory: &Path, expected_backend: &str) -> bool
     let Ok(manifest) = serde_json::from_slice::<RuntimePackManifest>(&bytes) else {
         return false;
     };
+    let Ok(policy) = bundled_manifest_policy() else {
+        return false;
+    };
     manifest.id == expected_backend
         && manifest.backend == expected_backend
+        && manifest.matches_policy(&policy)
         && validate_declared_pack(&manifest).is_ok()
         && existing_matches(directory, &manifest).unwrap_or(false)
 }
@@ -392,7 +426,10 @@ mod tests {
 
     use crate::runtime_manifest::{RuntimeManifestFile, RuntimeManifestPack, RuntimePackManifest};
 
-    use super::{install_verified_archive, InstallArchiveResult};
+    use super::{
+        install_verified_archive, install_verified_archive_with_mode_and_probe,
+        validate_installed_pack, InstallArchiveResult,
+    };
 
     const REQUIRED: &[(&str, &[u8])] = &[
         ("local_llm_runtime.dll", b"bridge"),
@@ -579,5 +616,58 @@ mod tests {
         manifest.abi_minor = 2;
         zip_with_manifest(&archive, REQUIRED, &manifest);
         assert!(install_verified_archive(&archive, root.path(), &pack(REQUIRED)).is_err());
+    }
+
+    #[test]
+    fn installed_pack_must_match_the_current_bundled_baseline() {
+        let root = TempDir::new().expect("runtime root");
+        let archive = root.path().join("pack.zip");
+        zip(&archive, REQUIRED);
+        install_verified_archive(&archive, root.path(), &pack(REQUIRED)).unwrap();
+        let manifest_path = root.path().join("cuda/runtime-pack.json");
+        let mut manifest: RuntimePackManifest =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest.llama_cpp_commit = "stale-commit".into();
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+
+        assert!(!validate_installed_pack(&root.path().join("cuda"), "cuda"));
+    }
+
+    #[test]
+    fn verified_existing_pack_clears_a_stale_repair_marker() {
+        let root = TempDir::new().expect("runtime root");
+        let archive = root.path().join("pack.zip");
+        zip(&archive, REQUIRED);
+        let manifest = pack(REQUIRED);
+        install_verified_archive(&archive, root.path(), &manifest).unwrap();
+        fs::write(root.path().join(".repair-required-cuda"), b"").unwrap();
+
+        assert_eq!(
+            install_verified_archive(&archive, root.path(), &manifest).unwrap(),
+            InstallArchiveResult::AlreadyInstalled
+        );
+        assert!(!root.path().join(".repair-required-cuda").exists());
+    }
+
+    #[test]
+    fn live_probe_must_succeed_before_staging_is_promoted() {
+        let root = TempDir::new().expect("runtime root");
+        let archive = root.path().join("pack.zip");
+        zip(&archive, REQUIRED);
+
+        let result = install_verified_archive_with_mode_and_probe(
+            &archive,
+            root.path(),
+            &pack(REQUIRED),
+            false,
+            |directory, backend| {
+                assert_eq!(backend, "cuda");
+                assert!(directory.join("local_llm_runtime.dll").is_file());
+                Err("DLL load failed".into())
+            },
+        );
+
+        assert!(result.unwrap_err().to_string().contains("DLL load failed"));
+        assert!(!root.path().join("cuda").exists());
     }
 }

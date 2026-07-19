@@ -1,0 +1,57 @@
+name: desktop release
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_tag:
+        description: Immutable runtime release tag to bundle and install from
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+        with:
+          toolchain: 1.93.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.13.1
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - name: Download pinned runtime release
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force .desktop-runtime | Out-Null
+          gh release download '${{ inputs.runtime_tag }}' --repo '${{ github.repository }}' --dir .desktop-runtime `
+            --pattern 'runtime-manifest.json' `
+            --pattern 'runtime-source.json' `
+            --pattern '*-windows-x86_64-cpu.zip'
+          $cpu = @(Get-ChildItem .desktop-runtime -File -Filter '*-windows-x86_64-cpu.zip')
+          if ($cpu.Count -ne 1) { throw "Expected exactly one CPU runtime archive, found $($cpu.Count)." }
+          $source = Get-Content -Raw -Encoding UTF8 .desktop-runtime/runtime-source.json | ConvertFrom-Json
+          $catalogSha256 = (Get-FileHash -Algorithm SHA256 .desktop-runtime/runtime-manifest.json).Hash.ToLowerInvariant()
+          if ($source.manifestSha256 -ne $catalogSha256) {
+            throw 'runtime-source.json does not pin the downloaded runtime-manifest.json.'
+          }
+          Copy-Item -Force .desktop-runtime/runtime-source.json apps/desktop/src-tauri/resources/runtime-source.default.json
+          scripts/prepare-bundled-cpu-runtime.ps1 `
+            -RuntimeAsset $cpu[0].FullName `
+            -Catalog .desktop-runtime/runtime-manifest.json
+      - name: Install frontend dependencies
+        run: npm ci --prefix apps/desktop
+      - name: Build unsigned Windows installer
+        run: npm --prefix apps/desktop run tauri -- build
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: local-llm-wiki-windows-${{ github.run_number }}
+          path: target/release/bundle/**/*
+          if-no-files-found: error

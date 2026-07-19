@@ -13,9 +13,12 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::{
-    runtime_archive::install_verified_archive_with_mode,
+    runtime_archive::install_verified_archive_with_mode_and_probe,
     runtime_download::{download_verified_archive, DownloadError},
-    runtime_manifest::{ManifestPolicy, RuntimeCatalog, RuntimeManifestPack},
+    runtime_manifest::{
+        bundled_manifest_policy, ManifestPolicy, RuntimeCatalog, RuntimeManifestPack,
+    },
+    runtime_packs::probe_runtime_directory,
     runtime_source::{load_runtime_source, RuntimeSource},
 };
 
@@ -55,37 +58,9 @@ impl RuntimeDistributionConfig {
             include_bytes!("../resources/runtime-source.default.json"),
         )
         .map_err(|error| error.to_string())?;
-        let baseline: serde_json::Value = serde_json::from_str(include_str!(
-            "../../../../native/llm-runtime/llama-baseline.json"
-        ))
-        .map_err(|error| format!("invalid bundled llama.cpp baseline: {error}"))?;
         Ok(Self {
             source,
-            policy: ManifestPolicy {
-                app_version: env!("CARGO_PKG_VERSION").into(),
-                abi_major: baseline["abiMajor"]
-                    .as_u64()
-                    .ok_or("baseline abiMajor is missing")? as u32,
-                abi_minor: baseline["abiMinor"]
-                    .as_u64()
-                    .ok_or("baseline abiMinor is missing")? as u32,
-                platform: baseline["platform"]
-                    .as_str()
-                    .ok_or("baseline platform is missing")?
-                    .into(),
-                arch: baseline["arch"]
-                    .as_str()
-                    .ok_or("baseline arch is missing")?
-                    .into(),
-                llama_cpp_release: baseline["releaseTag"]
-                    .as_str()
-                    .ok_or("baseline releaseTag is missing")?
-                    .into(),
-                llama_cpp_commit: baseline["commit"]
-                    .as_str()
-                    .ok_or("baseline commit is missing")?
-                    .into(),
-            },
+            policy: bundled_manifest_policy()?,
         })
     }
 }
@@ -302,11 +277,12 @@ impl RuntimeInstaller {
         let runtime_root = self.runtime_root.clone();
         let archive_for_install = archive_path.clone();
         tokio::task::spawn_blocking(move || {
-            install_verified_archive_with_mode(
+            install_verified_archive_with_mode_and_probe(
                 &archive_for_install,
                 &runtime_root,
                 &pack,
                 defer_replacement,
+                probe_runtime_directory,
             )
         })
         .await

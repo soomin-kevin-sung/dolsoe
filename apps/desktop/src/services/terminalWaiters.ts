@@ -3,20 +3,30 @@ interface TerminalWait {
   cancel(): void;
 }
 
+export async function restartAfterTerminalPersistence(
+  hasActiveGeneration: boolean,
+  stopAndPersist: () => Promise<void>,
+  restart: () => Promise<void>,
+): Promise<void> {
+  if (hasActiveGeneration) await stopAndPersist();
+  await restart();
+}
+
 export class TerminalWaiters {
-  private readonly waiters = new Set<() => void>();
+  private readonly waiters = new Set<(error?: Error) => void>();
 
   wait(timeoutMs = 10_000): TerminalWait {
-    let finish = () => undefined;
+    let finish = (_error?: Error) => undefined;
     const promise = new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.waiters.delete(finish);
         reject(new Error("terminal event timed out"));
       }, timeoutMs);
-      finish = () => {
+      finish = (error?: Error) => {
         clearTimeout(timeout);
         this.waiters.delete(finish);
-        resolve();
+        if (error) reject(error);
+        else resolve();
       };
       this.waiters.add(finish);
     });
@@ -25,5 +35,9 @@ export class TerminalWaiters {
 
   resolveAll(): void {
     for (const resolve of [...this.waiters]) resolve();
+  }
+
+  rejectAll(error: Error): void {
+    for (const reject of [...this.waiters]) reject(error);
   }
 }

@@ -17,6 +17,33 @@ pub struct ManifestPolicy {
     pub llama_cpp_commit: String,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BundledBaseline {
+    release_tag: String,
+    commit: String,
+    abi_major: u32,
+    abi_minor: u32,
+    platform: String,
+    arch: String,
+}
+
+pub fn bundled_manifest_policy() -> Result<ManifestPolicy, String> {
+    let baseline: BundledBaseline = serde_json::from_str(include_str!(
+        "../../../../native/llm-runtime/llama-baseline.json"
+    ))
+    .map_err(|error| format!("invalid bundled llama.cpp baseline: {error}"))?;
+    Ok(ManifestPolicy {
+        app_version: env!("CARGO_PKG_VERSION").into(),
+        abi_major: baseline.abi_major,
+        abi_minor: baseline.abi_minor,
+        platform: baseline.platform,
+        arch: baseline.arch,
+        llama_cpp_release: baseline.release_tag,
+        llama_cpp_commit: baseline.commit,
+    })
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimeManifestFile {
@@ -157,6 +184,21 @@ impl RuntimeManifestPack {
             && self.llama_cpp_commit == internal.llama_cpp_commit
             && self.abi_major == internal.abi_major
             && self.abi_minor == internal.abi_minor
+    }
+}
+
+impl RuntimePackManifest {
+    pub fn matches_policy(&self, policy: &ManifestPolicy) -> bool {
+        self.schema_version == SCHEMA_VERSION
+            && self.id == self.backend
+            && matches!(self.backend.as_str(), "cpu" | "cuda" | "vulkan")
+            && self.platform == policy.platform
+            && self.arch == policy.arch
+            && self.llama_cpp_release == policy.llama_cpp_release
+            && self.llama_cpp_commit == policy.llama_cpp_commit
+            && self.abi_major == policy.abi_major
+            && self.abi_minor == policy.abi_minor
+            && !self.pack_version.trim().is_empty()
     }
 }
 

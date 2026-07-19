@@ -3,8 +3,9 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    runtime_archive::{install_verified_archive, validate_installed_pack},
+    runtime_archive::install_verified_archive_with_mode_and_probe,
     runtime_manifest::RuntimeManifestPack,
+    runtime_packs::{probe_runtime_directory, runtime_directory_ready},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +19,7 @@ pub fn bootstrap_cpu(runtime_root: &Path, resource_root: &Path) -> BootstrapStat
     let archive = resource_root.join("cpu.zip");
     let index = resource_root.join("cpu-index.json");
     if !archive.is_file() && !index.is_file() {
-        return if validate_installed_pack(&installed_cpu, "cpu") {
+        return if runtime_directory_ready(&installed_cpu, "cpu") {
             BootstrapState::Ready
         } else {
             BootstrapState::RecoveryRequired(
@@ -43,16 +44,22 @@ pub fn bootstrap_cpu(runtime_root: &Path, resource_root: &Path) -> BootstrapStat
         if actual != pack.sha256 {
             return Err("bundled CPU archive SHA-256 mismatch".into());
         }
-        install_verified_archive(&archive, runtime_root, &pack)
-            .map_err(|error| error.to_string())?;
-        if !validate_installed_pack(&installed_cpu, "cpu") {
-            return Err("installed CPU runtime failed validation".into());
+        install_verified_archive_with_mode_and_probe(
+            &archive,
+            runtime_root,
+            &pack,
+            false,
+            probe_runtime_directory,
+        )
+        .map_err(|error| error.to_string())?;
+        if !runtime_directory_ready(&installed_cpu, "cpu") {
+            return Err("installed CPU runtime failed validation or device probe".into());
         }
         Ok(())
     })();
     match result {
         Ok(()) => BootstrapState::Ready,
-        Err(_error) if validate_installed_pack(&installed_cpu, "cpu") => BootstrapState::Ready,
+        Err(_error) if runtime_directory_ready(&installed_cpu, "cpu") => BootstrapState::Ready,
         Err(error) => {
             BootstrapState::RecoveryRequired(format!("CPU runtime recovery failed: {error}"))
         }
