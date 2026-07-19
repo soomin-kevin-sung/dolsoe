@@ -29,10 +29,12 @@
         } \
     } while (false)
 
+#ifdef LLW_RUNTIME_TESTING
 LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestSetEngineDestroyHook(
     llw_runtime_t* runtime, void (LLW_CALL *hook)(void*), void* user_data);
 LLW_EXTERN_C LLW_EXPORT void LLW_CALL LLWTestFailNextUnloadBeforeTransition(
     llw_runtime_t* runtime);
+#endif
 
 int test_v11_exports() {
     llw_error_t error{};
@@ -336,6 +338,7 @@ int test_debug_model_fixture_loads() {
     return 0;
 }
 
+#ifdef LLW_RUNTIME_TESTING
 struct LifecycleBarrier {
     llw_runtime_t* runtime{};
     std::mutex mutex;
@@ -466,6 +469,7 @@ int test_unload_failure_is_retryable() {
     llw_runtime_destroy(runtime);
     return 0;
 }
+#endif
 
 struct TerminalCallbackBarrier {
     std::mutex mutex;
@@ -972,8 +976,10 @@ int main() {
     CHECK(test_failed_load_callback_quiescence() == 0);
     CHECK(test_progress_saturation_is_bounded() == 0);
     CHECK(test_debug_model_fixture_loads() == 0);
+#ifdef LLW_RUNTIME_TESTING
     CHECK(test_unload_serializes_concurrent_load() == 0);
     CHECK(test_unload_failure_is_retryable() == 0);
+#endif
     CHECK(test_unload_waits_for_terminal_callback_quiescence() == 0);
     CHECK(test_callback_reentrant_unload_is_rejected_before_transition() == 0);
     return 0;

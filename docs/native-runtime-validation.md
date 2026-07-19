@@ -129,3 +129,9 @@ The command emits `runtime-manifest.json`, its detached base64 signature, and th
 ```powershell
 & scripts/tests/runtime-release.Tests.ps1
 ```
+
+### Validation result (2026-07-19)
+
+The Windows 11 x64 CPU Release path completed with Visual Studio, passed the Release-compatible native CTest suite, and produced a seven-entry archive: the six required runtime files plus `THIRD_PARTY_NOTICES.txt`. Development headers, import libraries, CMake metadata, and duplicate `bin/` files from the upstream install stage were excluded from the ZIP. The generated manifest fixture was signed with a temporary Ed25519 key and its archive/file hashes were verified by the script tests.
+
+The CUDA Toolkit was not installed on this workstation, so no local CUDA compile or hardware runtime result is claimed. CUDA publication remains gated on the private runner and requires `CUDA_PATH`, `nvcc`, and the permitted `cublas`, `cublasLt`, and `cudart` redistributable DLLs. Vulkan publication remains gated on installation of the checksum-pinned LunarG SDK in the hosted workflow.

@@ -72,11 +72,9 @@ Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::Open($temporaryAsset, [IO.Compression.ZipArchiveMode]::Create)
 try {
-  $rootWithSeparator = $packPath.TrimEnd([IO.Path]::DirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
-  $files = Get-ChildItem -LiteralPath $packPath -File -Recurse | Where-Object { $_.Name -ne 'THIRD_PARTY_NOTICES.txt' } | Sort-Object FullName
+  $files = Get-ChildItem -LiteralPath $packPath -File | Where-Object { $_.Name -ne 'THIRD_PARTY_NOTICES.txt' } | Sort-Object Name
   foreach ($file in $files) {
-    $relative = $file.FullName.Substring($rootWithSeparator.Length).Replace('\', '/')
-    $entry = $archive.CreateEntry($relative, [IO.Compression.CompressionLevel]::Optimal)
+    $entry = $archive.CreateEntry($file.Name, [IO.Compression.CompressionLevel]::Optimal)
     $entry.LastWriteTime = [DateTimeOffset]::new(2020, 1, 1, 0, 0, 0, [TimeSpan]::Zero)
     $input = $file.OpenRead()
     $output = $entry.Open()

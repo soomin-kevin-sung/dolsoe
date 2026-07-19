@@ -33,6 +33,8 @@ try {
   foreach ($name in @('local_llm_runtime.dll', 'llama.dll', 'ggml.dll', 'ggml-base.dll', 'ggml-cpu.dll', 'llw_runtime_backend_test.exe')) {
     [IO.File]::WriteAllText((Join-Path $fixture $name), "fixture-$name")
   }
+  New-Item -ItemType Directory -Force -Path (Join-Path $fixture 'include') | Out-Null
+  [IO.File]::WriteAllText((Join-Path $fixture 'include/development-only.h'), 'not-a-runtime-asset')
 
   & $builder -Version $version -Backend CPU -OutputRoot $output -SourcePack $fixture
   $assetName = "local-llm-wiki-runtime-$version-windows-x86_64-cpu.zip"

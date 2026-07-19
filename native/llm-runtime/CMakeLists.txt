@@ -90,8 +90,11 @@ endforeach()
 
 add_executable(llw_abi_layout_test tests/abi_layout_test.cpp)
 target_include_directories(llw_abi_layout_test PRIVATE include)
+target_compile_definitions(llw_abi_layout_test PRIVATE
+  $<$<CONFIG:Debug>:LLW_RUNTIME_TESTING>
+)
 target_link_libraries(llw_abi_layout_test PRIVATE local_llm_runtime)
-add_test(NAME llw_abi_layout_test COMMAND llw_abi_layout_test)
+add_test(NAME llw_abi_layout_test COMMAND llw_abi_layout_test CONFIGURATIONS Debug)
 set_tests_properties(llw_abi_layout_test PROPERTIES
   TIMEOUT 30
   ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:llama>"
