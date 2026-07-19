@@ -5,6 +5,7 @@ mod llm_dto;
 mod llm_worker;
 mod runtime_packs;
 mod runtime_path;
+mod runtime_manifest;
 mod runtime_probe;
 
 use tauri::{Emitter, Manager};
