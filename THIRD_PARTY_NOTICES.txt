@@ -1,0 +1,23 @@
+Local LLM Wiki runtime pack third-party notices
+================================================
+
+llama.cpp
+---------
+Copyright (c) 2023-2026 The ggml authors
+Licensed under the MIT License.
+Source revision: 6bdd77f13cf11b264b4231d320afc404f48d576e
+License: https://github.com/ggml-org/llama.cpp/blob/6bdd77f13cf11b264b4231d320afc404f48d576e/LICENSE
+
+NVIDIA CUDA Toolkit redistributables
+------------------------------------
+CUDA runtime packs may contain only DLLs listed as redistributable by the
+CUDA Toolkit installed on the private self-hosted release runner. Their use
+and redistribution are governed by the NVIDIA CUDA Toolkit EULA.
+Terms: https://docs.nvidia.com/cuda/eula/
+
+Vulkan
+------
+The Vulkan backend is built with the LunarG Vulkan SDK. The runtime pack does
+not redistribute the SDK installer. A compatible Vulkan loader is supplied by
+the user's graphics driver.
+SDK licenses: https://vulkan.lunarg.com/license/

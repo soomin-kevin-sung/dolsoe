@@ -1,0 +1,137 @@
+name: runtime release
+
+on:
+  push:
+    tags: ['runtime-v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Semantic version without a leading v
+        required: true
+        type: string
+      include_cuda:
+        description: Build CUDA on the private CUDA runner
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  CMAKE_GENERATOR: Visual Studio 17 2022
+  CMAKE_GENERATOR_PLATFORM: x64
+  CMAKE_GENERATOR_TOOLSET: v143
+
+jobs:
+  build-cpu:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Resolve release version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { '${{ github.ref_name }}'.Replace('runtime-v', '') }
+          "LLW_RUNTIME_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Build CPU runtime asset
+        shell: pwsh
+        run: scripts/build-runtime-release.ps1 -Version $env:LLW_RUNTIME_VERSION -Backend CPU -OutputRoot .runtime-release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-cpu
+          path: .runtime-release/*.zip
+          if-no-files-found: error
+
+  build-vulkan:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    env:
+      VULKAN_SDK_VERSION: 1.4.350.0
+      VULKAN_SDK_URL: https://sdk.lunarg.com/sdk/download/1.4.350.0/windows/vulkansdk-windows-X64-1.4.350.0.exe
+      VULKAN_SDK_SHA256: 855b27ba05d2d8119c5114c5d4ff870ca38f2c632b11e1bb9923b9b7e6ecfe7b
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Resolve release version
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { '${{ github.ref_name }}'.Replace('runtime-v', '') }
+          "LLW_RUNTIME_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Install pinned LunarG Vulkan SDK
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk.exe'
+          Invoke-WebRequest -Uri $env:VULKAN_SDK_URL -OutFile $installer
+          $actual = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          if ($actual -ne $env:VULKAN_SDK_SHA256) { throw "Vulkan SDK checksum mismatch: $actual" }
+          $root = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
+          $process = Start-Process -Wait -PassThru -FilePath $installer -ArgumentList '--root', $root, '--accept-licenses', '--default-answer', '--confirm-command', 'install'
+          if ($process.ExitCode -ne 0) { throw "Vulkan SDK installer failed: $($process.ExitCode)" }
+          "VULKAN_SDK=$root" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "$root\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build Vulkan runtime asset
+        shell: pwsh
+        run: scripts/build-runtime-release.ps1 -Version $env:LLW_RUNTIME_VERSION -Backend VULKAN -OutputRoot .runtime-release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-vulkan
+          path: .runtime-release/*.zip
+          if-no-files-found: error
+
+  build-cuda:
+    if: github.event_name == 'workflow_dispatch' && inputs.include_cuda
+    runs-on: [self-hosted, Windows, X64, cuda]
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Verify private CUDA runner
+        shell: pwsh
+        run: |
+          if (-not $env:CUDA_PATH) { throw 'CUDA_PATH is not configured.' }
+          & nvcc --version
+      - name: Build CUDA runtime asset
+        shell: pwsh
+        run: scripts/build-runtime-release.ps1 -Version '${{ inputs.version }}' -Backend CUDA -OutputRoot .runtime-release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: runtime-cuda
+          path: .runtime-release/*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [build-cpu, build-vulkan, build-cuda]
+    if: always() && needs.build-cpu.result == 'success' && needs.build-vulkan.result == 'success' && (needs.build-cuda.result == 'success' || needs.build-cuda.result == 'skipped')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LLW_RUNTIME_SIGNING_KEY: ${{ secrets.LLW_RUNTIME_SIGNING_KEY }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: runtime-*
+          path: .runtime-release
+          merge-multiple: true
+      - name: Resolve release metadata
+        shell: pwsh
+        run: |
+          $version = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.version }}' } else { '${{ github.ref_name }}'.Replace('runtime-v', '') }
+          "LLW_RUNTIME_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "LLW_RUNTIME_TAG=runtime-v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+      - name: Sign exact runtime manifest bytes
+        shell: pwsh
+        run: scripts/generate-runtime-manifest.ps1 -Version $env:LLW_RUNTIME_VERSION -AssetDirectory .runtime-release -OutputDirectory .runtime-release
+      - name: Publish immutable GitHub Release
+        shell: bash
+        run: |
+          if gh release view "$LLW_RUNTIME_TAG" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing release $LLW_RUNTIME_TAG" >&2
+            exit 1
+          fi
+          gh release create "$LLW_RUNTIME_TAG" .runtime-release/*.zip .runtime-release/runtime-manifest.json .runtime-release/runtime-manifest.json.sig .runtime-release/runtime-manifest.public-key \
+            --target "$GITHUB_SHA" \
+            --title "Runtime packs $LLW_RUNTIME_VERSION" \
+            --notes "Signed Windows x64 runtime packs for Local LLM Wiki."

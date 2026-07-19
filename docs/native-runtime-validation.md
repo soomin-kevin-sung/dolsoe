@@ -104,3 +104,28 @@ The CUDA command requires the self-hosted runner labels `Windows`, `X64`, and `c
 `CUDA_PATH`. Compile smoke does not claim runtime GPU validation. Runtime CUDA/Vulkan tests use the explicit
 hardware-gated command above. Metal is reserved for a future ABI-compatible macOS plan and is not configured,
 compiled, or tested here.
+
+## Signed runtime release assets
+
+Build one Windows x64 asset at a time. The script configures, tests, stages, validates, and packages the selected backend:
+
+```powershell
+& scripts/build-runtime-release.ps1 -Version 2026.07.1 -Backend CPU
+& scripts/build-runtime-release.ps1 -Version 2026.07.1 -Backend VULKAN
+& scripts/build-runtime-release.ps1 -Version 2026.07.1 -Backend CUDA
+```
+
+CUDA release builds run only on the private `Windows`, `X64`, `cuda` runner. The runner must provide the CUDA Toolkit and may package only redistributable DLLs allowed by its installed Toolkit EULA. Vulkan assets require the pinned LunarG SDK during compilation but rely on the graphics driver's Vulkan loader at runtime.
+
+Publishing requires a PKCS#8 Ed25519 private key encoded as base64. Store it only in the `LLW_RUNTIME_SIGNING_KEY` GitHub Actions secret. Never commit the private key or print the secret. To generate a signed manifest locally:
+
+```powershell
+$env:LLW_RUNTIME_SIGNING_KEY = '<base64 PKCS#8 DER private key>'
+& scripts/generate-runtime-manifest.ps1 -Version 2026.07.1 -AssetDirectory .runtime-release
+```
+
+The command emits `runtime-manifest.json`, its detached base64 signature, and the raw public key encoded as base64. Production app builds must embed that public key through `LLW_RUNTIME_MANIFEST_PUBLIC_KEY` and set the manifest/signature URLs through `LLW_RUNTIME_MANIFEST_URL` and `LLW_RUNTIME_MANIFEST_SIGNATURE_URL`. Unsigned manifests are never accepted. Run the packaging fixture without compiling llama.cpp using:
+
+```powershell
+& scripts/tests/runtime-release.Tests.ps1
+```
