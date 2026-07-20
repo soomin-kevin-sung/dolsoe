@@ -1,4 +1,5 @@
 name: runtime release
+run-name: Runtime packs ${{ inputs.version || github.ref_name }}
 
 on:
   push:
@@ -66,7 +67,7 @@ jobs:
           "LLW_RUNTIME_TAG=runtime-v$version" | Out-File -FilePath $env:GITHUB_ENV -Append
       - name: Generate pinned runtime catalog
         shell: pwsh
-        run: scripts/generate-runtime-manifest.ps1 -Version $env:LLW_RUNTIME_VERSION -AssetDirectory .runtime-release -OutputDirectory .runtime-release
+        run: scripts/generate-runtime-manifest.ps1 -Version $env:LLW_RUNTIME_VERSION -AssetDirectory .runtime-release -OutputDirectory .runtime-release -Repository '${{ github.repository }}'
       - name: Publish immutable GitHub Release
         shell: bash
         run: |

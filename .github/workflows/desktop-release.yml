@@ -1,4 +1,5 @@
 name: desktop release
+run-name: Desktop with runtime ${{ inputs.runtime_tag }}
 
 on:
   workflow_dispatch:
