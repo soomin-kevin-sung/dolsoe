@@ -302,7 +302,7 @@ Parameters are:
 ```powershell
 param(
   [string]$PackId = 'cpu-dev',
-  [string]$DestinationRoot = (Join-Path $env:LOCALAPPDATA 'io.github.soomin-sung-estsoft.local-llm-wiki/runtime-packs'),
+  [string]$DestinationRoot = (Join-Path $env:LOCALAPPDATA 'io.github.soomin-kevin-sung.local-llm-wiki/runtime-packs'),
   [ValidateSet('Debug','Release')][string]$Configuration = 'Debug'
 )
 ```
@@ -343,7 +343,7 @@ Run:
 
 ```powershell
 $model = & scripts/acquire-test-model.ps1
-$pack = Join-Path $env:LOCALAPPDATA 'io.github.soomin-sung-estsoft.local-llm-wiki/runtime-packs/cpu-dev'
+$pack = Join-Path $env:LOCALAPPDATA 'io.github.soomin-kevin-sung.local-llm-wiki/runtime-packs/cpu-dev'
 $env:LLW_TEST_GGUF = $model
 $env:LLW_TEST_RUNTIME = Join-Path $pack 'local_llm_runtime.dll'
 & (Join-Path $pack 'llw_runtime_backend_test.exe') $model

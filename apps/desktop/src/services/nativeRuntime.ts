@@ -30,6 +30,7 @@ export interface LoadModelRequest {
 
 export interface SubmitRequest {
   prompt: string;
+  messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
   maxNewTokens: number;
   temperature: number;
   topP: number;

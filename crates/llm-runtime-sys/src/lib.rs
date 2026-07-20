@@ -6,7 +6,7 @@ compile_error!("llm-runtime-sys supports only 64-bit targets");
 use std::ffi::{c_char, c_void};
 
 pub const ABI_MAJOR: u32 = 1;
-pub const ABI_MINOR: u32 = 1;
+pub const ABI_MINOR: u32 = 2;
 pub const OK: i32 = 0;
 pub const ERR_INVALID_ARGUMENT: i32 = 1;
 pub const ERR_ABI_MISMATCH: i32 = 2;
@@ -264,6 +264,15 @@ pub struct Bytes {
 }
 
 #[repr(C)]
+pub struct ChatMessage {
+    pub struct_size: u32,
+    pub flags: u32,
+    pub role: Bytes,
+    pub content: Bytes,
+    pub reserved: [u64; 8],
+}
+
+#[repr(C)]
 pub struct Buffer {
     pub struct_size: u32,
     pub flags: u32,
@@ -349,7 +358,10 @@ pub struct RequestParams {
     pub reserved0: u32,
     pub stop_sequences: *const Bytes,
     pub request_user_data: *mut c_void,
-    pub reserved: [u64; 12],
+    pub chat_messages: *const ChatMessage,
+    pub chat_message_count: u32,
+    pub reserved1: u32,
+    pub reserved: [u64; 10],
 }
 
 #[repr(C)]
@@ -396,6 +408,16 @@ zero_default!(
         flags: 0,
         data: std::ptr::null(),
         len: 0,
+        reserved: [0; 8],
+    }
+);
+zero_default!(
+    ChatMessage,
+    Self {
+        struct_size: std::mem::size_of::<Self>() as u32,
+        flags: 0,
+        role: Bytes::default(),
+        content: Bytes::default(),
         reserved: [0; 8],
     }
 );
@@ -466,7 +488,10 @@ zero_default!(
         reserved0: 0,
         stop_sequences: std::ptr::null(),
         request_user_data: std::ptr::null_mut(),
-        reserved: [0; 12],
+        chat_messages: std::ptr::null(),
+        chat_message_count: 0,
+        reserved1: 0,
+        reserved: [0; 10],
     }
 );
 zero_default!(
@@ -740,7 +765,7 @@ mod tests {
 
     #[test]
     fn ffi_struct_layouts_match_x64_c_contract() {
-        assert_eq!(ABI_MINOR, 1);
+        assert_eq!(ABI_MINOR, 2);
         assert_layout!(Error, 592);
         assert_offset!(Error, struct_size, 0);
         assert_offset!(Error, code, 4);
@@ -820,6 +845,7 @@ mod tests {
         assert_offset!(CallbackTable, reserved, 24);
 
         assert_layout!(Bytes, 88);
+        assert_layout!(ChatMessage, 248);
         assert_layout!(Buffer, 96);
         assert_layout!(SchedulerConfig, 88);
         assert_layout!(ModelLoadParams, 168);
@@ -851,7 +877,9 @@ mod tests {
         assert_offset!(RequestParams, temperature, 40);
         assert_offset!(RequestParams, stop_sequences, 80);
         assert_offset!(RequestParams, request_user_data, 88);
-        assert_offset!(RequestParams, reserved, 96);
+        assert_offset!(RequestParams, chat_messages, 96);
+        assert_offset!(RequestParams, chat_message_count, 104);
+        assert_offset!(RequestParams, reserved, 112);
         assert_offset!(SchedulerSnapshot, accepted_requests, 24);
         assert_offset!(SchedulerSnapshot, reserved, 40);
         assert_offset!(Metrics, prompt_tokens, 8);

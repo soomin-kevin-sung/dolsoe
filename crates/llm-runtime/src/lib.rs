@@ -23,6 +23,8 @@ pub enum Error {
     Runtime { code: i32, message: String },
     #[error("runtime returned invalid UTF-8")]
     InvalidUtf8,
+    #[error("invalid runtime input: {0}")]
+    InvalidInput(String),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -970,6 +972,12 @@ pub struct GenerationOptions {
     pub stop_sequences: Vec<Vec<u8>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
 impl Default for GenerationOptions {
     fn default() -> Self {
         Self {
@@ -1723,6 +1731,29 @@ impl Model {
         prompt: &[u8],
         options: GenerationOptions,
     ) -> Result<RequestStream, Error> {
+        self.submit_inner(prompt, &[], options)
+    }
+
+    pub fn submit_chat(
+        &self,
+        messages: &[ChatMessage],
+        options: GenerationOptions,
+    ) -> Result<RequestStream, Error> {
+        let prompt = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .map(|message| message.content.as_bytes())
+            .ok_or_else(|| Error::InvalidInput("chat requires a user message".into()))?;
+        self.submit_inner(prompt, messages, options)
+    }
+
+    fn submit_inner(
+        &self,
+        prompt: &[u8],
+        messages: &[ChatMessage],
+        options: GenerationOptions,
+    ) -> Result<RequestStream, Error> {
         let stop_storage = options.stop_sequences;
         let stop_ffi: Vec<sys::Bytes> = stop_storage
             .iter()
@@ -1731,6 +1762,28 @@ impl Model {
                 flags: 0,
                 data: stop.as_ptr(),
                 len: stop.len() as u64,
+                reserved: [0; 8],
+            })
+            .collect();
+        let chat_ffi: Vec<sys::ChatMessage> = messages
+            .iter()
+            .map(|message| sys::ChatMessage {
+                struct_size: std::mem::size_of::<sys::ChatMessage>() as u32,
+                flags: 0,
+                role: sys::Bytes {
+                    struct_size: std::mem::size_of::<sys::Bytes>() as u32,
+                    flags: 0,
+                    data: message.role.as_ptr(),
+                    len: message.role.len() as u64,
+                    reserved: [0; 8],
+                },
+                content: sys::Bytes {
+                    struct_size: std::mem::size_of::<sys::Bytes>() as u32,
+                    flags: 0,
+                    data: message.content.as_ptr(),
+                    len: message.content.len() as u64,
+                    reserved: [0; 8],
+                },
                 reserved: [0; 8],
             })
             .collect();
@@ -1758,7 +1811,14 @@ impl Model {
                 stop_ffi.as_ptr()
             },
             request_user_data: std::ptr::null_mut(),
-            reserved: [0; 12],
+            chat_messages: if chat_ffi.is_empty() {
+                std::ptr::null()
+            } else {
+                chat_ffi.as_ptr()
+            },
+            chat_message_count: chat_ffi.len() as u32,
+            reserved1: 0,
+            reserved: [0; 10],
         };
         let _guard = self
             .state

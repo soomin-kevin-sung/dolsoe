@@ -42,8 +42,17 @@ pub struct LoadModelRequest {
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct SubmitChatMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct SubmitRequest {
     pub prompt: String,
+    #[serde(default)]
+    pub messages: Vec<SubmitChatMessage>,
     pub max_new_tokens: u32,
     pub temperature: f32,
     pub top_p: f32,

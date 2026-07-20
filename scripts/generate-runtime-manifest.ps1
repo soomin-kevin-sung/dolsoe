@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory)][string]$Version,
   [Parameter(Mandatory)][string]$AssetDirectory,
   [string]$OutputDirectory = $AssetDirectory,
-  [string]$Repository = 'soomin-sung-estsoft/local-llm-wiki',
+  [string]$Repository = 'soomin-kevin-sung/local-llm-wiki',
   [string]$MinimumAppVersion = '0.1.0',
   [string]$MaximumAppVersion = '0.1.x'
 )

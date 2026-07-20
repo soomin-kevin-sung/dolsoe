@@ -15,6 +15,13 @@ $workflowPath = Join-Path $repositoryRoot '.github/workflows/runtime-release.yml
 $desktopWorkflowPath = Join-Path $repositoryRoot '.github/workflows/desktop-release.yml'
 $ciWorkflowPath = Join-Path $repositoryRoot '.github/workflows/ci.yml'
 $desktopBuildScriptPath = Join-Path $repositoryRoot 'apps/desktop/src-tauri/build.rs'
+$desktopPackagePath = Join-Path $repositoryRoot 'apps/desktop/package.json'
+$devPreparerPath = Join-Path $repositoryRoot 'scripts/prepare-dev-cpu-pack.ps1'
+$devLauncherPath = Join-Path $repositoryRoot 'scripts/start-desktop-dev.ps1'
+$headerPreparerPath = Join-Path $repositoryRoot 'scripts/prepare-llama-headers.ps1'
+$runtimeCmakePath = Join-Path $repositoryRoot 'native/llm-runtime/CMakeLists.txt'
+$llamaApiPath = Join-Path $repositoryRoot 'native/llm-runtime/src/llama_api.cpp'
+$runtimeValidationPath = Join-Path $repositoryRoot 'docs/native-runtime-validation.md'
 $builderSource = Get-Content -Raw -Encoding UTF8 $builder
 $baselinePath = Join-Path $repositoryRoot 'native/llm-runtime/llama-baseline.json'
 
@@ -39,7 +46,11 @@ try {
   $baseline = Get-Content -Raw -Encoding UTF8 $baselinePath | ConvertFrom-Json
   Assert-True ($baseline.releaseTag -eq 'b10068') 'Unexpected llama.cpp baseline tag.'
   Assert-True ($baseline.commit -eq '571d0d540df04f25298d0e159e520d9fc62ed121') 'Unexpected llama.cpp baseline commit.'
-  Assert-True ($baseline.abiMajor -eq 1 -and $baseline.abiMinor -eq 1) 'Unexpected bridge ABI baseline.'
+  Assert-True ($baseline.abiMajor -eq 1 -and $baseline.abiMinor -eq 2) 'Unexpected bridge ABI baseline.'
+  Assert-True (@($baseline.headers).Count -eq 7) 'Pinned llama.cpp header SDK must contain seven public headers.'
+  foreach ($header in @($baseline.headers)) {
+    Assert-True ([string]$header.sha256 -match '^[0-9a-f]{64}$') "Pinned header hash is malformed: $($header.path)"
+  }
 
   New-Item -ItemType Directory -Force -Path $fixture, $output, $cudaFixture, $cudaOutput | Out-Null
   foreach ($name in @('local_llm_runtime.dll', 'llama.dll', 'ggml.dll', 'ggml-base.dll', 'ggml-cpu.dll', 'llw_runtime_backend_test.exe')) {
@@ -148,6 +159,33 @@ try {
   Assert-True ($desktopBuildScript -match 'cpu\.zip' -and $desktopBuildScript -match 'cpu-index\.json') 'Release builds must require bundled CPU resources.'
   Assert-True ($desktopBuildScript -match '0000000000000000000000000000000000000000000000000000000000000000') 'Release builds must reject the placeholder runtime source digest.'
   Assert-True ($desktopBuildScript -match 'len\(\) != 64' -and $desktopBuildScript -match 'is_ascii') 'Release builds must reject malformed non-placeholder source digests.'
+
+  $devPreparerSource = Get-Content -Raw -Encoding UTF8 $devPreparerPath
+  $devLauncherSource = Get-Content -Raw -Encoding UTF8 $devLauncherPath
+  $headerPreparerSource = Get-Content -Raw -Encoding UTF8 $headerPreparerPath
+  $runtimeCmakeSource = Get-Content -Raw -Encoding UTF8 $runtimeCmakePath
+  $llamaApiSource = Get-Content -Raw -Encoding UTF8 $llamaApiPath
+  $desktopPackage = Get-Content -Raw -Encoding UTF8 $desktopPackagePath | ConvertFrom-Json
+  $runtimeValidation = Get-Content -Raw -Encoding UTF8 $runtimeValidationPath
+  $parseTokens = $null
+  $parseErrors = $null
+  [Management.Automation.Language.Parser]::ParseFile($devPreparerPath, [ref]$parseTokens, [ref]$parseErrors) | Out-Null
+  Assert-True ($parseErrors.Count -eq 0) 'Development CPU pack preparer has PowerShell syntax errors.'
+  $parseTokens = $null
+  $parseErrors = $null
+  [Management.Automation.Language.Parser]::ParseFile($devLauncherPath, [ref]$parseTokens, [ref]$parseErrors) | Out-Null
+  Assert-True ($parseErrors.Count -eq 0) 'Desktop development launcher has PowerShell syntax errors.'
+  Assert-True ($devPreparerSource -match '\$packId\s*=\s*''cpu''' -and $devPreparerSource -notmatch '\[string\]\$PackId') 'Development must install only the stable CPU pack ID.'
+  Assert-True ($devPreparerSource -match 'build-runtime-release\.ps1' -and $devPreparerSource -match 'runtime-pack\.json') 'Development CPU preparation must reuse the release manifest contract.'
+  Assert-True ($devPreparerSource -notmatch 'FetchContent|llama\.cpp\.git') 'Development CPU preparation must not clone or compile llama.cpp.'
+  Assert-True ($builderSource -match 'prepare-llama-headers\.ps1' -and $builderSource -match 'LLW_LLAMA_INCLUDE_DIR') 'Runtime builds must use the checksum-pinned header SDK.'
+  Assert-True ($headerPreparerSource -match 'raw\.githubusercontent\.com' -and $headerPreparerSource -match 'Get-FileHash') 'Header SDK preparation must download exact sources and verify checksums.'
+  Assert-True ($runtimeCmakeSource -notmatch 'FetchContent|add_subdirectory\([^\r\n]*llama|target_link_libraries\([^\r\n]*\bllama\b') 'The bridge must not build or link llama.cpp.'
+  Assert-True ($runtimeCmakeSource -match 'src/llama_api\.cpp') 'The dynamic llama.cpp loader must be compiled into the bridge.'
+  Assert-True ($llamaApiSource -match 'LoadLibraryExW' -and $llamaApiSource -match 'GetProcAddress') 'The bridge must resolve official llama.cpp release DLL exports at runtime.'
+  Assert-True ($devLauncherSource -match 'prepare-dev-cpu-pack\.ps1' -and $devLauncherSource -match 'npm run tauri -- dev') 'Desktop development launcher must prepare CPU before Tauri.'
+  Assert-True ($desktopPackage.scripts.'desktop:dev' -match 'start-desktop-dev\.ps1') 'Desktop package must expose the integrated development command.'
+  Assert-True ($runtimeValidation -notmatch 'cpu-dev' -and $runtimeValidation -match 'desktop:dev') 'Runtime validation docs must use the stable integrated development flow.'
 
   Write-Output 'runtime release fixture tests passed'
 } finally {

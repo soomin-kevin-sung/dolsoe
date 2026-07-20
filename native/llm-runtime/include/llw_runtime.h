@@ -31,7 +31,7 @@
 #endif
 
 #define LLW_ABI_MAJOR 1u
-#define LLW_ABI_MINOR 1u
+#define LLW_ABI_MINOR 2u
 
 typedef uint64_t llw_handle_t;
 typedef int32_t llw_result_t;
@@ -81,6 +81,8 @@ typedef int32_t llw_result_t;
 #define LLW_MAX_MODEL_PATH_BYTES 32768u
 #define LLW_MAX_DEVICE_INDEX 255u
 #define LLW_MAX_PROMPT_BYTES (16u * 1024u * 1024u)
+#define LLW_MAX_CHAT_MESSAGES 128u
+#define LLW_MAX_CHAT_ROLE_BYTES 16u
 #define LLW_MAX_STOP_SEQUENCES 8u
 #define LLW_MAX_STOP_BYTES 256u
 #define LLW_MAX_STOP_TOTAL_BYTES 2048u
@@ -252,6 +254,14 @@ typedef struct llw_model_load_params_t {
     uint64_t reserved[12];
 } llw_model_load_params_t;
 
+typedef struct llw_chat_message_t {
+    uint32_t struct_size;
+    uint32_t flags;
+    llw_bytes_t role; /* UTF-8: system, user, or assistant */
+    llw_bytes_t content; /* UTF-8 with no NUL */
+    uint64_t reserved[8];
+} llw_chat_message_t;
+
 typedef struct llw_request_params_t {
     uint32_t struct_size;
     uint32_t flags;
@@ -272,7 +282,10 @@ typedef struct llw_request_params_t {
     uint32_t reserved0;
     const llw_bytes_t* stop_sequences; /* each 1..256 bytes; combined 0..2048 bytes */
     void* request_user_data;
-    uint64_t reserved[12];
+    const llw_chat_message_t* chat_messages; /* optional ordered conversation history */
+    uint32_t chat_message_count; /* 0..128 */
+    uint32_t reserved1;
+    uint64_t reserved[10];
 } llw_request_params_t;
 
 typedef struct llw_scheduler_snapshot_t {
@@ -329,7 +342,9 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_list_devices(
 
 /*
  * All input byte pointers are borrowed only for the call. llw_request_submit copies the prompt,
- * stop arrays, stop bytes, and request_user_data value before returning. Event data uses event.flags:
+ * chat messages, stop arrays, stop bytes, and request_user_data value before returning. When chat
+ * messages are supplied, the model's default GGUF chat template formats them and prompt is ignored.
+ * Event data uses event.flags:
  * TOKEN is BYTES; LOG is UTF8; QUEUED, MODEL_PROGRESS, METRICS, DONE, CANCELLED, and ERROR are
  * JSON_UTF8. event and data are valid only during the callback and must be copied before return.
  * Only the dispatcher thread invokes on_event; callbacks are serialized, may not call llw_* reentrantly,

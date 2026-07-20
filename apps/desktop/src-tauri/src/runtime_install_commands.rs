@@ -163,7 +163,7 @@ mod tests {
             llama_cpp_release: "b10068".into(),
             llama_cpp_commit: "571d0d540df04f25298d0e159e520d9fc62ed121".into(),
             abi_major: 1,
-            abi_minor: 1,
+            abi_minor: 2,
             asset_name: "pack.zip".into(),
             size: 1024,
             sha256: "0".repeat(64),

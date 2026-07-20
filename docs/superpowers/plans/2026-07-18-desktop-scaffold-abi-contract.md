@@ -91,7 +91,7 @@ Expected: both `cl.exe` and `link.exe` resolve inside the selected Visual Studio
 ```powershell
 New-Item -ItemType Directory -Force apps | Out-Null
 Push-Location apps
-npm create tauri-app@latest desktop -- --manager npm --template react-ts --identifier io.github.soomin-sung-estsoft.local-llm-wiki --tauri-version 2 --yes
+npm create tauri-app@latest desktop -- --manager npm --template react-ts --identifier io.github.soomin-kevin-sung.local-llm-wiki --tauri-version 2 --yes
 Pop-Location
 npm --prefix apps/desktop install
 ```
@@ -141,7 +141,7 @@ Update the matching fields in `apps/desktop/src-tauri/tauri.conf.json`:
 {
   "productName": "Local LLM Wiki",
   "version": "0.1.0",
-  "identifier": "io.github.soomin-sung-estsoft.local-llm-wiki"
+  "identifier": "io.github.soomin-kevin-sung.local-llm-wiki"
 }
 ```
 

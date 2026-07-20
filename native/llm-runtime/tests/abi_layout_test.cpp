@@ -620,7 +620,7 @@ int test_callback_reentrant_unload_is_rejected_before_transition() {
 int main() {
     static_assert(sizeof(void*) == 8);
     static_assert(LLW_ABI_MAJOR == 1u);
-    static_assert(LLW_ABI_MINOR == 1u);
+    static_assert(LLW_ABI_MINOR == 2u);
     static_assert(sizeof(llw_handle_t) == sizeof(std::uint64_t));
     static_assert(sizeof(llw_result_t) == sizeof(std::int32_t));
     static_assert(LLW_OK == 0);
@@ -719,6 +719,7 @@ int main() {
     LLW_ASSERT_FIELD(llw_runtime_create_params_t, callbacks, llw_callback_table_t, 8u);
     LLW_ASSERT_FIELD(llw_runtime_create_params_t, reserved, std::uint64_t[8], 96u);
     static_assert(sizeof(llw_bytes_t) == 88u);
+    static_assert(sizeof(llw_chat_message_t) == 248u);
     static_assert(sizeof(llw_buffer_t) == 96u);
     static_assert(sizeof(llw_scheduler_config_t) == 88u);
     static_assert(sizeof(llw_model_load_params_t) == 168u);
@@ -730,6 +731,9 @@ int main() {
     LLW_ASSERT_FIELD(llw_bytes_t, data, const std::uint8_t*, 8u);
     LLW_ASSERT_FIELD(llw_bytes_t, len, std::uint64_t, 16u);
     LLW_ASSERT_FIELD(llw_bytes_t, reserved, std::uint64_t[8], 24u);
+    LLW_ASSERT_FIELD(llw_chat_message_t, role, llw_bytes_t, 8u);
+    LLW_ASSERT_FIELD(llw_chat_message_t, content, llw_bytes_t, 96u);
+    LLW_ASSERT_FIELD(llw_chat_message_t, reserved, std::uint64_t[8], 184u);
     LLW_ASSERT_FIELD(llw_buffer_t, data, std::uint8_t*, 8u);
     LLW_ASSERT_FIELD(llw_buffer_t, capacity, std::uint64_t, 16u);
     LLW_ASSERT_FIELD(llw_buffer_t, len, std::uint64_t, 24u);
@@ -749,7 +753,9 @@ int main() {
     LLW_ASSERT_FIELD(llw_request_params_t, temperature, float, 40u);
     LLW_ASSERT_FIELD(llw_request_params_t, stop_sequences, const llw_bytes_t*, 80u);
     LLW_ASSERT_FIELD(llw_request_params_t, request_user_data, void*, 88u);
-    LLW_ASSERT_FIELD(llw_request_params_t, reserved, std::uint64_t[12], 96u);
+    LLW_ASSERT_FIELD(llw_request_params_t, chat_messages, const llw_chat_message_t*, 96u);
+    LLW_ASSERT_FIELD(llw_request_params_t, chat_message_count, std::uint32_t, 104u);
+    LLW_ASSERT_FIELD(llw_request_params_t, reserved, std::uint64_t[10], 112u);
     LLW_ASSERT_FIELD(llw_scheduler_snapshot_t, accepted_requests, std::uint64_t, 24u);
     LLW_ASSERT_FIELD(llw_scheduler_snapshot_t, reserved, std::uint64_t[8], 40u);
     LLW_ASSERT_FIELD(llw_metrics_t, prompt_tokens, std::uint64_t, 8u);

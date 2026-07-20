@@ -2,6 +2,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <future>
 #include <string>
 #include <vector>
@@ -29,6 +30,10 @@ ModelConfig valid_config() {
 
 int main() {
     using namespace std::chrono_literals;
+    const char* runtime_directory_value = std::getenv("LLW_TEST_RUNTIME_DIR");
+    CHECK(runtime_directory_value && runtime_directory_value[0] != '\0');
+    const std::string runtime_directory = runtime_directory_value;
+    const std::shared_ptr<LlamaApi> api = LlamaApi::load(runtime_directory);
     bool progress_exception_escaped = false;
     bool progress_result = true;
     try {
@@ -50,8 +55,8 @@ int main() {
         });
     });
     backend_lock_entered.get_future().wait();
-    auto enumeration = std::async(std::launch::async, [] {
-        return enumerate_pack_devices(".");
+    auto enumeration = std::async(std::launch::async, [api, runtime_directory] {
+        return enumerate_pack_devices(*api, runtime_directory);
     });
     const bool enumeration_was_serialized =
         enumeration.wait_for(50ms) == std::future_status::timeout;
@@ -94,6 +99,22 @@ int main() {
     });
     CHECK(select_device(cpu_only, LLW_BACKEND_AUTO, 0, LLW_BACKEND_CUDA)->id == "cpu:only");
     CHECK(!select_device(devices, LLW_BACKEND_VULKAN, 0, LLW_BACKEND_CUDA).has_value());
+
+    const std::string turn_template =
+        "<|turn><turn|> add_generation_prompt "
+        "'model' if message['role'] == 'assistant'";
+    const auto formatted_chat = format_turn_token_chat_prompt(turn_template, {
+        {"user", "  hello  "},
+        {"assistant", "hi"},
+        {"user", "again"},
+    });
+    CHECK(formatted_chat.has_value());
+    CHECK(std::string(formatted_chat->begin(), formatted_chat->end()) ==
+        "<|turn>user\nhello<turn|>\n"
+        "<|turn>model\nhi<turn|>\n"
+        "<|turn>user\nagain<turn|>\n"
+        "<|turn>model\n");
+    CHECK(!format_turn_token_chat_prompt("unsupported", {{"user", "hello"}}).has_value());
 
     ggml_backend_dev_props display_props{};
     display_props.name = "CPU";

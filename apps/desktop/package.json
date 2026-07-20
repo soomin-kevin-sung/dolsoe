@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "desktop:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/start-desktop-dev.ps1",
     "build": "tsc && vite build",
     "test:unit": "vitest run src",
     "test:e2e": "playwright test",

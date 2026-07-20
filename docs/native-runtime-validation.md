@@ -3,22 +3,29 @@
 All packs use the official llama.cpp `b10068` release at commit
 `571d0d540df04f25298d0e159e520d9fc62ed121`. A pack directory contains the locally built
 `local_llm_runtime.dll` bridge plus the checksum-pinned official release DLL set for CPU, CUDA 12.4, or
-Vulkan. Official CPU packs contain instruction-set variants such as `ggml-cpu-x64.dll`; the loader selects
-the compatible variant. Never combine DLLs from different llama.cpp releases. Changing CPU/CUDA/Vulkan
-packs requires model unload and process/runtime restart; in-process backend-core replacement is unsupported.
+Vulkan. The bridge is compiled against seven checksum-pinned public headers, but llama.cpp itself is not
+cloned, built, or statically linked. At runtime the bridge loads `ggml-base.dll`, `ggml.dll`, and `llama.dll`
+from the selected pack with absolute paths and resolves its required exports. Official CPU packs contain
+instruction-set variants such as `ggml-cpu-x64.dll`; the loader selects the compatible variant. Never combine
+DLLs from different llama.cpp releases. Changing CPU/CUDA/Vulkan packs requires model unload and
+process/runtime restart; in-process backend-core replacement is unsupported.
 
 ## CPU
-cmake -S native/llm-runtime -B .cmake-build/llm-cpu -A x64 -DLLW_BACKEND_PACK=CPU
-cmake --build .cmake-build/llm-cpu --config Release
-cmake --install .cmake-build/llm-cpu --config Release --prefix .runtime-packs/cpu-release
 
-For desktop development, build, test, and activate the managed `cpu-dev` pack under the Tauri app-local data directory with:
+Build the small bridge, run its tests beside the official DLLs, and assemble a complete CPU archive:
+
+```powershell
+& scripts/build-runtime-release.ps1 -Version 0.1.0-dev -Backend CPU -Configuration Release
+Expand-Archive .runtime-release/local-llm-wiki-runtime-0.1.0-dev-windows-x86_64-cpu.zip .runtime-packs/cpu-release
+```
+
+For desktop development, build, test, and activate the managed stable `cpu` pack under the Tauri app-local data directory with:
 
 ```powershell
 & scripts/prepare-dev-cpu-pack.ps1
 ```
 
-Use `-Configuration Release`, `-PackId`, or `-DestinationRoot` only when a different development layout is required. The script verifies the complete CPU pack before replacing the active directory and restores the previous directory if activation fails.
+Use `-Configuration Release`, `-Force`, or `-DestinationRoot` only when a different development layout is required. The script reuses the release pack builder so `runtime-pack.json` and all payload hashes match the production contract. A valid current pack is reused; replacement restores the previous directory if activation fails.
 
 ## Conversation persistence smoke
 
@@ -26,7 +33,7 @@ Run the Tauri development app with the managed CPU pack and a verified tiny GGUF
 
 ```powershell
 $env:LLW_TEST_GGUF = & scripts/acquire-test-model.ps1
-npm --prefix apps/desktop run tauri -- dev
+npm --prefix apps/desktop run desktop:dev
 ```
 
 Validate the native workflow in this order:
@@ -44,14 +51,13 @@ The SQLite database is stored at `app_local_data_dir/local-llm-wiki.db`. Startup
 Validated on 2026-07-19 with Windows 11 x64 and an AMD Ryzen 5 5600X:
 
 ```powershell
-& scripts/prepare-dev-cpu-pack.ps1
 $env:LLW_TEST_GGUF = & scripts/acquire-test-model.ps1
-npm --prefix apps/desktop run tauri -- dev
+npm --prefix apps/desktop run desktop:dev
 ```
 
 Observed results:
 
-1. Settings discovered `cpu-dev` under the managed app-local runtime root and displayed `AMD Ryzen 5 5600X 6-Core Processor`.
+1. Settings discovered `cpu` under the managed app-local runtime root and displayed `AMD Ryzen 5 5600X 6-Core Processor`.
 2. CPU was selected; CUDA and Vulkan were disabled with an installed-pack explanation because no ready GPU packs were present.
 3. `tiny-random-f16.gguf` loaded through the selected CPU pack and reached `CPU · 준비됨`.
 4. Restart rediscovered the CPU fallback and returned to the expected no-model state without a stale model path.
@@ -61,10 +67,11 @@ An actual generation-time switch to a different backend was hardware-gated becau
 
 ## Official backend pack assembly
 
-The release builder compiles the bridge against the exact release commit, downloads the matching official
-llama.cpp ZIP assets, verifies their SHA-256 digests, and places only DLLs plus the bridge test executable in
-the final archive. CUDA combines the official CUDA 12.4 and matching `cudart` assets. No CUDA Toolkit, Vulkan
-SDK, GPU, or self-hosted Actions runner is required to assemble a pack.
+The release builder downloads and verifies the exact public headers, compiles only the bridge, downloads the
+matching official llama.cpp ZIP assets, verifies their SHA-256 digests, and places only DLLs plus the bridge
+test executable in the final archive. CUDA combines the official CUDA 12.4 and matching `cudart` assets. No
+llama.cpp source build, CUDA Toolkit, Vulkan SDK, GPU, or self-hosted Actions runner is required to assemble a
+pack.
 
 ## Pack contents
 $packs = @(

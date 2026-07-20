@@ -477,7 +477,7 @@ Create two conversations, submit and stop one prompt, rename the other, close th
 cargo fmt --all -- --check
 cargo test -p llm-runtime --lib
 cargo test --workspace --exclude llm-runtime
-$env:LLW_TEST_RUNTIME = Join-Path $env:LOCALAPPDATA 'io.github.soomin-sung-estsoft.local-llm-wiki\runtime-packs\cpu-dev\local_llm_runtime.dll'
+$env:LLW_TEST_RUNTIME = Join-Path $env:LOCALAPPDATA 'io.github.soomin-kevin-sung.local-llm-wiki\runtime-packs\cpu-dev\local_llm_runtime.dll'
 cargo test -p llm-runtime --test fake_runtime -- --nocapture
 cargo check -p local-llm-wiki-desktop
 npm --prefix apps/desktop run test:unit

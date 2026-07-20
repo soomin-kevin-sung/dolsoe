@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "provider": "github-release",
-  "repository": "soomin-sung-estsoft/local-llm-wiki",
+  "repository": "soomin-kevin-sung/local-llm-wiki",
   "releaseTag": "runtime-v0.1.0",
   "manifestAsset": "runtime-manifest.json",
   "manifestSha256": "0000000000000000000000000000000000000000000000000000000000000000"

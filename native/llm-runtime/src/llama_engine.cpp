@@ -7,20 +7,27 @@
 #include <new>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace {
 std::mutex backend_mutex;
-uint32_t backend_users{};
+std::unordered_map<LlamaApi*, uint32_t> backend_users;
 
-void acquire_backend() {
+void acquire_backend(LlamaApi& api) {
     std::lock_guard lock(backend_mutex);
-    if (backend_users++ == 0) llama_backend_init();
+    uint32_t& users = backend_users[&api];
+    if (users++ == 0) api.llama_backend_init();
 }
 
-void release_backend() {
+void release_backend(LlamaApi& api) {
     std::lock_guard lock(backend_mutex);
-    if (backend_users != 0 && --backend_users == 0) llama_backend_free();
+    const auto found = backend_users.find(&api);
+    if (found == backend_users.end()) return;
+    if (--found->second == 0) {
+        api.llama_backend_free();
+        backend_users.erase(found);
+    }
 }
 
 int32_t compiled_gpu_backend() {
@@ -30,13 +37,14 @@ int32_t compiled_gpu_backend() {
     return LLW_BACKEND_CPU;
 }
 
-std::vector<DeviceRecord> enumerate_pack_devices_unlocked(const std::string& directory) {
-    ggml_backend_load_all_from_path(directory.c_str());
+std::vector<DeviceRecord> enumerate_pack_devices_unlocked(
+    LlamaApi& api, const std::string& directory) {
+    api.ggml_backend_load_all_from_path(directory.c_str());
     std::vector<DeviceRecord> result;
-    for (size_t index = 0; index < ggml_backend_dev_count(); ++index) {
-        ggml_backend_dev_t device = ggml_backend_dev_get(index);
+    for (size_t index = 0; index < api.ggml_backend_dev_count(); ++index) {
+        ggml_backend_dev_t device = api.ggml_backend_dev_get(index);
         if (!device) continue;
-        const auto type = ggml_backend_dev_type(device);
+        const auto type = api.ggml_backend_dev_type(device);
         int32_t backend = LLW_BACKEND_CPU;
         if (type == GGML_BACKEND_DEVICE_TYPE_GPU || type == GGML_BACKEND_DEVICE_TYPE_IGPU) {
             backend = compiled_gpu_backend();
@@ -44,15 +52,16 @@ std::vector<DeviceRecord> enumerate_pack_devices_unlocked(const std::string& dir
             continue;
         }
         ggml_backend_dev_props properties{};
-        ggml_backend_dev_get_props(device, &properties);
-        const char* registry = ggml_backend_reg_name(ggml_backend_dev_backend_reg(device));
+        api.ggml_backend_dev_get_props(device, &properties);
+        const char* registry = api.ggml_backend_reg_name(
+            api.ggml_backend_dev_backend_reg(device));
         DeviceRecord record;
         record.backend = backend;
         record.backend_index = 0;
         record.device = device;
         record.id = properties.device_id ? properties.device_id
                                          : std::to_string(backend) + ":pending";
-        record.name = device_display_name(properties, ggml_backend_dev_name(device));
+        record.name = device_display_name(properties, api.ggml_backend_dev_name(device));
         record.vendor = registry ? registry : "ggml";
         result.push_back(std::move(record));
     }
@@ -65,34 +74,35 @@ std::vector<DeviceRecord> enumerate_pack_devices_unlocked(const std::string& dir
     return result;
 }
 
-llama_sampler* make_sampler(const SamplingConfig& config) {
-    llama_sampler* chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+llama_sampler* make_sampler(LlamaApi& api, const SamplingConfig& config) {
+    llama_sampler* chain = api.llama_sampler_chain_init(
+        api.llama_sampler_chain_default_params());
     if (!chain) throw std::bad_alloc();
-    const auto add = [chain](llama_sampler* sampler) {
-        if (!sampler) { llama_sampler_free(chain); throw std::bad_alloc(); }
-        llama_sampler_chain_add(chain, sampler);
+    const auto add = [&api, chain](llama_sampler* sampler) {
+        if (!sampler) { api.llama_sampler_free(chain); throw std::bad_alloc(); }
+        api.llama_sampler_chain_add(chain, sampler);
     };
-    add(llama_sampler_init_penalties(config.repeat_last_n, config.repeat_penalty,
-                                     config.frequency_penalty, config.presence_penalty));
-    if (config.top_k > 0) add(llama_sampler_init_top_k(config.top_k));
-    if (config.top_p < 1.0f) add(llama_sampler_init_top_p(config.top_p, 1));
-    if (config.min_p > 0.0f) add(llama_sampler_init_min_p(config.min_p, 1));
-    add(llama_sampler_init_temp(config.temperature));
-    add(config.temperature == 0.0f ? llama_sampler_init_greedy()
-                                   : llama_sampler_init_dist(config.seed));
+    add(api.llama_sampler_init_penalties(config.repeat_last_n, config.repeat_penalty,
+                                         config.frequency_penalty, config.presence_penalty));
+    if (config.top_k > 0) add(api.llama_sampler_init_top_k(config.top_k));
+    if (config.top_p < 1.0f) add(api.llama_sampler_init_top_p(config.top_p, 1));
+    if (config.min_p > 0.0f) add(api.llama_sampler_init_min_p(config.min_p, 1));
+    add(api.llama_sampler_init_temp(config.temperature));
+    add(config.temperature == 0.0f ? api.llama_sampler_init_greedy()
+                                   : api.llama_sampler_init_dist(config.seed));
     return chain;
 }
 
-std::vector<uint8_t> token_piece(const llama_vocab* vocab, llama_token token) {
+std::vector<uint8_t> token_piece(LlamaApi& api, const llama_vocab* vocab, llama_token token) {
     char local[256];
-    int32_t count = llama_token_to_piece(vocab, token, local, sizeof(local), 0, true);
+    int32_t count = api.llama_token_to_piece(vocab, token, local, sizeof(local), 0, true);
     if (count >= 0) return {reinterpret_cast<uint8_t*>(local),
                             reinterpret_cast<uint8_t*>(local) + count};
     if (count == std::numeric_limits<int32_t>::min())
         throw std::runtime_error("token piece length overflow");
     std::vector<char> storage(static_cast<size_t>(-count));
-    count = llama_token_to_piece(vocab, token, storage.data(),
-                                 static_cast<int32_t>(storage.size()), 0, true);
+    count = api.llama_token_to_piece(vocab, token, storage.data(),
+                                     static_cast<int32_t>(storage.size()), 0, true);
     if (count < 0) throw std::runtime_error("llama_token_to_piece failed");
     return {reinterpret_cast<uint8_t*>(storage.data()),
             reinterpret_cast<uint8_t*>(storage.data()) + count};
@@ -107,6 +117,7 @@ std::string device_display_name(const ggml_backend_dev_props& properties, const 
 }
 
 struct LlamaEngine::Sequence {
+    LlamaApi* api{};
     llw_handle_t handle{};
     uint32_t seq_id{};
     std::vector<llama_token> prompt_tokens;
@@ -120,7 +131,7 @@ struct LlamaEngine::Sequence {
     std::vector<std::vector<uint8_t>> stops;
     std::vector<uint8_t> pending_output;
     llama_sampler* sampler{};
-    ~Sequence() { if (sampler) llama_sampler_free(sampler); }
+    ~Sequence() { if (sampler) api->llama_sampler_free(sampler); }
 };
 
 llw_result_t validate_model_config(const ModelConfig& config, std::string& error) {
@@ -170,9 +181,74 @@ std::optional<DeviceRecord> select_device(const std::vector<DeviceRecord>& devic
     return std::nullopt;
 }
 
-std::vector<DeviceRecord> enumerate_pack_devices(const std::string& directory) {
+std::vector<DeviceRecord> enumerate_pack_devices(LlamaApi& api, const std::string& directory) {
     std::lock_guard lock(backend_mutex);
-    return enumerate_pack_devices_unlocked(directory);
+    return enumerate_pack_devices_unlocked(api, directory);
+}
+
+std::vector<uint8_t> format_chat_prompt(
+    LlamaApi& api, const llama_model* model, const std::vector<ChatMessage>& messages) {
+    const char* chat_template = api.llama_model_chat_template(model, nullptr);
+    if (!chat_template)
+        throw std::runtime_error("model does not provide a default GGUF chat template");
+    std::vector<llama_chat_message> native_messages;
+    native_messages.reserve(messages.size());
+    size_t content_bytes = 0;
+    for (const ChatMessage& message : messages) {
+        native_messages.push_back({message.role.c_str(), message.content.c_str()});
+        content_bytes += message.role.size() + message.content.size();
+    }
+    const size_t initial_capacity = std::min<size_t>(
+        static_cast<size_t>(std::numeric_limits<int32_t>::max()), content_bytes * 2 + 1024);
+    std::vector<char> formatted(std::max<size_t>(initial_capacity, 1024));
+    int32_t count = api.llama_chat_apply_template(
+        chat_template, native_messages.data(), native_messages.size(), true,
+        formatted.data(), static_cast<int32_t>(formatted.size()));
+    if (count < 0) {
+        const auto fallback = format_turn_token_chat_prompt(chat_template, messages);
+        if (!fallback)
+            throw std::runtime_error("model chat template is not supported by llama.cpp");
+        return *fallback;
+    }
+    if (static_cast<size_t>(count) > formatted.size()) {
+        formatted.resize(static_cast<size_t>(count) + 1);
+        count = api.llama_chat_apply_template(
+            chat_template, native_messages.data(), native_messages.size(), true,
+            formatted.data(), static_cast<int32_t>(formatted.size()));
+        if (count < 0 || static_cast<size_t>(count) > formatted.size())
+            throw std::runtime_error("failed to apply model chat template");
+    }
+    return {reinterpret_cast<const uint8_t*>(formatted.data()),
+            reinterpret_cast<const uint8_t*>(formatted.data()) + count};
+}
+
+std::optional<std::vector<uint8_t>> format_turn_token_chat_prompt(
+    std::string_view chat_template, const std::vector<ChatMessage>& messages) {
+    const bool supported =
+        chat_template.find("<|turn>") != std::string_view::npos &&
+        chat_template.find("<turn|>") != std::string_view::npos &&
+        chat_template.find("add_generation_prompt") != std::string_view::npos &&
+        chat_template.find("'model' if message['role'] == 'assistant'") != std::string_view::npos;
+    if (!supported) return std::nullopt;
+
+    std::string formatted;
+    for (const ChatMessage& message : messages) {
+        std::string_view content(message.content);
+        const size_t first = content.find_first_not_of(" \t\r\n");
+        const size_t last = content.find_last_not_of(" \t\r\n");
+        content = first == std::string_view::npos
+            ? std::string_view{}
+            : content.substr(first, last - first + 1);
+        std::string_view role(message.role);
+        if (message.role == "assistant") role = "model";
+        formatted.append("<|turn>");
+        formatted.append(role.data(), role.size());
+        formatted.push_back('\n');
+        formatted.append(content.data(), content.size());
+        formatted.append("<turn|>\n");
+    }
+    formatted.append("<|turn>model\n");
+    return std::vector<uint8_t>(formatted.begin(), formatted.end());
 }
 
 #ifdef LLW_RUNTIME_TESTING
@@ -309,16 +385,18 @@ bool invoke_progress_callback_noexcept(
     }
 }
 
-LlamaEngine::LlamaEngine(ModelConfig config, std::function<bool(float)> progress)
-    : config_(std::move(config)) {
+LlamaEngine::LlamaEngine(std::shared_ptr<LlamaApi> api, ModelConfig config,
+                         std::function<bool(float)> progress)
+    : api_(std::move(api)), config_(std::move(config)) {
+    if (!api_) throw std::invalid_argument("llama API is required");
     std::string error;
     if (validate_model_config(config_, error) != LLW_OK) throw std::invalid_argument(error);
-    acquire_backend();
+    acquire_backend(*api_);
     backend_acquired_ = true;
     try {
         std::unique_lock backend_operation_lock(backend_mutex);
         const std::vector<DeviceRecord> devices =
-            enumerate_pack_devices_unlocked(config_.backend_directory);
+            enumerate_pack_devices_unlocked(*api_, config_.backend_directory);
         const auto selected = select_device(
             devices, config_.backend, config_.device_index, compiled_gpu_backend());
         if (!selected) throw std::invalid_argument("selected backend device was not found");
@@ -328,7 +406,7 @@ LlamaEngine::LlamaEngine(ModelConfig config, std::function<bool(float)> progress
             return invoke_progress_callback_noexcept(*context.callback, value);
         };
         ggml_backend_dev_t selected_devices[2] = {selected->device, nullptr};
-        llama_model_params model_params = llama_model_default_params();
+        llama_model_params model_params = api_->llama_model_default_params();
         model_params.devices = selected_devices;
         model_params.n_gpu_layers = config_.n_gpu_layers;
         model_params.main_gpu = 0;
@@ -337,11 +415,11 @@ LlamaEngine::LlamaEngine(ModelConfig config, std::function<bool(float)> progress
         model_params.check_tensors = config_.check_tensors;
         model_params.progress_callback = progress_bridge;
         model_params.progress_callback_user_data = &state;
-        model_ = llama_model_load_from_file(config_.path.c_str(), model_params);
+        model_ = api_->llama_model_load_from_file(config_.path.c_str(), model_params);
         if (!model_) throw std::runtime_error("llama_model_load_from_file failed");
         backend_operation_lock.unlock();
 
-        llama_context_params context_params = llama_context_default_params();
+        llama_context_params context_params = api_->llama_context_default_params();
         context_params.n_ctx = config_.context_tokens_per_slot * config_.slots;
         context_params.n_batch = config_.logical_batch_tokens;
         context_params.n_ubatch = config_.physical_batch_tokens;
@@ -350,20 +428,21 @@ LlamaEngine::LlamaEngine(ModelConfig config, std::function<bool(float)> progress
         context_params.n_threads_batch = config_.n_threads_batch;
         context_params.embeddings = false;
         context_params.no_perf = false;
-        context_ = llama_init_from_model(model_, context_params);
+        context_ = api_->llama_init_from_model(model_, context_params);
         if (!context_) throw std::runtime_error("llama_init_from_model failed");
-        vocab_ = llama_model_get_vocab(model_);
+        vocab_ = api_->llama_model_get_vocab(model_);
         if (!vocab_) throw std::runtime_error("llama_model_get_vocab failed");
-        batch_ = llama_batch_init(static_cast<int32_t>(config_.logical_batch_tokens), 0, 1);
+        batch_ = api_->llama_batch_init(
+            static_cast<int32_t>(config_.logical_batch_tokens), 0, 1);
         if (!batch_.token || !batch_.pos || !batch_.n_seq_id || !batch_.seq_id || !batch_.logits)
             throw std::bad_alloc();
     } catch (...) {
-        if (batch_.token || batch_.embd) llama_batch_free(batch_);
-        if (context_) llama_free(context_);
-        if (model_) llama_model_free(model_);
+        if (batch_.token || batch_.embd) api_->llama_batch_free(batch_);
+        if (context_) api_->llama_free(context_);
+        if (model_) api_->llama_model_free(model_);
         context_ = nullptr;
         model_ = nullptr;
-        release_backend();
+        release_backend(*api_);
         backend_acquired_ = false;
         throw;
     }
@@ -373,29 +452,34 @@ LlamaEngine::~LlamaEngine() {
     std::lock_guard lock(mutex_);
     for (const auto& [handle, sequence] : sequences_) {
         (void)handle;
-        llama_memory_seq_rm(llama_get_memory(context_),
-                            static_cast<llama_seq_id>(sequence->seq_id), -1, -1);
+        api_->llama_memory_seq_rm(api_->llama_get_memory(context_),
+                                  static_cast<llama_seq_id>(sequence->seq_id), -1, -1);
     }
     sequences_.clear();
-    if (batch_.token || batch_.embd) llama_batch_free(batch_);
-    if (context_) llama_free(context_);
-    if (model_) llama_model_free(model_);
-    if (backend_acquired_) release_backend();
+    if (batch_.token || batch_.embd) api_->llama_batch_free(batch_);
+    if (context_) api_->llama_free(context_);
+    if (model_) api_->llama_model_free(model_);
+    if (backend_acquired_) release_backend(*api_);
 }
 
 uint64_t LlamaEngine::start(EngineRequest request) {
     std::lock_guard lock(mutex_);
     if (sequences_.count(request.handle) != 0) throw std::invalid_argument("duplicate request handle");
-    if (request.prompt.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max()))
+    std::vector<uint8_t> prompt = request.chat_messages.empty()
+        ? std::move(request.prompt)
+        : format_chat_prompt(*api_, model_, request.chat_messages);
+    if (prompt.size() > static_cast<size_t>(std::numeric_limits<int32_t>::max()))
         throw std::invalid_argument("prompt is too large for llama_tokenize");
-    int32_t count = llama_tokenize(vocab_, reinterpret_cast<const char*>(request.prompt.data()),
-        static_cast<int32_t>(request.prompt.size()), nullptr, 0, true, true);
+    int32_t count = api_->llama_tokenize(
+        vocab_, reinterpret_cast<const char*>(prompt.data()),
+        static_cast<int32_t>(prompt.size()), nullptr, 0, true, true);
     if (count == std::numeric_limits<int32_t>::min() || count >= 0)
         throw std::runtime_error("token count query failed");
     auto sequence = std::make_unique<Sequence>();
+    sequence->api = api_.get();
     sequence->prompt_tokens.resize(static_cast<size_t>(-count));
-    count = llama_tokenize(vocab_, reinterpret_cast<const char*>(request.prompt.data()),
-        static_cast<int32_t>(request.prompt.size()), sequence->prompt_tokens.data(),
+    count = api_->llama_tokenize(vocab_, reinterpret_cast<const char*>(prompt.data()),
+        static_cast<int32_t>(prompt.size()), sequence->prompt_tokens.data(),
         static_cast<int32_t>(sequence->prompt_tokens.size()), true, true);
     if (count < 0) throw std::runtime_error("prompt tokenization failed");
     sequence->prompt_tokens.resize(static_cast<size_t>(count));
@@ -410,9 +494,10 @@ uint64_t LlamaEngine::start(EngineRequest request) {
     sequence->prompt_token_count = static_cast<uint32_t>(sequence->prompt_tokens.size());
     sequence->effective_generation_budget = budget;
     sequence->stops = std::move(request.stops);
-    sequence->sampler = make_sampler(request.sampling);
-    accept_history_tokens(sequence->prompt_tokens, [sampler = sequence->sampler](llama_token token) {
-        llama_sampler_accept(sampler, token);
+    sequence->sampler = make_sampler(*api_, request.sampling);
+    accept_history_tokens(sequence->prompt_tokens,
+                          [this, sampler = sequence->sampler](llama_token token) {
+        api_->llama_sampler_accept(sampler, token);
     });
     const uint64_t prompt_tokens = sequence->prompt_tokens.size();
     sequences_.emplace(request.handle, std::move(sequence));
@@ -447,7 +532,7 @@ std::vector<EngineStep> LlamaEngine::decode(const std::vector<llw_handle_t>& act
         else sequence.pending_token.reset();
         ++sequence.next_position;
     }
-    const int32_t decode_result = llama_decode(context_, batch_);
+    const int32_t decode_result = api_->llama_decode(context_, batch_);
     if (decode_result != 0) {
         std::vector<EngineStep> failed;
         for (const llw_handle_t handle : active)
@@ -460,18 +545,18 @@ std::vector<EngineStep> LlamaEngine::decode(const std::vector<llw_handle_t>& act
     for (const LogitOwner& owner : logit_owners) {
         Sequence& sequence = *sequences_.at(owner.handle);
         // At the pinned commit llama_sampler_sample samples and accepts exactly once.
-        const llama_token token = llama_sampler_sample(sequence.sampler, context_,
-                                                       owner.batch_index);
+        const llama_token token = api_->llama_sampler_sample(
+            sequence.sampler, context_, owner.batch_index);
         ++sequence.generated;
         EngineStep step;
         step.handle = owner.handle;
         step.sampled_tokens = 1;
-        bool done = llama_vocab_is_eog(vocab_, token) ||
+        bool done = api_->llama_vocab_is_eog(vocab_, token) ||
                     sequence.generated >= sequence.effective_generation_budget;
-        step.finish_reason = llama_vocab_is_eog(vocab_, token) ? "stop" :
+        step.finish_reason = api_->llama_vocab_is_eog(vocab_, token) ? "stop" :
             (sequence.generated >= sequence.effective_generation_budget ? "length" : "");
-        if (!llama_vocab_is_eog(vocab_, token)) {
-            const std::vector<uint8_t> piece = token_piece(vocab_, token);
+        if (!api_->llama_vocab_is_eog(vocab_, token)) {
+            const std::vector<uint8_t> piece = token_piece(*api_, vocab_, token);
             sequence.pending_output.insert(sequence.pending_output.end(), piece.begin(), piece.end());
             if (const auto match = find_stop_match(sequence.pending_output, sequence.stops)) {
                 step.token_bytes.assign(sequence.pending_output.begin(),
@@ -508,8 +593,8 @@ void LlamaEngine::cleanup(llw_handle_t handle, uint32_t seq_id) {
     const auto found = sequences_.find(handle);
     if (found == sequences_.end()) return;
     if (found->second->seq_id != seq_id) throw std::invalid_argument("sequence ID mismatch");
-    const bool removed = llama_memory_seq_rm(
-        llama_get_memory(context_), static_cast<llama_seq_id>(seq_id), -1, -1);
+    const bool removed = api_->llama_memory_seq_rm(
+        api_->llama_get_memory(context_), static_cast<llama_seq_id>(seq_id), -1, -1);
     sequences_.erase(found);
     if (!removed)
         throw std::runtime_error("failed to clear sequence memory");

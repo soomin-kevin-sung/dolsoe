@@ -29,6 +29,7 @@ struct llw_runtime_t {
     llw_callback_table_t callbacks{};
     llw_scheduler_config_t config{};
     std::unique_ptr<EventDispatcher> dispatcher;
+    std::shared_ptr<LlamaApi> llama_api;
     std::unique_ptr<InferenceEngine> engine;
     std::unique_ptr<Scheduler> scheduler;
     llw_handle_t model_handle{};
@@ -240,6 +241,7 @@ void validate_model(const llw_model_load_params_t& params) {
 
 void validate_request(const llw_request_params_t& params) {
     if (params.struct_size < sizeof(params) || params.flags != 0 || params.reserved0 != 0 ||
+        params.reserved1 != 0 ||
         !zeroed(params.reserved)) throw std::invalid_argument("invalid request structure");
     if (!params.prompt || params.prompt_len < 1 || params.prompt_len > LLW_MAX_PROMPT_BYTES ||
         params.max_new_tokens < 1 || params.max_new_tokens > 1048576 ||
@@ -253,8 +255,33 @@ void validate_request(const llw_request_params_t& params) {
         params.frequency_penalty > 2 || !std::isfinite(params.presence_penalty) ||
         params.presence_penalty < -2 || params.presence_penalty > 2 ||
         params.stop_count > LLW_MAX_STOP_SEQUENCES ||
-        (params.stop_count != 0 && !params.stop_sequences))
+        (params.stop_count != 0 && !params.stop_sequences) ||
+        params.chat_message_count > LLW_MAX_CHAT_MESSAGES ||
+        (params.chat_message_count != 0 && !params.chat_messages))
         throw std::invalid_argument("request option is outside its declared bounds");
+    uint64_t chat_total = 0;
+    for (uint32_t index = 0; index < params.chat_message_count; ++index) {
+        const llw_chat_message_t& message = params.chat_messages[index];
+        const llw_bytes_t& role = message.role;
+        const llw_bytes_t& content = message.content;
+        if (message.struct_size < sizeof(message) || message.flags != 0 ||
+            !zeroed(message.reserved) || role.struct_size < sizeof(role) || role.flags != 0 ||
+            !zeroed(role.reserved) || !role.data || role.len < 1 ||
+            role.len > LLW_MAX_CHAT_ROLE_BYTES || !valid_utf8(role.data, role.len) ||
+            std::find(role.data, role.data + role.len, uint8_t{0}) != role.data + role.len ||
+            content.struct_size < sizeof(content) || content.flags != 0 ||
+            !zeroed(content.reserved) || !content.data || content.len < 1 ||
+            content.len > LLW_MAX_PROMPT_BYTES || !valid_utf8(content.data, content.len) ||
+            std::find(content.data, content.data + content.len, uint8_t{0}) !=
+                content.data + content.len)
+            throw std::invalid_argument("invalid chat message");
+        const std::string_view role_name(reinterpret_cast<const char*>(role.data), role.len);
+        if (role_name != "system" && role_name != "user" && role_name != "assistant")
+            throw std::invalid_argument("unsupported chat message role");
+        chat_total += role.len + content.len;
+        if (chat_total > LLW_MAX_PROMPT_BYTES)
+            throw std::invalid_argument("chat message bytes exceed total bound");
+    }
     uint64_t total = 0;
     for (uint32_t index = 0; index < params.stop_count; ++index) {
         const llw_bytes_t& stop = params.stop_sequences[index];
@@ -268,8 +295,8 @@ void validate_request(const llw_request_params_t& params) {
 }
 
 std::string option_schema() {
-    std::string schema = std::string(R"json({"abiMinor":1,"backendPack":")json") + pack_name() +
-        R"json(","model":{"modelPath":{"type":"utf8Bytes","minBytes":1,"maxBytes":32768,"default":null,"apply":"modelReload"},"backend":{"type":"enum","values":{"auto":0,"cpu":1,"cuda":2,"vulkan":3},"default":0,"apply":"modelReload"},"deviceIndex":{"type":"uint32","min":0,"max":255,"default":0,"apply":"modelReload"},"contextTokensPerSlot":{"type":"uint32","min":512,"max":262144,"default":4096,"apply":"modelReload"},"logicalBatchTokens":{"type":"uint32","min":1,"max":8192,"default":512,"apply":"modelReload"},"physicalBatchTokens":{"type":"uint32","min":1,"maxField":"logicalBatchTokens","default":128,"apply":"modelReload"},"nThreads":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nThreadsBatch":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nGpuLayers":{"type":"int32","min":-1,"max":65535,"default":0,"apply":"modelReload"},"useMmap":{"type":"boolean","default":true,"apply":"modelReload"},"useMlock":{"type":"boolean","default":false,"apply":"modelReload"},"checkTensors":{"type":"boolean","default":false,"apply":"modelReload"}},"scheduler":{"slotCount":{"type":"uint32","min":1,"max":4,"default":1,"apply":"runtimeRestart"},"requestQueueCapacity":{"type":"uint32","min":1,"max":1024,"default":16,"apply":"runtimeRestart"},"eventQueueCapacity":{"type":"uint32","min":16,"max":65536,"default":1024,"apply":"runtimeRestart"}},"request":{"promptBytes":{"type":"bytes","minBytes":1,"maxBytes":16777216,"default":null,"apply":"nextRequest"},"maxNewTokens":{"type":"uint32","min":1,"max":1048576,"default":256,"apply":"nextRequest"},"seed":{"type":"uint32","min":0,"max":4294967295,"default":4294967295,"apply":"nextRequest"},"temperature":{"type":"float32","min":0.0,"max":10.0,"default":0.8,"apply":"nextRequest"},"topK":{"type":"int32","min":0,"max":100000,"default":40,"apply":"nextRequest"},"topP":{"type":"float32","min":0.0,"max":1.0,"default":0.95,"apply":"nextRequest"},"minP":{"type":"float32","min":0.0,"max":1.0,"default":0.05,"apply":"nextRequest"},"repeatLastN":{"type":"int32","min":0,"max":262144,"default":64,"apply":"nextRequest"},"repeatPenalty":{"type":"float32","min":0.0,"max":10.0,"default":1.1,"apply":"nextRequest"},"frequencyPenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"presencePenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"stopSequences":{"type":"bytesArray","minCount":0,"maxCount":8,"minBytesEach":1,"maxBytesEach":256,"maxTotalBytes":2048,"default":[],"apply":"nextRequest"}}})json";
+    std::string schema = std::string(R"json({"abiMinor":2,"backendPack":")json") + pack_name() +
+        R"json(","model":{"modelPath":{"type":"utf8Bytes","minBytes":1,"maxBytes":32768,"default":null,"apply":"modelReload"},"backend":{"type":"enum","values":{"auto":0,"cpu":1,"cuda":2,"vulkan":3},"default":0,"apply":"modelReload"},"deviceIndex":{"type":"uint32","min":0,"max":255,"default":0,"apply":"modelReload"},"contextTokensPerSlot":{"type":"uint32","min":512,"max":262144,"default":4096,"apply":"modelReload"},"logicalBatchTokens":{"type":"uint32","min":1,"max":8192,"default":512,"apply":"modelReload"},"physicalBatchTokens":{"type":"uint32","min":1,"maxField":"logicalBatchTokens","default":128,"apply":"modelReload"},"nThreads":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nThreadsBatch":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nGpuLayers":{"type":"int32","min":-1,"max":65535,"default":0,"apply":"modelReload"},"useMmap":{"type":"boolean","default":true,"apply":"modelReload"},"useMlock":{"type":"boolean","default":false,"apply":"modelReload"},"checkTensors":{"type":"boolean","default":false,"apply":"modelReload"}},"scheduler":{"slotCount":{"type":"uint32","min":1,"max":4,"default":1,"apply":"runtimeRestart"},"requestQueueCapacity":{"type":"uint32","min":1,"max":1024,"default":16,"apply":"runtimeRestart"},"eventQueueCapacity":{"type":"uint32","min":16,"max":65536,"default":1024,"apply":"runtimeRestart"}},"request":{"promptBytes":{"type":"bytes","minBytes":1,"maxBytes":16777216,"default":null,"apply":"nextRequest"},"chatMessages":{"type":"messageArray","minCount":0,"maxCount":128,"roles":["system","user","assistant"],"maxTotalBytes":16777216,"default":[],"apply":"nextRequest"},"maxNewTokens":{"type":"uint32","min":1,"max":1048576,"default":256,"apply":"nextRequest"},"seed":{"type":"uint32","min":0,"max":4294967295,"default":4294967295,"apply":"nextRequest"},"temperature":{"type":"float32","min":0.0,"max":10.0,"default":0.8,"apply":"nextRequest"},"topK":{"type":"int32","min":0,"max":100000,"default":40,"apply":"nextRequest"},"topP":{"type":"float32","min":0.0,"max":1.0,"default":0.95,"apply":"nextRequest"},"minP":{"type":"float32","min":0.0,"max":1.0,"default":0.05,"apply":"nextRequest"},"repeatLastN":{"type":"int32","min":0,"max":262144,"default":64,"apply":"nextRequest"},"repeatPenalty":{"type":"float32","min":0.0,"max":10.0,"default":1.1,"apply":"nextRequest"},"frequencyPenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"presencePenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"stopSequences":{"type":"bytesArray","minCount":0,"maxCount":8,"minBytesEach":1,"maxBytesEach":256,"maxTotalBytes":2048,"default":[],"apply":"nextRequest"}}})json";
     return schema;
 }
 } // namespace
@@ -313,6 +340,7 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_create(
         runtime->callbacks = params->callbacks;
         runtime->config = scheduler_config(*params);
         runtime->backend_directory = backend_directory();
+        runtime->llama_api = LlamaApi::load(runtime->backend_directory);
         runtime->dispatcher = std::make_unique<EventDispatcher>(runtime->callbacks,
             runtime->config.event_queue_capacity);
         publish_runtime_event(*runtime, LLW_EVENT_LOG, LLW_EVENT_DATA_UTF8, 0,
@@ -397,7 +425,8 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_runtime_list_devices(
             out->reserved0 != 0 || !zeroed(out->reserved) ||
             backend < LLW_BACKEND_AUTO || backend > LLW_BACKEND_VULKAN)
             throw std::invalid_argument("invalid device list output");
-        std::vector<DeviceRecord> devices = enumerate_pack_devices(runtime->backend_directory);
+        std::vector<DeviceRecord> devices = enumerate_pack_devices(
+            *runtime->llama_api, runtime->backend_directory);
         devices.erase(std::remove_if(devices.begin(), devices.end(), [backend](const DeviceRecord& d) {
             return backend != LLW_BACKEND_AUTO && d.backend != backend;
         }), devices.end());
@@ -505,7 +534,8 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
         } else
 #endif
         {
-            engine = std::make_unique<LlamaEngine>(config, publish_progress);
+            engine = std::make_unique<LlamaEngine>(
+                runtime->llama_api, config, publish_progress);
         }
         scheduler = std::make_unique<Scheduler>(runtime->config.slot_count,
             runtime->config.request_queue_capacity, *engine, *runtime->dispatcher);

@@ -82,6 +82,14 @@ llw_result_t Scheduler::submit(const llw_request_params_t& params, llw_handle_t&
     Request request;
     request.model = params.model_handle;
     request.prompt.assign(params.prompt, params.prompt + params.prompt_len);
+    request.chat_messages.reserve(params.chat_message_count);
+    for (uint32_t index = 0; index < params.chat_message_count; ++index) {
+        const llw_chat_message_t& message = params.chat_messages[index];
+        request.chat_messages.push_back(ChatMessage{
+            std::string(reinterpret_cast<const char*>(message.role.data), message.role.len),
+            std::string(reinterpret_cast<const char*>(message.content.data), message.content.len),
+        });
+    }
     request.max_new_tokens = params.max_new_tokens;
     request.sampling = SamplingConfig{params.seed, params.temperature, params.top_k, params.top_p,
         params.min_p, params.repeat_last_n, params.repeat_penalty, params.frequency_penalty,
@@ -261,7 +269,8 @@ void Scheduler::promote_locked() {
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     request.started_at - request.enqueued_at).count());
             request.prompt_tokens = engine_.start(EngineRequest{request.handle, slot.id,
-                request.prompt, request.max_new_tokens, request.sampling, request.stops});
+                request.prompt, request.chat_messages, request.max_new_tokens,
+                request.sampling, request.stops});
             request.engine_started = true;
             metrics_.prompt_tokens += request.prompt_tokens;
             request.state = RequestState::Running;

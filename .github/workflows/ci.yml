@@ -52,20 +52,16 @@ jobs:
         run: |
           $path = & scripts/acquire-test-model.ps1
           "LLW_TEST_GGUF=$path" | Out-File -FilePath $env:GITHUB_ENV -Append
-      - name: Configure CPU runtime
-        run: cmake -S native/llm-runtime -B .cmake-build/llm-cpu -A x64 -DLLW_BACKEND_PACK=CPU
-      - name: Build CPU runtime
-        run: cmake --build .cmake-build/llm-cpu --config Debug
-      - name: Test native runtime
-        run: ctest --test-dir .cmake-build/llm-cpu -C Debug --output-on-failure
-      - name: Stage and verify CPU pack
+      - name: Build, test, and stage CPU runtime pack
         shell: pwsh
         run: |
-          cmake --install .cmake-build/llm-cpu --config Debug --prefix .runtime-packs/cpu-debug
+          scripts/build-runtime-release.ps1 -Version 0.0.0-ci -Backend CPU -OutputRoot .runtime-release -BuildDirectory .cmake-build/llm-cpu -Configuration Debug
+          Expand-Archive .runtime-release/local-llm-wiki-runtime-0.0.0-ci-windows-x86_64-cpu.zip .runtime-packs/cpu-debug
           $pack = '.runtime-packs/cpu-debug'
-          $required = 'local_llm_runtime.dll','llama.dll','ggml.dll','ggml-base.dll','ggml-cpu.dll','llw_runtime_backend_test.exe'
+          $required = 'local_llm_runtime.dll','llama.dll','ggml.dll','ggml-base.dll','llw_runtime_backend_test.exe'
           $missing = $required | Where-Object { -not (Test-Path (Join-Path $pack $_)) }
           if ($missing) { throw "CPU pack is missing: $($missing -join ', ')" }
+          if (-not (Get-ChildItem $pack -Filter 'ggml-cpu*.dll')) { throw 'CPU pack has no CPU backend DLL.' }
           $unexpected = 'ggml-cuda.dll','ggml-vulkan.dll' | Where-Object { Test-Path (Join-Path $pack $_) }
           if ($unexpected) { throw "CPU pack has unexpected backend DLLs: $($unexpected -join ', ')" }
           Get-ChildItem -File $pack | Sort-Object Name | Select-Object Name,Length

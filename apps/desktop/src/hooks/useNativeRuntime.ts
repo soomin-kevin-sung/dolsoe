@@ -130,11 +130,15 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     if (modelPath) await loadPath(modelPath);
   }, [loadPath, service]);
 
-  const submit = useCallback(async (prompt: string) => {
+  const submit = useCallback(async (
+    prompt: string,
+    messages: SubmitRequest["messages"] = [{ role: "user", content: prompt }],
+  ) => {
     cancelWhenAccepted.current = false;
     setState((current) => nativeReducer(current, { type: "submit-started", prompt }));
     const request: SubmitRequest = {
       prompt,
+      messages,
       maxNewTokens: options.maxNewTokens,
       temperature: options.temperature,
       topP: options.topP,

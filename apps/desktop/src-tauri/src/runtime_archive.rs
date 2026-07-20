@@ -454,7 +454,7 @@ mod tests {
             llama_cpp_release: "b10068".into(),
             llama_cpp_commit: "571d0d540df04f25298d0e159e520d9fc62ed121".into(),
             abi_major: 1,
-            abi_minor: 1,
+            abi_minor: 2,
             asset_name: "cuda.zip".into(),
             size: 1,
             sha256: "0".repeat(64),
@@ -472,7 +472,7 @@ mod tests {
             llama_cpp_release: "b10068".into(),
             llama_cpp_commit: "571d0d540df04f25298d0e159e520d9fc62ed121".into(),
             abi_major: 1,
-            abi_minor: 1,
+            abi_minor: 2,
             files: files
                 .iter()
                 .map(|(path, bytes)| RuntimeManifestFile {
@@ -613,7 +613,7 @@ mod tests {
         let root = TempDir::new().expect("runtime root");
         let archive = root.path().join("pack.zip");
         let mut manifest = internal(REQUIRED);
-        manifest.abi_minor = 2;
+        manifest.abi_minor = 3;
         zip_with_manifest(&archive, REQUIRED, &manifest);
         assert!(install_verified_archive(&archive, root.path(), &pack(REQUIRED)).is_err());
     }

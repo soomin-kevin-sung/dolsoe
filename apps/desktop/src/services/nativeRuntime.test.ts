@@ -38,7 +38,7 @@ describe("NativeRuntimeService", () => {
       threads: 8,
       useMmap: true,
     };
-    const submit = { prompt: "안녕", maxNewTokens: 256, temperature: 0.8, topP: 0.95, seed: -1 };
+    const submit = { prompt: "안녕", messages: [{ role: "user" as const, content: "안녕" }], maxNewTokens: 256, temperature: 0.8, topP: 0.95, seed: -1 };
 
     await service.getStatus();
     await service.loadModel(load);

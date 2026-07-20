@@ -15,6 +15,7 @@ import {
 } from "../services/conversationState";
 import type { LlmEventDto } from "../services/nativeRuntime";
 import { TokenDecoders } from "../services/nativeState";
+import { chatMessagesForPrompt } from "../services/chatMessages";
 import { restartAfterTerminalPersistence, TerminalWaiters } from "../services/terminalWaiters";
 import { useNativeRuntime } from "./useNativeRuntime";
 
@@ -193,10 +194,11 @@ export function useConversationWorkspace() {
     const current = selectCurrentConversation(stateRef.current);
     if (!current || Boolean(stateRef.current.activeTurn)) return;
     try {
+      const chatMessages = chatMessagesForPrompt(current.messages, prompt);
       const turn = await service.startTurn(current.id, prompt);
       apply({ type: "turn-started", value: turn });
       try {
-        const response = await runtime.submit(prompt);
+        const response = await runtime.submit(prompt, chatMessages);
         if (response) apply({ type: "request-bound", requestHandle: response.requestHandle });
       } catch (error) {
         const active = stateRef.current.activeTurn;

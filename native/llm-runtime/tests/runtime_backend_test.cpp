@@ -92,6 +92,14 @@ llw_request_params_t generation(llw_handle_t model, const std::string& prompt) {
     return params;
 }
 
+llw_bytes_t borrowed_bytes(const std::string& value) {
+    llw_bytes_t result{};
+    result.struct_size = sizeof(result);
+    result.data = reinterpret_cast<const uint8_t*>(value.data());
+    result.len = value.size();
+    return result;
+}
+
 int main(int argc, char** argv) {
     CHECK(argc == 2);
     const int32_t backend = selected_backend();
@@ -130,10 +138,23 @@ int main(int argc, char** argv) {
     CHECK(llw_model_load(runtime, &model_params, &model, &error) == LLW_OK);
     CHECK(model != 0);
 
-    const std::string first_prompt = "Once";
-    const std::string second_prompt = "The";
+    const std::string first_prompt = "Say hello briefly.";
+    const std::string second_prompt = "Reply with one word: test";
+    const std::string user_role = "user";
     llw_request_params_t first_params = generation(model, first_prompt);
     llw_request_params_t second_params = generation(model, second_prompt);
+    llw_chat_message_t first_message{};
+    first_message.struct_size = sizeof(first_message);
+    first_message.role = borrowed_bytes(user_role);
+    first_message.content = borrowed_bytes(first_prompt);
+    first_params.chat_messages = &first_message;
+    first_params.chat_message_count = 1;
+    llw_chat_message_t second_message{};
+    second_message.struct_size = sizeof(second_message);
+    second_message.role = borrowed_bytes(user_role);
+    second_message.content = borrowed_bytes(second_prompt);
+    second_params.chat_messages = &second_message;
+    second_params.chat_message_count = 1;
     llw_handle_t first{};
     llw_handle_t second{};
     CHECK(llw_request_submit(runtime, &first_params, &first, &error) == LLW_OK);

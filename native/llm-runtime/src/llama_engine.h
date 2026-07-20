@@ -1,12 +1,13 @@
 #pragma once
 #include "inference_engine.h"
-#include "llama.h"
+#include "llama_api.h"
 #include <cstddef>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -71,7 +72,8 @@ std::vector<DeviceRecord> assign_device_indices(std::vector<DeviceRecord>);
 std::string device_display_name(const ggml_backend_dev_props&, const char* fallback);
 std::optional<DeviceRecord> select_device(
     const std::vector<DeviceRecord>&, int32_t, uint32_t, int32_t);
-std::vector<DeviceRecord> enumerate_pack_devices(const std::string& backend_directory);
+std::vector<DeviceRecord> enumerate_pack_devices(
+    LlamaApi& api, const std::string& backend_directory);
 BatchPlan plan_batch(
     const std::vector<SequenceView>& sequences, size_t capacity, size_t start_index);
 std::vector<LogitOwner> collect_logit_owners(const BatchPlan& plan);
@@ -85,19 +87,23 @@ void accept_history_tokens(const std::vector<llama_token>& tokens,
                            const std::function<void(llama_token)>& accept);
 bool invoke_progress_callback_noexcept(
     const std::function<bool(float)>& callback, float value) noexcept;
+std::optional<std::vector<uint8_t>> format_turn_token_chat_prompt(
+    std::string_view chat_template, const std::vector<ChatMessage>& messages);
 #ifdef LLW_RUNTIME_TESTING
 void run_with_backend_lock_for_test(const std::function<void()>& operation);
 #endif
 
 class LlamaEngine final : public InferenceEngine {
 public:
-    LlamaEngine(ModelConfig config, std::function<bool(float)> progress);
+    LlamaEngine(std::shared_ptr<LlamaApi> api, ModelConfig config,
+                std::function<bool(float)> progress);
     ~LlamaEngine() override;
     uint64_t start(EngineRequest request) override;
     std::vector<EngineStep> decode(const std::vector<llw_handle_t>& active) override;
     void cleanup(llw_handle_t handle, uint32_t seq_id) override;
 private:
     struct Sequence;
+    std::shared_ptr<LlamaApi> api_;
     ModelConfig config_;
     llama_model* model_{};
     llama_context* context_{};

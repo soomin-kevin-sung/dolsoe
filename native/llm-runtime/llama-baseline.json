@@ -3,9 +3,46 @@
   "releaseTag": "b10068",
   "commit": "571d0d540df04f25298d0e159e520d9fc62ed121",
   "abiMajor": 1,
-  "abiMinor": 1,
+  "abiMinor": 2,
   "platform": "windows",
   "arch": "x86_64",
+  "headers": [
+    {
+      "path": "llama.h",
+      "sourcePath": "include/llama.h",
+      "sha256": "2331631b6a3567311abc0402c55aa9a867ee99759f2550bdfa261ec3693a21f6"
+    },
+    {
+      "path": "ggml.h",
+      "sourcePath": "ggml/include/ggml.h",
+      "sha256": "c65c30fdb4dce95eac71c26bb38ae8423fbc80d79db91d2b2ffaea8c4e46276a"
+    },
+    {
+      "path": "ggml-cpu.h",
+      "sourcePath": "ggml/include/ggml-cpu.h",
+      "sha256": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e"
+    },
+    {
+      "path": "ggml-backend.h",
+      "sourcePath": "ggml/include/ggml-backend.h",
+      "sha256": "a620e815b43a44cc72d5f216629a3a91980335b61bc37eb6b2d0813368c3704f"
+    },
+    {
+      "path": "ggml-alloc.h",
+      "sourcePath": "ggml/include/ggml-alloc.h",
+      "sha256": "94e4cd069b9313b2ceb35dacec901981e0bb478d8bb31035b7126be091998c23"
+    },
+    {
+      "path": "ggml-opt.h",
+      "sourcePath": "ggml/include/ggml-opt.h",
+      "sha256": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2"
+    },
+    {
+      "path": "gguf.h",
+      "sourcePath": "ggml/include/gguf.h",
+      "sha256": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4"
+    }
+  ],
   "assets": {
     "cpu": [
       {

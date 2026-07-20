@@ -9,9 +9,11 @@ struct SamplingConfig {
     uint32_t seed{}; float temperature{}; int32_t top_k{}; float top_p{}; float min_p{};
     int32_t repeat_last_n{}; float repeat_penalty{}; float frequency_penalty{}; float presence_penalty{};
 };
+struct ChatMessage { std::string role; std::string content; };
 struct EngineRequest {
     llw_handle_t handle{}; uint32_t seq_id{}; std::vector<uint8_t> prompt;
-    uint32_t max_new_tokens{}; SamplingConfig sampling; std::vector<std::vector<uint8_t>> stops;
+    std::vector<ChatMessage> chat_messages; uint32_t max_new_tokens{};
+    SamplingConfig sampling; std::vector<std::vector<uint8_t>> stops;
 };
 struct EngineStep {
     llw_handle_t handle{}; std::vector<uint8_t> token_bytes; uint32_t sampled_tokens{};

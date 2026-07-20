@@ -4,6 +4,7 @@ param(
   [string]$OutputRoot = (Join-Path $PSScriptRoot '../.runtime-release'),
   [string]$SourcePack,
   [string]$BuildDirectory,
+  [string]$HeaderDirectory,
   [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release'
 )
 
@@ -66,11 +67,19 @@ $packPath = if ($SourcePack) { [IO.Path]::GetFullPath($SourcePack) } else { Join
 
 if (-not $SourcePack) {
   $buildDirectoryPath = if ($BuildDirectory) { [IO.Path]::GetFullPath($BuildDirectory) } else { Join-Path $repositoryRoot ".cmake-build/llm-$backendLower-release" }
+  $headerDirectoryPath = if ($HeaderDirectory) {
+    [IO.Path]::GetFullPath($HeaderDirectory)
+  } else {
+    & (Join-Path $PSScriptRoot 'prepare-llama-headers.ps1')
+  }
   if (Test-Path -LiteralPath $packPath) { Remove-Item -Recurse -Force -LiteralPath $packPath }
-  & cmake -S (Join-Path $repositoryRoot 'native/llm-runtime') -B $buildDirectoryPath -A x64 "-DLLW_BACKEND_PACK=$Backend"
+  & cmake -S (Join-Path $repositoryRoot 'native/llm-runtime') -B $buildDirectoryPath -A x64 `
+    "-DLLW_BACKEND_PACK=$Backend" "-DLLW_LLAMA_INCLUDE_DIR=$headerDirectoryPath"
   if ($LASTEXITCODE -ne 0) { throw "CMake configure failed for $Backend`: $LASTEXITCODE" }
   & cmake --build $buildDirectoryPath --config $Configuration
   if ($LASTEXITCODE -ne 0) { throw "$Backend runtime build failed: $LASTEXITCODE" }
+  $runtimeOutputPath = Join-Path $buildDirectoryPath $Configuration
+  Install-LlamaReleaseDlls -Pack $runtimeOutputPath -BackendName $Backend -CacheRoot (Join-Path $outputRootPath ".llama-release-$llamaReleaseTag")
   & ctest --test-dir $buildDirectoryPath -C $Configuration --output-on-failure
   if ($LASTEXITCODE -ne 0) { throw "$Backend runtime tests failed: $LASTEXITCODE" }
   & cmake --install $buildDirectoryPath --config $Configuration --prefix $packPath

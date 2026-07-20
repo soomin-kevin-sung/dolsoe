@@ -1,14 +1,26 @@
 cmake_minimum_required(VERSION 3.24)
 project(local_llm_runtime VERSION 0.2.0 LANGUAGES C CXX)
 
+if(MSVC)
+  add_compile_options(/utf-8)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-include(FetchContent)
-
 file(READ "${CMAKE_CURRENT_SOURCE_DIR}/llama-baseline.json" LLW_LLAMA_BASELINE_JSON)
 string(JSON LLAMA_CPP_COMMIT GET "${LLW_LLAMA_BASELINE_JSON}" commit)
+
+set(LLW_LLAMA_INCLUDE_DIR "" CACHE PATH "Pinned llama.cpp public header directory")
+if(NOT IS_DIRECTORY "${LLW_LLAMA_INCLUDE_DIR}")
+  message(FATAL_ERROR "LLW_LLAMA_INCLUDE_DIR must point to the prepared pinned header SDK")
+endif()
+foreach(required_header IN ITEMS llama.h ggml.h ggml-cpu.h ggml-backend.h ggml-alloc.h ggml-opt.h gguf.h)
+  if(NOT EXISTS "${LLW_LLAMA_INCLUDE_DIR}/${required_header}")
+    message(FATAL_ERROR "Pinned llama.cpp header is missing: ${required_header}")
+  endif()
+endforeach()
 
 set(LLW_BACKEND_PACK "CPU" CACHE STRING "Runtime backend pack: CPU, CUDA, or VULKAN")
 set_property(CACHE LLW_BACKEND_PACK PROPERTY STRINGS CPU CUDA VULKAN)
@@ -17,31 +29,12 @@ if(NOT LLW_BACKEND_PACK MATCHES "^(CPU|CUDA|VULKAN)$")
   message(FATAL_ERROR "LLW_BACKEND_PACK must be CPU, CUDA, or VULKAN")
 endif()
 
-set(BUILD_SHARED_LIBS ON CACHE BOOL "" FORCE)
-set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
-set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
-set(GGML_BACKEND_DL ON CACHE BOOL "" FORCE)
-set(GGML_NATIVE OFF CACHE BOOL "" FORCE)
-set(GGML_CPU ON CACHE BOOL "" FORCE)
-set(GGML_CUDA OFF CACHE BOOL "" FORCE)
-set(GGML_VULKAN OFF CACHE BOOL "" FORCE)
-set(GGML_METAL OFF CACHE BOOL "" FORCE)
-
-FetchContent_Declare(
-  llama_cpp
-  GIT_REPOSITORY https://github.com/ggml-org/llama.cpp.git
-  GIT_TAG ${LLAMA_CPP_COMMIT}
-  GIT_CONFIG core.longpaths=true
-  GIT_SHALLOW FALSE
-  GIT_PROGRESS TRUE
-)
-FetchContent_MakeAvailable(llama_cpp)
-
 enable_testing()
+find_package(Threads REQUIRED)
 
 add_library(local_llm_runtime SHARED
   src/event_dispatcher.cpp
+  src/llama_api.cpp
   src/llama_engine.cpp
   src/runtime.cpp
   src/scheduler.cpp
@@ -52,36 +45,14 @@ target_compile_definitions(local_llm_runtime PRIVATE
   LLW_LLAMA_CPP_COMMIT="${LLAMA_CPP_COMMIT}"
   $<$<CONFIG:Debug>:LLW_RUNTIME_TESTING>
 )
-target_include_directories(local_llm_runtime PUBLIC include PRIVATE src)
-target_link_libraries(local_llm_runtime PRIVATE llama ggml Threads::Threads)
-
-set(LLW_RUNTIME_DEPENDENCY_TARGETS llama ggml ggml-base)
-foreach(backend_target IN ITEMS ggml-cpu ggml-cuda ggml-vulkan)
-  if(TARGET ${backend_target})
-    list(APPEND LLW_RUNTIME_DEPENDENCY_TARGETS ${backend_target})
-  endif()
-endforeach()
-foreach(dependency_target IN LISTS LLW_RUNTIME_DEPENDENCY_TARGETS)
-  add_custom_command(TARGET local_llm_runtime POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-      $<TARGET_FILE:${dependency_target}>
-      $<TARGET_FILE_DIR:local_llm_runtime>
-  )
-endforeach()
+target_include_directories(local_llm_runtime PUBLIC include PRIVATE src "${LLW_LLAMA_INCLUDE_DIR}")
+target_link_libraries(local_llm_runtime PRIVATE Threads::Threads)
 
 set(LLW_PACK_DESTINATION ".")
-install(TARGETS local_llm_runtime llama ggml ggml-base
+install(TARGETS local_llm_runtime
   RUNTIME DESTINATION "${LLW_PACK_DESTINATION}"
   LIBRARY DESTINATION "${LLW_PACK_DESTINATION}"
 )
-foreach(backend_target IN ITEMS ggml-cpu ggml-cuda ggml-vulkan)
-  if(TARGET ${backend_target})
-    install(TARGETS ${backend_target}
-      RUNTIME DESTINATION "${LLW_PACK_DESTINATION}"
-      LIBRARY DESTINATION "${LLW_PACK_DESTINATION}"
-    )
-  endif()
-endforeach()
 
 add_executable(llw_abi_layout_test tests/abi_layout_test.cpp)
 target_include_directories(llw_abi_layout_test PRIVATE include)
@@ -90,12 +61,8 @@ target_compile_definitions(llw_abi_layout_test PRIVATE
 )
 target_link_libraries(llw_abi_layout_test PRIVATE local_llm_runtime)
 add_test(NAME llw_abi_layout_test COMMAND llw_abi_layout_test CONFIGURATIONS Debug)
-set_tests_properties(llw_abi_layout_test PROPERTIES
-  TIMEOUT 30
-  ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:llama>"
-)
+set_tests_properties(llw_abi_layout_test PROPERTIES TIMEOUT 30)
 
-find_package(Threads REQUIRED)
 add_executable(llw_scheduler_test
   tests/scheduler_test.cpp
   src/event_dispatcher.cpp
@@ -107,17 +74,23 @@ target_link_libraries(llw_scheduler_test PRIVATE Threads::Threads)
 add_test(NAME llw_scheduler_test COMMAND llw_scheduler_test)
 set_tests_properties(llw_scheduler_test PROPERTIES TIMEOUT 30)
 
-add_executable(llw_llama_engine_test tests/llama_engine_test.cpp src/llama_engine.cpp)
-target_include_directories(llw_llama_engine_test PRIVATE include src)
+add_executable(llw_llama_engine_test
+  tests/llama_engine_test.cpp
+  src/llama_api.cpp
+  src/llama_engine.cpp
+)
+target_include_directories(llw_llama_engine_test PRIVATE
+  include src "${LLW_LLAMA_INCLUDE_DIR}"
+)
 target_compile_definitions(llw_llama_engine_test PRIVATE
   LLW_RUNTIME_TESTING
   LLW_BACKEND_PACK_NAME="${LLW_BACKEND_PACK}"
 )
-target_link_libraries(llw_llama_engine_test PRIVATE llama ggml Threads::Threads)
+target_link_libraries(llw_llama_engine_test PRIVATE Threads::Threads)
 add_test(NAME llw_llama_engine_test COMMAND llw_llama_engine_test)
 set_tests_properties(llw_llama_engine_test PROPERTIES
   TIMEOUT 30
-  ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:llama>"
+  ENVIRONMENT "LLW_TEST_RUNTIME_DIR=$<TARGET_FILE_DIR:local_llm_runtime>"
 )
 
 add_executable(llw_runtime_backend_test tests/runtime_backend_test.cpp)

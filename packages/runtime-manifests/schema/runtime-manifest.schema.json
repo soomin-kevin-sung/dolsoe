@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/soomin-sung-estsoft/local-llm-wiki/runtime-manifest.schema.json",
+  "$id": "https://github.com/soomin-kevin-sung/local-llm-wiki/runtime-manifest.schema.json",
   "title": "Local LLM Wiki runtime manifest",
   "type": "object",
   "additionalProperties": false,

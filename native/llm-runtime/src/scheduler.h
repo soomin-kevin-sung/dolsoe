@@ -42,6 +42,7 @@ private:
         llw_handle_t model{};
         RequestState state{RequestState::Queued};
         std::vector<uint8_t> prompt;
+        std::vector<ChatMessage> chat_messages;
         std::vector<std::vector<uint8_t>> stops;
         SamplingConfig sampling{};
         uint32_t max_new_tokens{};

@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use crossbeam_channel::{bounded, select, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use llm_runtime::{
-    Backend, EventKind, GenerationOptions, InferenceRuntime, Model, ModelOptions, RequestStream,
-    RuntimeEvent, RuntimeOptions,
+    Backend, ChatMessage, EventKind, GenerationOptions, InferenceRuntime, Model, ModelOptions,
+    RequestStream, RuntimeEvent, RuntimeOptions,
 };
 
 use crate::llm_dto::{
@@ -430,6 +430,17 @@ impl NativeState {
             if request.prompt.trim().is_empty() {
                 return Err("prompt must not be empty".into());
             }
+            if request.messages.len() > 128 {
+                return Err("chat must contain at most 128 messages".into());
+            }
+            if request.messages.iter().any(|message| {
+                !matches!(message.role.as_str(), "system" | "user" | "assistant")
+                    || message.content.is_empty()
+            }) {
+                return Err(
+                    "chat messages must have a supported role and non-empty content".into(),
+                );
+            }
             if request.max_new_tokens == 0 {
                 return Err("max_new_tokens must be positive".into());
             }
@@ -446,12 +457,24 @@ impl NativeState {
                 top_p: request.top_p,
                 ..GenerationOptions::default()
             };
-            let stream = self
+            let model = self
                 .model
                 .as_ref()
-                .ok_or_else(|| WorkerError::ModelNotLoaded.to_string())?
-                .submit(request.prompt.as_bytes(), options)
-                .map_err(|error| error.to_string())?;
+                .ok_or_else(|| WorkerError::ModelNotLoaded.to_string())?;
+            let stream = if request.messages.is_empty() {
+                model.submit(request.prompt.as_bytes(), options)
+            } else {
+                let messages = request
+                    .messages
+                    .into_iter()
+                    .map(|message| ChatMessage {
+                        role: message.role,
+                        content: message.content,
+                    })
+                    .collect::<Vec<_>>();
+                model.submit_chat(&messages, options)
+            }
+            .map_err(|error| error.to_string())?;
             let handle = stream.handle();
             self.request_terminal = Some(stream.terminal_receiver());
             self.request = Some(stream);
