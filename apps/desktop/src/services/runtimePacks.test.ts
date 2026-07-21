@@ -77,11 +77,11 @@ describe("runtime pack selection", () => {
     const service = new RuntimePackService({ invoke: invoke as never });
 
     expect(await service.listAvailable()).toHaveLength(1);
-    await service.install("cuda");
+    await service.install("cpu");
     await service.cancelInstall();
 
     expect(invoke).toHaveBeenNthCalledWith(1, "list_available_runtime_packs");
-    expect(invoke).toHaveBeenNthCalledWith(2, "install_runtime_pack", { packId: "cuda" });
+    expect(invoke).toHaveBeenNthCalledWith(2, "install_runtime_pack", { packId: "cpu" });
     expect(invoke).toHaveBeenNthCalledWith(3, "cancel_runtime_pack_install");
   });
 

@@ -19,6 +19,10 @@ impl RuntimeHost {
         Self::RecoveryRequired(error.into())
     }
 
+    pub fn has_worker(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
+
     pub fn status(&self) -> Result<LlmStatusDto, String> {
         match self {
             Self::Ready(worker) => worker.status(),
@@ -66,6 +70,7 @@ mod tests {
             status.last_error.as_deref(),
             Some("CPU runtime recovery required")
         );
+        assert!(!host.has_worker());
         assert!(host.metrics().unwrap_err().contains("CPU runtime"));
     }
 }

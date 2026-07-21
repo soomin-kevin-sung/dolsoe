@@ -4,6 +4,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
+    runtime_host::RuntimeHost,
     runtime_installer::{RuntimeDistributionConfig, RuntimeInstaller},
     runtime_manifest::RuntimeManifestPack,
     runtime_packs::{backend_ready, RuntimeBackend},
@@ -100,14 +101,15 @@ pub async fn install_runtime_pack(
     app: AppHandle,
     state: State<'_, RuntimeInstallerState>,
     selection: State<'_, RuntimeSelectionStore>,
+    host: State<'_, RuntimeHost>,
     pack_id: String,
 ) -> Result<(), String> {
-    let backend = match pack_id.as_str() {
-        "cuda" => RuntimeBackend::Cuda,
-        "vulkan" => RuntimeBackend::Vulkan,
-        _ => return Err("only CUDA and Vulkan runtime packs can be downloaded".into()),
-    };
-    let defer_replacement = selection.snapshot()?.active_backend == backend;
+    let backend = downloadable_backend(&pack_id)?;
+    let defer_replacement = should_defer_replacement(
+        host.has_worker(),
+        selection.snapshot()?.active_backend,
+        backend,
+    );
     let installer = state.installer()?;
     let progress_app = app.clone();
     installer
@@ -125,6 +127,23 @@ pub async fn install_runtime_pack(
         selection.request_activation(backend)?;
     }
     Ok(())
+}
+
+fn downloadable_backend(pack_id: &str) -> Result<RuntimeBackend, String> {
+    match pack_id {
+        "cpu" => Ok(RuntimeBackend::Cpu),
+        "cuda" => Ok(RuntimeBackend::Cuda),
+        "vulkan" => Ok(RuntimeBackend::Vulkan),
+        _ => Err("only CPU, CUDA, and Vulkan runtime packs can be downloaded".into()),
+    }
+}
+
+fn should_defer_replacement(
+    worker_available: bool,
+    active_backend: RuntimeBackend,
+    requested_backend: RuntimeBackend,
+) -> bool {
+    worker_available && active_backend == requested_backend
 }
 
 #[tauri::command]
@@ -151,7 +170,8 @@ mod tests {
 
     use crate::runtime_manifest::RuntimeManifestPack;
 
-    use super::available_pack_dtos;
+    use super::{available_pack_dtos, downloadable_backend, should_defer_replacement};
+    use crate::runtime_packs::RuntimeBackend;
 
     fn pack(id: &str, backend: &str) -> RuntimeManifestPack {
         RuntimeManifestPack {
@@ -186,5 +206,32 @@ mod tests {
         let value = serde_json::to_value(&dtos[1]).unwrap();
         assert_eq!(value["releaseVersion"], "2026.07.1");
         assert_eq!(value["sizeBytes"], 1024);
+    }
+
+    #[test]
+    fn all_release_backends_can_be_downloaded() {
+        assert_eq!(downloadable_backend("cpu"), Ok(RuntimeBackend::Cpu));
+        assert_eq!(downloadable_backend("cuda"), Ok(RuntimeBackend::Cuda));
+        assert_eq!(downloadable_backend("vulkan"), Ok(RuntimeBackend::Vulkan));
+        assert!(downloadable_backend("metal").is_err());
+    }
+
+    #[test]
+    fn recovery_install_replaces_missing_cpu_without_deferral() {
+        assert!(!should_defer_replacement(
+            false,
+            RuntimeBackend::Cpu,
+            RuntimeBackend::Cpu,
+        ));
+        assert!(should_defer_replacement(
+            true,
+            RuntimeBackend::Cpu,
+            RuntimeBackend::Cpu,
+        ));
+        assert!(!should_defer_replacement(
+            true,
+            RuntimeBackend::Cpu,
+            RuntimeBackend::Cuda,
+        ));
     }
 }

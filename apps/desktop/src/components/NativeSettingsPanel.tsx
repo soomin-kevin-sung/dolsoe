@@ -80,7 +80,7 @@ export function NativeSettingsPanel(props: Props) {
             })}
           </div>
           {runtimePackError && <p className="runtime-pack-error">설치된 백엔드를 확인하지 못했습니다. {runtimePackError}</p>}
-          {distributionError && <p className="runtime-pack-error">다운로드 정보를 불러오지 못했습니다. CPU는 계속 사용할 수 있습니다. {distributionError}</p>}
+          {distributionError && <p className="runtime-pack-error">다운로드 정보를 불러오지 못했습니다. 이미 설치된 백엔드는 계속 사용할 수 있습니다. {distributionError}</p>}
           {installedBackend && <div className="runtime-restart-notice" role="status">
             <strong>{labels[installedBackend]} 설치 완료</strong>
             <p>새 DLL을 안전하게 적용하려면 앱을 재시작해야 합니다.</p>
