@@ -16,6 +16,7 @@ interface Props {
   availableRuntimePacks: AvailableRuntimePack[];
   installState: RuntimeInstallState | null;
   distributionError: string | null;
+  distributionLoading: boolean;
   appliedRuntime: RuntimeSelection | null;
   pendingRuntime: RuntimeSelection | null;
   onOptionsChange(options: NativeOptions): void;
@@ -39,7 +40,7 @@ function formatBytes(value: number) {
 }
 
 export function NativeSettingsPanel(props: Props) {
-  const { open, modelName, options, runtimePacks, runtimePackError, availableRuntimePacks, installState, distributionError, appliedRuntime, pendingRuntime } = props;
+  const { open, modelName, options, runtimePacks, runtimePackError, availableRuntimePacks, installState, distributionError, distributionLoading, appliedRuntime, pendingRuntime } = props;
   const [confirmBackend, setConfirmBackend] = useState<RuntimeBackend | null>(null);
   const set = (key: keyof NativeOptions) => (value: number) => props.onOptionsChange({ ...options, [key]: value });
   const runtimeChanged = Boolean(appliedRuntime && pendingRuntime && appliedRuntime.backend !== pendingRuntime.backend);
@@ -79,6 +80,7 @@ export function NativeSettingsPanel(props: Props) {
                 onCancel={props.onCancelInstall} />;
             })}
           </div>
+          {distributionLoading && <p className="runtime-catalog-status" role="status">다운로드 정보 확인 중...</p>}
           {runtimePackError && <p className="runtime-pack-error">설치된 백엔드를 확인하지 못했습니다. {runtimePackError}</p>}
           {distributionError && <p className="runtime-pack-error">다운로드 정보를 불러오지 못했습니다. 이미 설치된 백엔드는 계속 사용할 수 있습니다. {distributionError}</p>}
           {installedBackend && <div className="runtime-restart-notice" role="status">

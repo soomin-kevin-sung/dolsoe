@@ -47,6 +47,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .model-chip { display: flex; width: min(300px, 34vw); min-width: 0; height: 30px; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--border); border-radius: 4px; background: transparent; cursor: pointer; }
 .model-chip.error { border-color: var(--red); }
 .model-chip.loading { pointer-events: none; }
+.model-chip:disabled { color: var(--text-3); background: var(--bg-inset); cursor: not-allowed; }
 .model-name { min-width: 0; overflow: hidden; flex: 1; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
 .header-divider { width: 1px; height: 16px; background: var(--border); }
 .conversation { min-width: 0; min-height: 0; overflow: auto; background: var(--bg-surface); }
@@ -75,6 +76,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .error-title { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--red); font-size: 13px; font-weight: 600; }
 .error-block p { margin: 0; color: var(--text-2); font-size: 12px; line-height: 1.6; }
 .error-actions { display: flex; gap: 8px; margin-top: 10px; }
+.error-actions button { display: inline-flex; align-items: center; gap: 6px; }
 .button-secondary { min-height: 30px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 4px; color: var(--text-1); background: var(--bg-surface); cursor: pointer; }
 .composer-area { width: 100%; padding: 0 32px 12px; background: var(--bg-surface); }
 .composer-inner { width: min(100%, 760px); margin: 0 auto; }
@@ -117,6 +119,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .device-line { display: flex; align-items: center; gap: 6px; }
 .settings-section .runtime-unavailable { color: var(--text-3); }
 .settings-section .runtime-pack-error { color: var(--red); }
+.runtime-catalog-status { color: var(--text-2); }
 .reload-badge { display: inline-block; padding: 1px 5px; border-radius: 2px; color: var(--amber); background: var(--amber-bg); font-size: 10px; font-weight: 600; letter-spacing: 0; text-transform: none; }
 .option-wrap + .option-wrap { border-top: 1px solid var(--border); }
 .option-row { display: flex; min-height: 32px; align-items: center; justify-content: space-between; gap: 8px; }

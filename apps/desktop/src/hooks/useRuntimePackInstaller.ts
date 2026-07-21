@@ -13,13 +13,17 @@ export function useRuntimePackInstaller(service: RuntimePackService = defaultSer
   const [availablePacks, setAvailablePacks] = useState<AvailableRuntimePack[]>([]);
   const [installState, setInstallState] = useState<RuntimeInstallState | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   const refresh = useCallback(async () => {
+    setLoading(true);
     try {
       setAvailablePacks(await service.listAvailable());
       setError(null);
     } catch (value) {
       setError(String(value));
+    } finally {
+      setLoading(false);
     }
   }, [service]);
 
@@ -55,5 +59,5 @@ export function useRuntimePackInstaller(service: RuntimePackService = defaultSer
 
   const dismiss = useCallback(() => setInstallState(null), []);
 
-  return useMemo(() => ({ availablePacks, installState, error, refresh, install, cancel, dismiss }), [availablePacks, cancel, dismiss, error, install, installState, refresh]);
+  return useMemo(() => ({ availablePacks, installState, error, loading, refresh, install, cancel, dismiss }), [availablePacks, cancel, dismiss, error, install, installState, loading, refresh]);
 }

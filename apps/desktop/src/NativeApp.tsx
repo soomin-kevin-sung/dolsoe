@@ -5,7 +5,7 @@ import "./App.css";
 import { ChatHeader } from "./components/ChatHeader";
 import { Composer } from "./components/Composer";
 import { ConfirmDialog } from "./components/ConfirmDialog";
-import { MessageList } from "./components/MessageList";
+import { isCpuRuntimeRecoveryError, MessageList } from "./components/MessageList";
 import { NativeDiagnosticsView } from "./components/NativeDiagnosticsView";
 import { NativeSettingsPanel } from "./components/NativeSettingsPanel";
 import { Sidebar } from "./components/Sidebar";
@@ -113,6 +113,7 @@ function NativeWorkspace() {
   const current = workspace.current;
   const messages = current?.messages.map(toMessage) ?? [];
   const storageFailed = Boolean(workspace.state.storageError);
+  const cpuRuntimeRecovery = state.phase === "error" && isCpuRuntimeRecoveryError(state.error);
   const viewState: MockStateName = storageFailed
     ? "error"
     : state.phase === "ready" && messages.length === 0
@@ -137,7 +138,7 @@ function NativeWorkspace() {
         : workspace.state.activeTurn
           ? "생성 중"
           : state.phase === "error"
-            ? "추론 오류"
+            ? cpuRuntimeRecovery ? "CPU 런타임 필요" : "추론 오류"
             : "준비됨";
   const snapshot = useMemo<RuntimeSnapshot>(() => ({
     state: viewState,
@@ -204,19 +205,21 @@ function NativeWorkspace() {
             onReset={() => current && openConversationDialog("reset", current.id)}
             onSettings={() => setSettingsOpen((open) => !open)}
             onModelSelect={() => void runtime.chooseModel()}
+            modelSelectDisabled={cpuRuntimeRecovery}
             onRename={current ? async (nextTitle) => { await workspace.rename(current.id, nextTitle); } : undefined}
             loadingProgress={state.loadingProgress}
           />
           <main className="conversation" aria-label="대화">
             {diagnosticsOpen
               ? <NativeDiagnosticsView state={state} runtimePack={selectedRuntimePack} />
-              : <MessageList state={viewState} messages={messages} modelName={state.modelName} backend={state.backend} loadingProgress={state.loadingProgress} error={workspace.state.storageError ?? state.error} onChooseModel={() => void runtime.chooseModel()} />}
+              : <MessageList state={viewState} messages={messages} modelName={state.modelName} backend={state.backend} loadingProgress={state.loadingProgress} error={workspace.state.storageError ?? state.error} onChooseModel={() => void runtime.chooseModel()} onOpenSettings={() => setSettingsOpen(true)} />}
           </main>
           {!diagnosticsOpen && (
             <Composer
               disabled={composerDisabled}
               streaming={Boolean(workspace.state.activeTurn)}
               state={viewState}
+              runtimeRecovery={cpuRuntimeRecovery}
               inputRef={composerInputRef}
               onSend={(prompt) => void workspace.submit(prompt)}
               onStop={() => void workspace.stop()}
@@ -232,6 +235,7 @@ function NativeWorkspace() {
           availableRuntimePacks={packInstaller.availablePacks}
           installState={packInstaller.installState}
           distributionError={packInstaller.error}
+          distributionLoading={packInstaller.loading}
           appliedRuntime={runtime.appliedRuntime}
           pendingRuntime={runtime.pendingRuntime}
           onOptionsChange={runtime.setOptions}
