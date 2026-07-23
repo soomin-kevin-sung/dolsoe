@@ -59,6 +59,34 @@ function bootstrappedState() {
 }
 
 describe("conversationState", () => {
+  it("supports an empty bootstrap and promotes a draft on the first turn", () => {
+    let state = workspaceReducer(createConversationState(), {
+      type: "bootstrapped",
+      value: { conversations: [], selected: null },
+    });
+    state = workspaceReducer(state, { type: "draft-opened" });
+    state = workspaceReducer(state, { type: "turn-started", value: turn });
+
+    expect(state.selectedConversationId).toBe("a");
+    expect(state.conversations).toHaveLength(1);
+    expect(state.details.a.messages).toEqual([turn.user, turn.assistant]);
+  });
+
+  it("leaves no selected conversation after deleting the last persisted chat", () => {
+    const initial = workspaceReducer(createConversationState(), {
+      type: "bootstrapped",
+      value: { conversations: [conversationA], selected: conversationA },
+    });
+    const state = workspaceReducer(initial, {
+      type: "deleted",
+      deletedId: "a",
+      fallback: null,
+    });
+
+    expect(state.selectedConversationId).toBeNull();
+    expect(state.conversations).toEqual([]);
+  });
+
   it("routes tokens to the bound conversation after selection changes", () => {
     let state = workspaceReducer(bootstrappedState(), { type: "turn-started", value: turn });
     state = workspaceReducer(state, { type: "request-bound", requestHandle: "42" });

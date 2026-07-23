@@ -88,16 +88,7 @@ export function useConversationWorkspace() {
     };
   }, [apply, service]);
 
-  const create = useCallback(async () => {
-    try {
-      const detail = await service.create();
-      apply({ type: "created", detail });
-      return detail;
-    } catch (error) {
-      apply({ type: "storage-error", error: errorText(error) });
-      return null;
-    }
-  }, [apply, service]);
+  const openDraft = useCallback(() => apply({ type: "draft-opened" }), [apply]);
 
   const select = useCallback(async (conversationId: string) => {
     const cached = stateRef.current.details[conversationId];
@@ -136,16 +127,6 @@ export function useConversationWorkspace() {
     }
   }, [runtime]);
 
-  const applyPendingRuntime = useCallback(async () => {
-    const active = stateRef.current.activeTurn;
-    try {
-      if (active) await cancelSource(active.conversationId);
-      await runtime.applyPendingRuntime();
-    } catch (error) {
-      runtime.reportError(error);
-    }
-  }, [cancelSource, runtime]);
-
   const restartApp = useCallback(async () => {
     const active = stateRef.current.activeTurn;
     try {
@@ -162,8 +143,8 @@ export function useConversationWorkspace() {
   }, [cancelSource, runtime]);
 
   const workspaceRuntime = useMemo(
-    () => ({ ...runtime, applyPendingRuntime, restartApp }),
-    [applyPendingRuntime, restartApp, runtime],
+    () => ({ ...runtime, restartApp }),
+    [restartApp, runtime],
   );
 
   const clear = useCallback(async (conversationId: string) => {
@@ -190,12 +171,16 @@ export function useConversationWorkspace() {
     }
   }, [apply, cancelSource, service]);
 
-  const submit = useCallback(async (prompt: string) => {
-    const current = selectCurrentConversation(stateRef.current);
-    if (!current || Boolean(stateRef.current.activeTurn)) return;
+  const submitPrompt = useCallback(async (prompt: string, forceNewConversation: boolean) => {
+    const current = forceNewConversation ? null : selectCurrentConversation(stateRef.current);
+    if (Boolean(stateRef.current.activeTurn)) return false;
     try {
-      const chatMessages = chatMessagesForPrompt(current.messages, prompt);
-      const turn = await service.startTurn(current.id, prompt);
+      const chatMessages = current
+        ? chatMessagesForPrompt(current.messages, prompt)
+        : [{ role: "user" as const, content: prompt }];
+      const turn = current
+        ? await service.startTurn(current.id, prompt)
+        : await service.startNewTurn(prompt);
       apply({ type: "turn-started", value: turn });
       try {
         const response = await runtime.submit(prompt, chatMessages);
@@ -214,10 +199,22 @@ export function useConversationWorkspace() {
           }
         }
       }
+      return true;
     } catch (error) {
       apply({ type: "storage-error", error: errorText(error) });
+      return false;
     }
   }, [apply, runtime, service]);
+
+  const submit = useCallback(
+    (prompt: string) => submitPrompt(prompt, false),
+    [submitPrompt],
+  );
+
+  const startDraft = useCallback((prompt: string) => {
+    apply({ type: "draft-opened" });
+    return submitPrompt(prompt, true);
+  }, [apply, submitPrompt]);
 
   const setSearch = useCallback((value: string) => apply({ type: "search", value }), [apply]);
   const current = selectCurrentConversation(state);
@@ -228,7 +225,8 @@ export function useConversationWorkspace() {
     current,
     visibleConversations,
     runtime: workspaceRuntime,
-    create,
+    openDraft,
+    startDraft,
     select,
     rename,
     clear,

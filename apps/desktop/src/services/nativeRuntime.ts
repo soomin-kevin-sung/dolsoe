@@ -33,7 +33,14 @@ export interface SubmitRequest {
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
   maxNewTokens: number;
   temperature: number;
+  topK: number;
   topP: number;
+  minP: number;
+  repeatLastN: number;
+  repeatPenalty: number;
+  frequencyPenalty: number;
+  presencePenalty: number;
+  stopSequences: string[];
   seed: number;
 }
 
@@ -108,6 +115,10 @@ export class NativeRuntimeService {
 
   subscribe(listener: (event: LlmEventDto) => void): Promise<() => void> {
     return this.bindings.listen<LlmEventDto>("llm://event", (event) => listener(event.payload));
+  }
+
+  subscribeHostReady(listener: (status: LlmStatusDto) => void): Promise<() => void> {
+    return this.bindings.listen<LlmStatusDto>("llm://host-ready", (event) => listener(event.payload));
   }
 
   chooseModel(): Promise<string | null> {

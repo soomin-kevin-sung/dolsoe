@@ -62,6 +62,7 @@ export interface RuntimeInstallProgressEvent {
   downloadedBytes: number;
   totalBytes: number;
   error: string | null;
+  restartRequired?: boolean | null;
 }
 
 export interface RuntimeInstallState extends RuntimeInstallProgressEvent {
@@ -76,6 +77,12 @@ interface RuntimePackBindings {
 const tauriRuntimePackBindings: RuntimePackBindings = { invoke, listen };
 
 export const PREFERENCE_KEY = "local-llm-wiki.runtime-pack";
+
+export function formatBytes(value: number): string {
+  return value >= 1024 ** 3
+    ? `${(value / 1024 ** 3).toFixed(1)} GB`
+    : `${Math.max(1, Math.round(value / 1024 ** 2))} MB`;
+}
 
 function isBackend(value: unknown): value is RuntimeBackend {
   return value === "cpu" || value === "cuda" || value === "vulkan";

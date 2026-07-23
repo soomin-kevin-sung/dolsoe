@@ -4,8 +4,10 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
-    runtime_host::RuntimeHost,
-    runtime_installer::{RuntimeDistributionConfig, RuntimeInstaller},
+    runtime_host::{spawn_runtime_worker, RuntimeHost},
+    runtime_installer::{
+        InstallPhase, RuntimeDistributionConfig, RuntimeInstallProgress, RuntimeInstaller,
+    },
     runtime_manifest::RuntimeManifestPack,
     runtime_packs::{backend_ready, RuntimeBackend},
     runtime_path::RuntimePackResolver,
@@ -105,8 +107,9 @@ pub async fn install_runtime_pack(
     pack_id: String,
 ) -> Result<(), String> {
     let backend = downloadable_backend(&pack_id)?;
+    let worker_available = host.has_worker()?;
     let defer_replacement = should_defer_replacement(
-        host.has_worker(),
+        worker_available,
         selection.snapshot()?.active_backend,
         backend,
     );
@@ -114,18 +117,63 @@ pub async fn install_runtime_pack(
     let progress_app = app.clone();
     installer
         .install(&pack_id, defer_replacement, move |progress| {
-            let _ = progress_app.emit("runtime-pack-install-progress", progress);
+            if progress.phase != InstallPhase::Installed {
+                let _ = progress_app.emit("runtime-pack-install-progress", progress);
+            }
         })
         .await
         .map_err(|error| error.to_string())?;
-    let app_data = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?;
-    let resolver = RuntimePackResolver::trusted(&app_data, state.runtime_root.clone())?;
-    if backend_ready(&resolver, backend) {
-        selection.request_activation(backend)?;
-    }
+
+    let finalize = (|| -> Result<bool, String> {
+        let app_data = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|error| error.to_string())?;
+        let resolver = RuntimePackResolver::trusted(&app_data, state.runtime_root.clone())?;
+        if !backend_ready(&resolver, backend) {
+            return Err(format!(
+                "installed {} runtime failed its final readiness probe",
+                backend.as_str()
+            ));
+        }
+
+        if defer_replacement {
+            selection.request_activation(backend)?;
+            return Ok(true);
+        }
+
+        if !worker_available && backend == RuntimeBackend::Cpu {
+            let worker = spawn_runtime_worker(app.clone(), resolver)?;
+            selection.set_active(RuntimeBackend::Cpu)?;
+            host.activate(worker)?;
+            app.emit("llm://host-ready", host.status()?)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(false)
+    })();
+
+    let restart_required = match finalize {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = app.emit(
+                "runtime-pack-install-progress",
+                RuntimeInstallProgress {
+                    pack_id: pack_id.clone(),
+                    phase: InstallPhase::Failed,
+                    downloaded_bytes: 0,
+                    total_bytes: 0,
+                    error: Some(error.clone()),
+                    restart_required: None,
+                },
+            );
+            return Err(error);
+        }
+    };
+    app.emit(
+        "runtime-pack-install-progress",
+        RuntimeInstallProgress::completed(&pack_id, restart_required),
+    )
+    .map_err(|error| error.to_string())?;
     Ok(())
 }
 

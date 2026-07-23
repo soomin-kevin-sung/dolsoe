@@ -6,7 +6,7 @@ export const mockStates = [
 
 export type MockStateName = (typeof mockStates)[number];
 export type ThemePreference = "light" | "dark" | "system";
-export type RuntimeStatus = "none" | "loading" | "ready" | "streaming" | "error";
+export type RuntimeStatus = "none" | "loading" | "pending" | "ready" | "streaming" | "error";
 
 export interface Session {
   id: string;

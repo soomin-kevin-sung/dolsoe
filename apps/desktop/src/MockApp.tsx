@@ -4,13 +4,19 @@ import "./App.css";
 import { ChatHeader } from "./components/ChatHeader";
 import { Composer } from "./components/Composer";
 import { MessageList } from "./components/MessageList";
+import { ModelMenu } from "./components/ModelMenu";
+import { NativeHomeView } from "./components/NativeHomeView";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { SettingsPanel } from "./components/SettingsPanel";
+import type { SettingsTab } from "./components/SettingsDialog";
 import { DiagnosticsView } from "./components/DiagnosticsView";
 import { ConfirmDialog } from "./components/ConfirmDialog";
+import type { HomeReadinessKind } from "./services/homeReadiness";
 import { DEFAULT_MODEL, mockRuntime } from "./services/mockRuntime";
 import { parseMockState, type Message, type MockStateName } from "./services/runtime";
+import { useGeneralPreferences } from "./hooks/useGeneralPreferences";
+import { useThemePreference } from "./hooks/useThemePreference";
 
 function queryValue(name: string) {
   return new URLSearchParams(window.location.search).get(name);
@@ -18,8 +24,15 @@ function queryValue(name: string) {
 
 export default function MockApp() {
   const initialState = parseMockState(queryValue("state"));
+  const requestedTheme = queryValue("theme");
+  const [theme, setTheme] = useThemePreference(requestedTheme === "dark" || requestedTheme === "light" ? requestedTheme : "system");
+  const [generalPreferences, updateGeneralPreferences] = useGeneralPreferences();
   const [state, setState] = useState<MockStateName>(initialState);
+  const [homeOpen, setHomeOpen] = useState(queryValue("view") === "home");
   const [settingsOpen, setSettingsOpen] = useState(["settings", "reload-confirm", "pack-install"].includes(initialState));
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>(initialState === "pack-install" ? "runtime" : "general");
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [activeModelName, setActiveModelName] = useState(initialState === "no-model" ? "" : DEFAULT_MODEL);
   const [extraMessages, setExtraMessages] = useState<Message[]>([]);
   const [dialog, setDialog] = useState<"reset" | "reload" | null>(mockRuntime.getSnapshot(initialState).dialog);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
@@ -29,7 +42,14 @@ export default function MockApp() {
   const snapshot = useMemo(() => mockRuntime.getSnapshot(state), [state]);
   const longModel = queryValue("longModel") === "1";
   const longMessage = queryValue("longMessage") === "1";
-  const modelName = longModel ? "Q".repeat(80) : snapshot.modelName;
+  const modelName = longModel ? "Q".repeat(80) : activeModelName || snapshot.modelName;
+  const readiness: HomeReadinessKind = state === "no-model"
+    ? "model-missing"
+    : state === "loading"
+      ? "model-loading"
+      : state === "error"
+        ? "runtime-failed-unknown"
+        : "ready";
   const messages = useMemo(() => {
     const value = [...snapshot.messages, ...extraMessages];
     if (longMessage) {
@@ -39,15 +59,10 @@ export default function MockApp() {
   }, [extraMessages, longMessage, snapshot.messages]);
 
   useEffect(() => {
-    const requested = queryValue("theme");
-    const theme = requested === "dark" ? "dark" : requested === "light" ? "light" : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    document.documentElement.dataset.theme = theme;
-  }, []);
-
-  useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.ctrlKey && event.key.toLowerCase() === "n") {
         event.preventDefault();
+        setHomeOpen(false);
         setState("empty");
         setExtraMessages([]);
       } else if (event.ctrlKey && event.key.toLowerCase() === "f") {
@@ -55,7 +70,9 @@ export default function MockApp() {
         searchInputRef.current?.focus();
       } else if (event.ctrlKey && event.key === ",") {
         event.preventDefault();
-        setSettingsOpen((open) => !open);
+        setModelMenuOpen(false);
+        if (settingsOpen) setSettingsOpen(false);
+        else openSettings();
       } else if (event.key === "Escape" && dialog) {
         setDialog(null);
       } else if (event.key === "Escape" && ["streaming", "multi"].includes(state)) {
@@ -84,32 +101,83 @@ export default function MockApp() {
     requestAnimationFrame(() => composerInputRef.current?.focus());
   }
 
+  function openSettings(tab: SettingsTab = "general") {
+    setModelMenuOpen(false);
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  }
+
   return (
     <div className="app" data-app-state={state}>
       <div className="workspace">
         <Sidebar
           sessions={snapshot.sessions}
+          homeOpen={homeOpen}
           diagnosticsOpen={state === "diagnostics"}
+          readiness={readiness}
+          runtimeLabel={snapshot.statusText}
+          modelName={modelName || DEFAULT_MODEL}
+          modelMenuOpen={modelMenuOpen}
+          modelMenu={<ModelMenu
+            open={modelMenuOpen}
+            modelName={state === "no-model" ? "" : modelName}
+            modelPath={state === "no-model" ? null : `C:\\models\\${modelName}`}
+            runtimeLabel={snapshot.statusText}
+            backend="CUDA"
+            actionsDisabled={state === "loading"}
+            onChooseModel={async () => "C:\\models\\Llama-3.1-8B-Instruct-Q4_K_M.gguf"}
+            onReplace={async (modelPath) => {
+              const parts = modelPath.split(/[\\/]/);
+              setActiveModelName(parts[parts.length - 1] ?? modelPath);
+              setState("ready");
+              return true;
+            }}
+            onUnload={() => { setModelMenuOpen(false); setActiveModelName(""); setState("no-model"); }}
+            onOpenRuntime={() => openSettings("runtime")}
+            onClose={() => setModelMenuOpen(false)}
+          />}
           searchInputRef={searchInputRef}
-          onNew={() => setState("empty")}
-          onDiagnostics={() => setState("diagnostics")}
-          onSelect={() => setState("ready")}
+          onNew={() => { setHomeOpen(false); setState("empty"); }}
+          onHome={() => setHomeOpen(true)}
+          onDiagnostics={() => { setHomeOpen(false); setState("diagnostics"); }}
+          onModelMenuToggle={() => setModelMenuOpen((current) => !current)}
+          onModelMenuClose={() => setModelMenuOpen(false)}
+          onSelect={() => { setHomeOpen(false); setState("ready"); }}
         />
         <section className="conversation-shell">
           <ChatHeader
-            title={snapshot.title}
-            modelName={modelName || DEFAULT_MODEL}
-            modelState={snapshot.runtimeStatus}
+            title={homeOpen ? "홈" : snapshot.title}
+            view={homeOpen ? "home" : state === "diagnostics" ? "diagnostics" : "chat"}
             settingsOpen={settingsOpen}
             settingsButtonRef={settingsButtonRef}
             resetButtonRef={resetButtonRef}
             onReset={() => setDialog("reset")}
-            onSettings={() => setSettingsOpen((open) => !open)}
+            onSettings={() => {
+              if (settingsOpen) setSettingsOpen(false);
+              else openSettings();
+            }}
           />
-          <main className="conversation" aria-label="대화">
-            {state === "diagnostics" ? <DiagnosticsView /> : <MessageList state={state} messages={messages} />}
+          <main className="conversation" aria-label={homeOpen ? "홈" : "대화"}>
+            {homeOpen ? <NativeHomeView
+              readiness={readiness}
+              modelName={modelName || DEFAULT_MODEL}
+              backend="CUDA"
+              sessions={snapshot.sessions}
+              installState={null}
+              modelProgress={null}
+              onInstallCpu={() => undefined}
+              onRefreshCatalog={() => undefined}
+              onCancelInstall={() => undefined}
+              onRestart={() => undefined}
+              onDismissInstall={() => undefined}
+              onChooseModel={() => undefined}
+              onCancelModelLoad={() => undefined}
+              onStartPrompt={async (prompt) => { setHomeOpen(false); await sendPrompt(prompt); }}
+              onOpenDiagnostics={() => { setHomeOpen(false); setState("diagnostics"); }}
+              onSelectSession={() => { setHomeOpen(false); setState("ready"); }}
+            /> : state === "diagnostics" ? <DiagnosticsView /> : <MessageList state={state} messages={messages} />}
           </main>
-          {state !== "diagnostics" && (
+          {!homeOpen && state !== "diagnostics" && (
             <Composer
               disabled={["no-model", "loading", "error"].includes(state)}
               streaming={["streaming", "multi"].includes(state)}
@@ -122,12 +190,18 @@ export default function MockApp() {
         </section>
         <SettingsPanel
           open={settingsOpen}
+          initialTab={settingsTab}
           packs={snapshot.packs}
+          theme={theme}
+          startPage={generalPreferences.startPage}
+          autoLoadLastModel={generalPreferences.autoLoadLastModel}
+          onThemeChange={setTheme}
+          onStartPageChange={(startPage) => updateGeneralPreferences({ startPage })}
+          onAutoLoadLastModelChange={(autoLoadLastModel) => updateGeneralPreferences({ autoLoadLastModel })}
           onClose={() => { setSettingsOpen(false); settingsButtonRef.current?.focus(); }}
-          onReload={() => setDialog("reload")}
         />
       </div>
-      <StatusBar snapshot={{ ...snapshot, modelName }} />
+      <StatusBar snapshot={{ ...snapshot, modelName }} compact={homeOpen} />
       {dialog && <ConfirmDialog type={dialog} onClose={() => setDialog(null)} returnFocusRef={dialog === "reset" ? resetButtonRef : settingsButtonRef} />}
     </div>
   );

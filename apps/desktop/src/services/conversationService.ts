@@ -27,7 +27,7 @@ export interface ConversationDetail extends ConversationSummary {
 
 export interface ConversationBootstrap {
   conversations: ConversationSummary[];
-  selected: ConversationDetail;
+  selected: ConversationDetail | null;
 }
 
 export interface StartedTurn {
@@ -49,10 +49,6 @@ export class ConversationService {
     return this.bindings.invoke("conversation_bootstrap");
   }
 
-  create(): Promise<ConversationDetail> {
-    return this.bindings.invoke("conversation_create");
-  }
-
   load(conversationId: string): Promise<ConversationDetail> {
     return this.bindings.invoke("conversation_load", { conversationId });
   }
@@ -65,8 +61,12 @@ export class ConversationService {
     return this.bindings.invoke("conversation_clear", { conversationId });
   }
 
-  delete(conversationId: string): Promise<ConversationDetail> {
+  delete(conversationId: string): Promise<ConversationDetail | null> {
     return this.bindings.invoke("conversation_delete", { conversationId });
+  }
+
+  startNewTurn(prompt: string): Promise<StartedTurn> {
+    return this.bindings.invoke("conversation_start_new_turn", { prompt });
   }
 
   startTurn(conversationId: string, prompt: string): Promise<StartedTurn> {

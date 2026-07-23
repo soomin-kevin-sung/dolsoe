@@ -47,6 +47,26 @@ pub struct SubmitChatMessage {
     pub content: String,
 }
 
+fn default_top_k() -> i32 {
+    40
+}
+
+fn default_top_p() -> f32 {
+    0.95
+}
+
+fn default_min_p() -> f32 {
+    0.05
+}
+
+fn default_repeat_last_n() -> i32 {
+    64
+}
+
+fn default_repeat_penalty() -> f32 {
+    1.1
+}
+
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitRequest {
@@ -55,7 +75,22 @@ pub struct SubmitRequest {
     pub messages: Vec<SubmitChatMessage>,
     pub max_new_tokens: u32,
     pub temperature: f32,
+    #[serde(default = "default_top_k")]
+    pub top_k: i32,
+    #[serde(default = "default_top_p")]
     pub top_p: f32,
+    #[serde(default = "default_min_p")]
+    pub min_p: f32,
+    #[serde(default = "default_repeat_last_n")]
+    pub repeat_last_n: i32,
+    #[serde(default = "default_repeat_penalty")]
+    pub repeat_penalty: f32,
+    #[serde(default)]
+    pub frequency_penalty: f32,
+    #[serde(default)]
+    pub presence_penalty: f32,
+    #[serde(default)]
+    pub stop_sequences: Vec<String>,
     pub seed: i64,
 }
 
@@ -180,7 +215,7 @@ impl LlmEventDto {
 
 #[cfg(test)]
 mod tests {
-    use super::{LlmEventDto, LlmEventKind, LlmMetricsDto};
+    use super::{LlmEventDto, LlmEventKind, LlmMetricsDto, SubmitRequest};
 
     #[test]
     fn serializes_native_counters_as_decimal_strings() {
@@ -207,5 +242,52 @@ mod tests {
         assert_eq!(value["sequenceNumber"], u64::MAX.to_string());
         assert_eq!(value["metrics"]["generatedTokens"], u64::MAX.to_string());
         assert_eq!(value["bytes"], serde_json::json!([237, 149, 156]));
+    }
+
+    #[test]
+    fn defaults_advanced_generation_options_for_older_requests() {
+        let request: SubmitRequest = serde_json::from_value(serde_json::json!({
+            "prompt": "hello",
+            "messages": [{ "role": "user", "content": "hello" }],
+            "maxNewTokens": 128,
+            "temperature": 0.8,
+            "topP": 0.95,
+            "seed": -1
+        }))
+        .expect("deserialize submit request");
+
+        assert_eq!(request.top_k, 40);
+        assert_eq!(request.min_p, 0.05);
+        assert_eq!(request.repeat_last_n, 64);
+        assert_eq!(request.repeat_penalty, 1.1);
+        assert_eq!(request.frequency_penalty, 0.0);
+        assert_eq!(request.presence_penalty, 0.0);
+        assert!(request.stop_sequences.is_empty());
+    }
+
+    #[test]
+    fn deserializes_advanced_generation_options() {
+        let request: SubmitRequest = serde_json::from_value(serde_json::json!({
+            "prompt": "hello",
+            "messages": [],
+            "maxNewTokens": 128,
+            "temperature": 0.7,
+            "topK": 20,
+            "topP": 0.9,
+            "minP": 0.1,
+            "repeatLastN": 128,
+            "repeatPenalty": 1.2,
+            "frequencyPenalty": 0.2,
+            "presencePenalty": 0.1,
+            "stopSequences": ["<END>"],
+            "seed": 42
+        }))
+        .expect("deserialize advanced submit request");
+
+        assert_eq!(request.top_k, 20);
+        assert_eq!(request.min_p, 0.1);
+        assert_eq!(request.repeat_last_n, 128);
+        assert_eq!(request.repeat_penalty, 1.2);
+        assert_eq!(request.stop_sequences, vec!["<END>"]);
     }
 }

@@ -450,12 +450,57 @@ impl NativeState {
             if !request.top_p.is_finite() || !(0.0..=1.0).contains(&request.top_p) {
                 return Err("top_p must be between 0 and 1".into());
             }
+            if !(0..=100_000).contains(&request.top_k) {
+                return Err("top_k must be between 0 and 100000".into());
+            }
+            if !request.min_p.is_finite() || !(0.0..=1.0).contains(&request.min_p) {
+                return Err("min_p must be between 0 and 1".into());
+            }
+            if !(-1..=131_072).contains(&request.repeat_last_n) {
+                return Err("repeat_last_n must be between -1 and 131072".into());
+            }
+            if !request.repeat_penalty.is_finite()
+                || !(0.0..=10.0).contains(&request.repeat_penalty)
+            {
+                return Err("repeat_penalty must be between 0 and 10".into());
+            }
+            if !request.frequency_penalty.is_finite()
+                || !(-2.0..=2.0).contains(&request.frequency_penalty)
+            {
+                return Err("frequency_penalty must be between -2 and 2".into());
+            }
+            if !request.presence_penalty.is_finite()
+                || !(-2.0..=2.0).contains(&request.presence_penalty)
+            {
+                return Err("presence_penalty must be between -2 and 2".into());
+            }
+            if request.stop_sequences.len() > 16
+                || request
+                    .stop_sequences
+                    .iter()
+                    .any(|sequence| sequence.is_empty() || sequence.len() > 256)
+            {
+                return Err(
+                    "stop_sequences must contain at most 16 non-empty values of 256 bytes or less"
+                        .into(),
+                );
+            }
             let options = GenerationOptions {
                 max_new_tokens: request.max_new_tokens,
                 seed: generation_seed(request.seed)?,
                 temperature: request.temperature,
+                top_k: request.top_k,
                 top_p: request.top_p,
-                ..GenerationOptions::default()
+                min_p: request.min_p,
+                repeat_last_n: request.repeat_last_n,
+                repeat_penalty: request.repeat_penalty,
+                frequency_penalty: request.frequency_penalty,
+                presence_penalty: request.presence_penalty,
+                stop_sequences: request
+                    .stop_sequences
+                    .into_iter()
+                    .map(String::into_bytes)
+                    .collect(),
             };
             let model = self
                 .model

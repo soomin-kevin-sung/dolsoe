@@ -4,7 +4,6 @@ import { NativeRuntimeService, type LlmEventDto, type LoadModelRequest, type Sub
 import { applyNativeEvent, createNativeState, nativeReducer, TokenDecoders } from "../services/nativeState";
 import {
   RuntimePackService,
-  applyRuntimeSelection,
   selectionForBackend,
   type RuntimeBackend,
   type RuntimePack,
@@ -16,9 +15,17 @@ export interface NativeOptions {
   batchSize: number;
   physicalBatchSize: number;
   threads: number;
+  useMmap: boolean;
   maxNewTokens: number;
   temperature: number;
+  topK: number;
   topP: number;
+  minP: number;
+  repeatLastN: number;
+  repeatPenalty: number;
+  frequencyPenalty: number;
+  presencePenalty: number;
+  stopSequences: string[];
   seed: number;
 }
 
@@ -27,9 +34,17 @@ export const defaultNativeOptions: NativeOptions = {
   batchSize: 512,
   physicalBatchSize: 128,
   threads: Math.min(8, Math.max(1, navigator.hardwareConcurrency || 4)),
+  useMmap: true,
   maxNewTokens: 256,
   temperature: 0.8,
+  topK: 40,
   topP: 0.95,
+  minP: 0.05,
+  repeatLastN: 64,
+  repeatPenalty: 1.1,
+  frequencyPenalty: 0,
+  presencePenalty: 0,
+  stopSequences: [],
   seed: -1,
 };
 
@@ -56,10 +71,11 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
 
   useEffect(() => {
     let disposed = false;
-    let cleanup: (() => void) | undefined;
+    let cleanupEvents: (() => void) | undefined;
+    let cleanupHost: (() => void) | undefined;
     void (async () => {
       try {
-        cleanup = await service.subscribe((event) => {
+        cleanupEvents = await service.subscribe((event) => {
           if (disposed) return;
           eventObserver.current?.(event);
           setState((current) => applyNativeEvent(current, event, decoders.current));
@@ -69,6 +85,9 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
               .catch(() => undefined);
           }
         });
+        cleanupHost = await service.subscribeHostReady((status) => {
+          if (!disposed) setState((current) => nativeReducer(current, { type: "status", status }));
+        });
         const status = await service.getStatus();
         if (!disposed) setState((current) => nativeReducer(current, { type: "status", status }));
       } catch (error) {
@@ -77,58 +96,70 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     })();
     return () => {
       disposed = true;
-      cleanup?.();
+      cleanupEvents?.();
+      cleanupHost?.();
       decoders.current.clear();
     };
   }, [service]);
 
-  useEffect(() => {
-    let disposed = false;
-    void Promise.all([runtimePackService.list(), runtimePackService.getSelection()])
-      .then(([inventory, selectionState]) => {
-        if (disposed) return;
-        const selection = selectionForBackend(inventory, selectionState.activeBackend)
-          ?? selectionForBackend(inventory, "cpu");
-        setRuntimePacks(inventory.packs);
-        setAppliedRuntime(selection);
-        setPendingRuntime(selection);
-        setRuntimePackError(null);
-      })
-      .catch((error) => {
-        if (!disposed) setRuntimePackError(errorText(error));
-      });
-    return () => { disposed = true; };
+  const refreshRuntimePacks = useCallback(async () => {
+    try {
+      const [inventory, selectionState] = await Promise.all([
+        runtimePackService.list(),
+        runtimePackService.getSelection(),
+      ]);
+      const selection = selectionForBackend(inventory, selectionState.activeBackend)
+        ?? selectionForBackend(inventory, "cpu");
+      setRuntimePacks(inventory.packs);
+      setAppliedRuntime(selection);
+      setPendingRuntime(selection);
+      setRuntimePackError(null);
+    } catch (error) {
+      setRuntimePackError(errorText(error));
+    }
   }, [runtimePackService]);
 
-  const loadPath = useCallback(async (modelPath: string, selection = appliedRuntime) => {
-    setState((current) => nativeReducer(current, { type: "load-started", modelPath }));
-    if (!selection) {
-      setState((current) => nativeReducer(current, { type: "load-failed", error: "사용 가능한 런타임 팩이 없습니다." }));
-      return;
-    }
+  useEffect(() => {
+    void refreshRuntimePacks();
+  }, [refreshRuntimePacks]);
+
+  const loadModel = useCallback((modelPath: string, selection: RuntimeSelection, loadOptions: NativeOptions) => {
     const request: LoadModelRequest = {
       runtimePackId: selection.packId,
       backend: selection.backend,
       deviceIndex: selection.deviceIndex,
       modelPath,
-      contextSize: options.contextSize,
-      batchSize: options.batchSize,
-      physicalBatchSize: options.physicalBatchSize,
-      threads: options.threads,
-      useMmap: true,
+      contextSize: loadOptions.contextSize,
+      batchSize: loadOptions.batchSize,
+      physicalBatchSize: loadOptions.physicalBatchSize,
+      threads: loadOptions.threads,
+      useMmap: loadOptions.useMmap,
     };
+    return service.loadModel(request);
+  }, [service]);
+
+  const loadPath = useCallback(async (modelPath: string, selection = appliedRuntime, loadOptions = options) => {
+    setState((current) => nativeReducer(current, { type: "load-started", modelPath }));
+    if (!selection) {
+      setState((current) => nativeReducer(current, { type: "load-failed", error: "사용 가능한 런타임 팩이 없습니다." }));
+      return false;
+    }
     try {
-      const status = await service.loadModel(request);
+      const status = await loadModel(modelPath, selection, loadOptions);
       setState((current) => nativeReducer(current, { type: "status", status }));
+      return true;
     } catch (error) {
       setState((current) => nativeReducer(current, { type: "load-failed", error: errorText(error) }));
+      return false;
     }
-  }, [appliedRuntime, options, service]);
+  }, [appliedRuntime, loadModel, options]);
+
+  const chooseModelPath = useCallback(() => service.chooseModel(), [service]);
 
   const chooseModel = useCallback(async () => {
-    const modelPath = await service.chooseModel();
+    const modelPath = await chooseModelPath();
     if (modelPath) await loadPath(modelPath);
-  }, [loadPath, service]);
+  }, [chooseModelPath, loadPath]);
 
   const submit = useCallback(async (
     prompt: string,
@@ -141,7 +172,14 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
       messages,
       maxNewTokens: options.maxNewTokens,
       temperature: options.temperature,
+      topK: options.topK,
       topP: options.topP,
+      minP: options.minP,
+      repeatLastN: options.repeatLastN,
+      repeatPenalty: options.repeatPenalty,
+      frequencyPenalty: options.frequencyPenalty,
+      presencePenalty: options.presencePenalty,
+      stopSequences: options.stopSequences,
       seed: options.seed,
     };
     try {
@@ -202,27 +240,69 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
       : null);
   }, [runtimePacks]);
 
-  const applyPendingRuntime = useCallback(async () => {
-    if (!pendingRuntime) return;
-    try {
-      await applyRuntimeSelection(pendingRuntime, {
-        modelPath: state.modelPath,
-        unload: async () => {
-          const status = await service.unloadModel();
-          decoders.current.clear();
-          setState((current) => nativeReducer(current, { type: "status", status }));
-        },
-        persist: async (selection) => {
-          await runtimePackService.setActive(selection.backend);
-          setAppliedRuntime(selection);
-          setPendingRuntime(selection);
-        },
-        load: loadPath,
-      });
-    } catch (error) {
-      setState((current) => nativeReducer(current, { type: "load-failed", error: errorText(error) }));
+  const applyConfiguration = useCallback(async (
+    nextOptions: NativeOptions,
+    backend: RuntimeBackend,
+    targetModelPath: string | null = state.modelPath,
+  ) => {
+    const targetSelection = selectionForBackend({ packs: runtimePacks, fallbackPackId: null }, backend);
+    if (!targetSelection) {
+      setState((current) => nativeReducer(current, { type: "load-failed", error: `${backend} 백엔드를 사용할 수 없습니다.` }));
+      return false;
     }
-  }, [loadPath, pendingRuntime, runtimePackService, service, state.modelPath]);
+
+    const previousSelection = appliedRuntime;
+    const previousOptions = options;
+    const previousModelPath = state.modelPath;
+
+    if (!targetModelPath) {
+      try {
+        await runtimePackService.setActive(targetSelection.backend);
+        setAppliedRuntime(targetSelection);
+        setPendingRuntime(targetSelection);
+        setOptions(nextOptions);
+        return true;
+      } catch (error) {
+        setState((current) => nativeReducer(current, { type: "load-failed", error: errorText(error) }));
+        return false;
+      }
+    }
+
+    setState((current) => nativeReducer(current, { type: "load-started", modelPath: targetModelPath }));
+    try {
+      if (previousModelPath) {
+        await service.unloadModel();
+        decoders.current.clear();
+      }
+      const status = await loadModel(targetModelPath, targetSelection, nextOptions);
+      await runtimePackService.setActive(targetSelection.backend);
+      setAppliedRuntime(targetSelection);
+      setPendingRuntime(targetSelection);
+      setOptions(nextOptions);
+      setState((current) => nativeReducer(current, { type: "status", status }));
+      return true;
+    } catch (error) {
+      if (previousSelection && previousModelPath) {
+        try {
+          const rollbackStatus = await loadModel(previousModelPath, previousSelection, previousOptions);
+          await runtimePackService.setActive(previousSelection.backend);
+          setAppliedRuntime(previousSelection);
+          setPendingRuntime(previousSelection);
+          setOptions(previousOptions);
+          setState((current) => nativeReducer(current, { type: "status", status: rollbackStatus }));
+          return false;
+        } catch (rollbackError) {
+          setState((current) => nativeReducer(current, {
+            type: "load-failed",
+            error: `${errorText(error)} 이전 설정 복구도 실패했습니다: ${errorText(rollbackError)}`,
+          }));
+          return false;
+        }
+      }
+      setState((current) => nativeReducer(current, { type: "load-failed", error: errorText(error) }));
+      return false;
+    }
+  }, [appliedRuntime, loadModel, options, runtimePackService, runtimePacks, service, state.modelPath]);
 
   const restartApp = useCallback(() => runtimePackService.restart(), [runtimePackService]);
 
@@ -234,10 +314,12 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     runtimePackError,
     appliedRuntime,
     pendingRuntime,
+    refreshRuntimePacks,
     setPendingBackend,
-    applyPendingRuntime,
+    applyConfiguration,
     restartApp,
     reportError,
+    chooseModelPath,
     chooseModel,
     submit,
     stop,

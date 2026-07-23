@@ -24,11 +24,11 @@ export interface ConversationState {
 
 export type ConversationAction =
   | { type: "bootstrapped"; value: ConversationBootstrap }
+  | { type: "draft-opened" }
   | { type: "selected"; detail: ConversationDetail }
-  | { type: "created"; detail: ConversationDetail }
   | { type: "summary-updated"; summary: ConversationSummary }
   | { type: "cleared"; detail: ConversationDetail }
-  | { type: "deleted"; deletedId: string; fallback: ConversationDetail }
+  | { type: "deleted"; deletedId: string; fallback: ConversationDetail | null }
   | { type: "turn-started"; value: StartedTurn }
   | { type: "request-bound"; requestHandle: string }
   | { type: "turn-failed"; error: string }
@@ -114,13 +114,14 @@ export function workspaceReducer(
       return {
         ...state,
         conversations: sortConversations(action.value.conversations),
-        details: { [action.value.selected.id]: action.value.selected },
-        selectedConversationId: action.value.selected.id,
+        details: action.value.selected ? { [action.value.selected.id]: action.value.selected } : {},
+        selectedConversationId: action.value.selected?.id ?? null,
         loading: false,
         storageError: null,
       };
+    case "draft-opened":
+      return { ...state, selectedConversationId: null, storageError: null };
     case "selected":
-    case "created":
     case "cleared":
       return withDetail(state, action.detail, true);
     case "summary-updated": {
@@ -137,28 +138,32 @@ export function workspaceReducer(
     case "deleted": {
       const details = { ...state.details };
       delete details[action.deletedId];
-      details[action.fallback.id] = action.fallback;
+      if (action.fallback) details[action.fallback.id] = action.fallback;
       return {
         ...state,
-        conversations: upsertSummary(
-          state.conversations.filter((item) => item.id !== action.deletedId),
-          action.fallback,
-        ),
+        conversations: action.fallback
+          ? upsertSummary(
+              state.conversations.filter((item) => item.id !== action.deletedId),
+              action.fallback,
+            )
+          : state.conversations.filter((item) => item.id !== action.deletedId),
         details,
-        selectedConversationId: action.fallback.id,
+        selectedConversationId: action.fallback?.id ?? null,
         storageError: null,
       };
     }
     case "turn-started": {
-      const current = state.details[action.value.conversation.id];
-      if (!current) return state;
+      const current = state.details[action.value.conversation.id] ?? {
+        ...action.value.conversation,
+        messages: [],
+      };
       const detail = {
         ...current,
         ...action.value.conversation,
         messages: [...current.messages, action.value.user, action.value.assistant],
       };
       return {
-        ...withDetail(state, detail, false),
+        ...withDetail(state, detail, state.selectedConversationId === null),
         activeTurn: {
           conversationId: detail.id,
           assistantMessageId: action.value.assistant.id,

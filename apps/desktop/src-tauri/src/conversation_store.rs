@@ -123,7 +123,7 @@ pub struct ConversationDetail {
 #[serde(rename_all = "camelCase")]
 pub struct ConversationBootstrap {
     pub conversations: Vec<ConversationSummary>,
-    pub selected: ConversationDetail,
+    pub selected: Option<ConversationDetail>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -176,26 +176,16 @@ impl ConversationStore {
             )
             .map_err(store_error)?;
 
-        let mut conversations = list_conversations(&transaction)?;
-        if conversations.is_empty() {
-            insert_empty_conversation(&transaction, timestamp)?;
-            conversations = list_conversations(&transaction)?;
-        }
-        let selected = load_conversation(&transaction, &conversations[0].id)?;
+        let conversations = list_conversations(&transaction)?;
+        let selected = conversations
+            .first()
+            .map(|conversation| load_conversation(&transaction, &conversation.id))
+            .transpose()?;
         transaction.commit().map_err(store_error)?;
         Ok(ConversationBootstrap {
             conversations,
             selected,
         })
-    }
-
-    pub fn create_conversation(&self) -> StoreResult<ConversationDetail> {
-        let mut connection = self.lock()?;
-        let transaction = connection.transaction().map_err(store_error)?;
-        let conversation = insert_empty_conversation(&transaction, now_millis()?)?;
-        let detail = load_conversation(&transaction, &conversation.id)?;
-        transaction.commit().map_err(store_error)?;
-        Ok(detail)
     }
 
     pub fn load_conversation(&self, id: &str) -> StoreResult<ConversationDetail> {
@@ -242,19 +232,18 @@ impl ConversationStore {
         Ok(detail)
     }
 
-    pub fn delete_conversation(&self, id: &str) -> StoreResult<ConversationDetail> {
+    pub fn delete_conversation(&self, id: &str) -> StoreResult<Option<ConversationDetail>> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(store_error)?;
         conversation_summary(&transaction, id)?;
         transaction
             .execute("DELETE FROM conversations WHERE id = ?1", [id])
             .map_err(store_error)?;
-        let mut conversations = list_conversations(&transaction)?;
-        if conversations.is_empty() {
-            insert_empty_conversation(&transaction, now_millis()?)?;
-            conversations = list_conversations(&transaction)?;
-        }
-        let fallback = load_conversation(&transaction, &conversations[0].id)?;
+        let conversations = list_conversations(&transaction)?;
+        let fallback = conversations
+            .first()
+            .map(|conversation| load_conversation(&transaction, &conversation.id))
+            .transpose()?;
         transaction.commit().map_err(store_error)?;
         Ok(fallback)
     }
@@ -266,47 +255,25 @@ impl ConversationStore {
         }
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(store_error)?;
-        let mut conversation = conversation_summary(&transaction, conversation_id)?;
+        let conversation = conversation_summary(&transaction, conversation_id)?;
         let timestamp = now_millis()?;
-        let user = insert_message(
-            &transaction,
-            conversation_id,
-            MessageRole::User,
-            prompt,
-            MessageStatus::Complete,
-            timestamp,
-        )?;
-        let assistant = insert_message(
-            &transaction,
-            conversation_id,
-            MessageRole::Assistant,
-            "",
-            MessageStatus::Streaming,
-            timestamp,
-        )?;
-        let user_count: i64 = transaction
-            .query_row(
-                "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND role = 'user'",
-                [conversation_id],
-                |row| row.get(0),
-            )
-            .map_err(store_error)?;
-        if user_count == 1 {
-            conversation.title = automatic_title(prompt);
-        }
-        conversation.updated_at = timestamp;
-        transaction
-            .execute(
-                "UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3",
-                params![conversation.title, timestamp, conversation_id],
-            )
-            .map_err(store_error)?;
+        let turn = insert_turn(&transaction, conversation, prompt, timestamp)?;
         transaction.commit().map_err(store_error)?;
-        Ok(StartedTurn {
-            conversation,
-            user,
-            assistant,
-        })
+        Ok(turn)
+    }
+
+    pub fn start_new_turn(&self, prompt: &str) -> StoreResult<StartedTurn> {
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Err("prompt must not be empty".into());
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        let timestamp = now_millis()?;
+        let conversation = insert_empty_conversation(&transaction, timestamp)?;
+        let turn = insert_turn(&transaction, conversation, prompt, timestamp)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(turn)
     }
 
     pub fn finish_turn(
@@ -434,6 +401,52 @@ fn insert_empty_conversation(
         )
         .map_err(store_error)?;
     Ok(conversation)
+}
+
+fn insert_turn(
+    transaction: &Transaction<'_>,
+    mut conversation: ConversationSummary,
+    prompt: &str,
+    timestamp: i64,
+) -> StoreResult<StartedTurn> {
+    let user = insert_message(
+        transaction,
+        &conversation.id,
+        MessageRole::User,
+        prompt,
+        MessageStatus::Complete,
+        timestamp,
+    )?;
+    let assistant = insert_message(
+        transaction,
+        &conversation.id,
+        MessageRole::Assistant,
+        "",
+        MessageStatus::Streaming,
+        timestamp,
+    )?;
+    let user_count: i64 = transaction
+        .query_row(
+            "SELECT COUNT(*) FROM messages WHERE conversation_id = ?1 AND role = 'user'",
+            [&conversation.id],
+            |row| row.get(0),
+        )
+        .map_err(store_error)?;
+    if user_count == 1 {
+        conversation.title = automatic_title(prompt);
+    }
+    conversation.updated_at = timestamp;
+    transaction
+        .execute(
+            "UPDATE conversations SET title = ?1, updated_at = ?2 WHERE id = ?3",
+            params![conversation.title, timestamp, conversation.id],
+        )
+        .map_err(store_error)?;
+    Ok(StartedTurn {
+        conversation,
+        user,
+        assistant,
+    })
 }
 
 fn list_conversations(transaction: &Transaction<'_>) -> StoreResult<Vec<ConversationSummary>> {
@@ -590,19 +603,17 @@ mod tests {
     use super::{ConversationStore, MessageRole, MessageStatus};
 
     #[test]
-    fn bootstrap_migrates_recovers_and_creates_initial_conversation() {
+    fn bootstrap_migrates_without_creating_an_empty_conversation_and_recovers_turns() {
         let store = ConversationStore::open_in_memory().unwrap();
         let first = store.bootstrap().unwrap();
 
-        assert_eq!(first.conversations.len(), 1);
-        assert!(first.selected.messages.is_empty());
+        assert!(first.conversations.is_empty());
+        assert!(first.selected.is_none());
 
-        let turn = store
-            .start_turn(&first.selected.id, "first prompt")
-            .unwrap();
+        let turn = store.start_new_turn("first prompt").unwrap();
         let second = store.bootstrap().unwrap();
-        let recovered = second
-            .selected
+        let selected = second.selected.unwrap();
+        let recovered = selected
             .messages
             .iter()
             .find(|message| message.id == turn.assistant.id)
@@ -624,8 +635,10 @@ mod tests {
     #[test]
     fn conversation_crud_and_turn_lifecycle_are_atomic() {
         let store = ConversationStore::open_in_memory().unwrap();
-        let initial = store.bootstrap().unwrap().selected;
-        let created = store.create_conversation().unwrap();
+        store.bootstrap().unwrap();
+        let initial = store.start_new_turn("initial prompt").unwrap().conversation;
+        let created = store.start_new_turn("created prompt").unwrap().conversation;
+        store.clear_conversation(&created.id).unwrap();
 
         let renamed = store
             .rename_conversation(&created.id, "  renamed   chat ")
@@ -645,28 +658,29 @@ mod tests {
 
         let cleared = store.clear_conversation(&created.id).unwrap();
         assert!(cleared.messages.is_empty());
-        let fallback = store.delete_conversation(&created.id).unwrap();
+        let fallback = store.delete_conversation(&created.id).unwrap().unwrap();
         assert_eq!(fallback.id, initial.id);
     }
 
     #[test]
-    fn deleting_last_conversation_creates_a_fallback() {
+    fn deleting_last_conversation_leaves_the_store_empty() {
         let store = ConversationStore::open_in_memory().unwrap();
-        let only = store.bootstrap().unwrap().selected;
+        store.bootstrap().unwrap();
+        let only = store.start_new_turn("only prompt").unwrap().conversation;
 
         let fallback = store.delete_conversation(&only.id).unwrap();
 
-        assert_ne!(fallback.id, only.id);
-        assert!(fallback.messages.is_empty());
+        assert!(fallback.is_none());
+        assert!(store.bootstrap().unwrap().conversations.is_empty());
     }
 
     #[test]
     fn titles_are_unicode_safe_and_validated() {
         let store = ConversationStore::open_in_memory().unwrap();
-        let conversation = store.bootstrap().unwrap().selected;
         let prompt = "한".repeat(45);
-
-        let turn = store.start_turn(&conversation.id, &prompt).unwrap();
+        store.bootstrap().unwrap();
+        let turn = store.start_new_turn(&prompt).unwrap();
+        let conversation = turn.conversation.clone();
 
         assert_eq!(turn.conversation.title.chars().count(), 40);
         assert!(store
@@ -691,7 +705,9 @@ mod tests {
     #[test]
     fn messages_with_the_same_timestamp_keep_insertion_order() {
         let store = ConversationStore::open_in_memory().unwrap();
-        let conversation = store.bootstrap().unwrap().selected;
+        store.bootstrap().unwrap();
+        let conversation = store.start_new_turn("placeholder").unwrap().conversation;
+        store.clear_conversation(&conversation.id).unwrap();
         {
             let connection = store.lock().unwrap();
             connection

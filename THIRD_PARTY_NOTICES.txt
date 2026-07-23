@@ -1,5 +1,14 @@
-Local LLM Wiki runtime pack third-party notices
-================================================
+Local LLM Wiki third-party notices
+==================================
+
+Wanted Sans
+-----------
+Copyright (c) 2024 Wanted Lab, Inc., with Reserved Font Name
+Wanted Sans.
+Licensed under the SIL Open Font License, Version 1.1.
+Source version: 1.0.3
+Source: https://github.com/wanteddev/wanted-sans/tree/v1.0.3
+License copy: apps/desktop/public/licenses/WantedSans-OFL.txt
 
 llama.cpp
 ---------

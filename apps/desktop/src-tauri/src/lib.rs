@@ -17,12 +17,11 @@ mod runtime_selection;
 mod runtime_source;
 mod runtime_transaction;
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 use crate::conversation_store::ConversationStore;
-use crate::llm_worker::WorkerHandle;
 use crate::runtime_bootstrap::BootstrapState;
-use crate::runtime_host::RuntimeHost;
+use crate::runtime_host::{spawn_runtime_worker, RuntimeHost};
 use crate::runtime_install_commands::RuntimeInstallerState;
 use crate::runtime_path::RuntimePackResolver;
 use crate::runtime_selection::RuntimeSelectionStore;
@@ -57,12 +56,7 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let host = match bootstrap {
                 BootstrapState::Ready => RuntimeHost::ready(
-                    WorkerHandle::spawn(resolver, move |event| {
-                        app_handle
-                            .emit("llm://event", event)
-                            .map_err(|error| error.to_string())
-                    })
-                    .map_err(std::io::Error::other)?,
+                    spawn_runtime_worker(app_handle, resolver).map_err(std::io::Error::other)?,
                 ),
                 BootstrapState::RecoveryRequired(error) => RuntimeHost::recovery(error),
             };
@@ -92,11 +86,11 @@ pub fn run() {
             llm_commands::llm_cancel,
             llm_commands::llm_get_metrics,
             conversation_commands::conversation_bootstrap,
-            conversation_commands::conversation_create,
             conversation_commands::conversation_load,
             conversation_commands::conversation_rename,
             conversation_commands::conversation_clear,
             conversation_commands::conversation_delete,
+            conversation_commands::conversation_start_new_turn,
             conversation_commands::conversation_start_turn,
             conversation_commands::conversation_finish_turn,
         ])

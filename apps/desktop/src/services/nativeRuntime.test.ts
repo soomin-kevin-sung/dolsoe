@@ -38,7 +38,21 @@ describe("NativeRuntimeService", () => {
       threads: 8,
       useMmap: true,
     };
-    const submit = { prompt: "안녕", messages: [{ role: "user" as const, content: "안녕" }], maxNewTokens: 256, temperature: 0.8, topP: 0.95, seed: -1 };
+    const submit = {
+      prompt: "안녕",
+      messages: [{ role: "user" as const, content: "안녕" }],
+      maxNewTokens: 256,
+      temperature: 0.8,
+      topK: 40,
+      topP: 0.95,
+      minP: 0.05,
+      repeatLastN: 64,
+      repeatPenalty: 1.1,
+      frequencyPenalty: 0,
+      presencePenalty: 0,
+      stopSequences: ["<END>"],
+      seed: -1,
+    };
 
     await service.getStatus();
     await service.loadModel(load);
@@ -69,6 +83,21 @@ describe("NativeRuntimeService", () => {
 
     expect(fake.listen.mock.calls[0][0]).toBe("llm://event");
     expect(listener).toHaveBeenCalledOnce();
+    expect(fake.unlisten).toHaveBeenCalledOnce();
+  });
+
+  it("subscribes to runtime host recovery events", async () => {
+    const fake = bindings();
+    const service = new NativeRuntimeService(fake.value);
+    const listener = vi.fn();
+
+    const cleanup = await service.subscribeHostReady(listener);
+    const handler = fake.listen.mock.calls[0][1] as (event: { payload: { phase: string } }) => void;
+    handler({ payload: { phase: "no-model" } });
+    cleanup();
+
+    expect(fake.listen.mock.calls[0][0]).toBe("llm://host-ready");
+    expect(listener).toHaveBeenCalledWith({ phase: "no-model" });
     expect(fake.unlisten).toHaveBeenCalledOnce();
   });
 

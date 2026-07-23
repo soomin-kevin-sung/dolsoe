@@ -6,13 +6,19 @@ import { ChatHeader } from "./components/ChatHeader";
 import { Composer } from "./components/Composer";
 import { ConfirmDialog } from "./components/ConfirmDialog";
 import { isCpuRuntimeRecoveryError, MessageList } from "./components/MessageList";
+import { ModelMenu } from "./components/ModelMenu";
 import { NativeDiagnosticsView } from "./components/NativeDiagnosticsView";
+import { NativeHomeView } from "./components/NativeHomeView";
 import { NativeSettingsPanel } from "./components/NativeSettingsPanel";
+import type { SettingsTab } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
 import { useConversationWorkspace } from "./hooks/useConversationWorkspace";
+import { readLastModelPath, rememberLastModelPath, useGeneralPreferences } from "./hooks/useGeneralPreferences";
 import { useRuntimePackInstaller } from "./hooks/useRuntimePackInstaller";
+import { useThemePreference } from "./hooks/useThemePreference";
 import type { StoredMessage } from "./services/conversationService";
+import { isCpuReady, readinessStatus, resolveHomeReadiness } from "./services/homeReadiness";
 import type { Message, MockStateName, RuntimeSnapshot, RuntimeStatus, Session } from "./services/runtime";
 
 type DialogType = "reset" | "reload" | "delete";
@@ -67,8 +73,18 @@ function NativeWorkspace() {
   const workspace = useConversationWorkspace();
   const runtime = workspace.runtime;
   const packInstaller = useRuntimePackInstaller();
+  const [theme, setTheme] = useThemePreference();
+  const [generalPreferences, updateGeneralPreferences] = useGeneralPreferences();
+  const initialStartPage = useRef(generalPreferences.startPage);
+  const initialAutoLoad = useRef(generalPreferences.autoLoadLastModel);
+  const rememberedModelPath = useRef(readLastModelPath());
+  const startupConversationResolved = useRef(false);
+  const autoLoadAttempted = useRef(false);
   const { state } = runtime;
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("general");
+  const [modelMenuOpen, setModelMenuOpen] = useState(false);
+  const [homeOpen, setHomeOpen] = useState(initialStartPage.current === "home");
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogType | null>(null);
   const [dialogTargetId, setDialogTargetId] = useState<string | null>(null);
@@ -78,68 +94,63 @@ function NativeWorkspace() {
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    if (settingsOpen) void packInstaller.refresh();
-  }, [packInstaller.refresh, settingsOpen]);
+    if (settingsOpen || homeOpen) void packInstaller.refresh();
+  }, [homeOpen, packInstaller.refresh, settingsOpen]);
 
   useEffect(() => {
-    const theme = matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-    document.documentElement.dataset.theme = theme;
-  }, []);
+    if (packInstaller.installState?.phase === "installed") void runtime.refreshRuntimePacks();
+  }, [packInstaller.installState?.phase, runtime.refreshRuntimePacks]);
 
   useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.ctrlKey && event.key.toLowerCase() === "n") {
-        event.preventDefault();
-        void workspace.create();
-      } else if (event.ctrlKey && event.key.toLowerCase() === "f") {
-        event.preventDefault();
-        searchInputRef.current?.focus();
-      } else if (event.ctrlKey && event.key === ",") {
-        event.preventDefault();
-        setSettingsOpen((open) => !open);
-      } else if (event.key === "Escape" && dialog) {
-        setDialog(null);
-      } else if (event.key === "Escape" && workspace.state.activeTurn) {
-        void workspace.stop();
-      } else if (event.key === "Escape" && settingsOpen) {
-        setSettingsOpen(false);
-        settingsButtonRef.current?.focus();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [dialog, settingsOpen, workspace]);
+    if (state.phase !== "ready" || !state.modelPath) return;
+    rememberedModelPath.current = state.modelPath;
+    rememberLastModelPath(state.modelPath);
+  }, [state.modelPath, state.phase]);
+
+  useEffect(() => {
+    if (!initialAutoLoad.current || autoLoadAttempted.current) return;
+    if (state.phase !== "no-model" || !runtime.appliedRuntime) return;
+    autoLoadAttempted.current = true;
+    const modelPath = rememberedModelPath.current;
+    if (modelPath) void runtime.applyConfiguration(runtime.options, runtime.appliedRuntime.backend, modelPath);
+  }, [runtime.appliedRuntime, runtime.applyConfiguration, runtime.options, state.phase]);
 
   const current = workspace.current;
   const messages = current?.messages.map(toMessage) ?? [];
   const storageFailed = Boolean(workspace.state.storageError);
   const cpuRuntimeRecovery = state.phase === "error" && isCpuRuntimeRecoveryError(state.error);
+  const cpuRuntimePack = runtime.runtimePacks.find((pack) => pack.id === "cpu");
+  const availableCpuPack = packInstaller.availablePacks.find((pack) => pack.backend === "cpu");
+  const readiness = resolveHomeReadiness({
+    runtimePhase: state.phase,
+    cpuPackStatus: cpuRuntimePack?.status,
+    installState: packInstaller.installState,
+    distributionLoading: packInstaller.loading,
+    distributionError: packInstaller.error,
+    runtimeRecovery: cpuRuntimeRecovery,
+  });
+  const homeStatus = readinessStatus(readiness);
+  const modelSelectDisabled = !isCpuReady(readiness) || readiness === "model-loading";
   const viewState: MockStateName = storageFailed
     ? "error"
     : state.phase === "ready" && messages.length === 0
       ? "empty"
       : state.phase;
-  const runtimeStatus: RuntimeStatus = state.phase === "no-model" ? "none" : state.phase;
+  const runtimeStatus: RuntimeStatus = readiness === "ready"
+    ? workspace.state.activeTurn ? "streaming" : "ready"
+    : homeStatus.tone;
   const selectedRuntimePack = runtime.runtimePacks.find((pack) => pack.id === runtime.appliedRuntime?.packId);
   const sessions: Session[] = workspace.state.conversations.map((conversation) => ({
     id: conversation.id,
     title: conversation.title,
     meta: formatUpdatedAt(conversation.updatedAt),
-    active: conversation.id === workspace.state.selectedConversationId,
+    active: !homeOpen && !diagnosticsOpen && conversation.id === workspace.state.selectedConversationId,
     generating: conversation.id === workspace.state.activeTurn?.conversationId,
   }));
-  const title = diagnosticsOpen ? "진단" : current?.title ?? "새 대화";
+  const title = homeOpen ? "홈" : diagnosticsOpen ? "진단" : current?.title ?? "새 대화";
   const statusText = storageFailed
     ? "대화 저장소 오류"
-    : state.phase === "no-model"
-      ? "모델 없음"
-      : state.phase === "loading"
-        ? "모델 로딩 중"
-        : workspace.state.activeTurn
-          ? "생성 중"
-          : state.phase === "error"
-            ? cpuRuntimeRecovery ? "CPU 런타임 필요" : "추론 오류"
-            : "준비됨";
+    : readiness === "ready" && workspace.state.activeTurn ? "생성 중" : homeStatus.text;
   const snapshot = useMemo<RuntimeSnapshot>(() => ({
     state: viewState,
     title,
@@ -155,10 +166,86 @@ function NativeWorkspace() {
     dialog: dialog === "delete" ? null : dialog,
   }), [diagnosticsOpen, dialog, messages, runtimeStatus, sessions, settingsOpen, state.modelName, state.telemetry, statusText, title, viewState]);
 
+  useEffect(() => {
+    if (startupConversationResolved.current || workspace.state.loading) return;
+    startupConversationResolved.current = true;
+    if (initialStartPage.current !== "last-conversation") return;
+    setHomeOpen(!workspace.current);
+    setDiagnosticsOpen(false);
+  }, [workspace.current, workspace.state.loading]);
+
   function openConversationDialog(type: "reset" | "delete", conversationId: string) {
     setDialogTargetId(conversationId);
     setDialog(type);
   }
+
+  function goHome() {
+    setHomeOpen(true);
+    setDiagnosticsOpen(false);
+  }
+
+  function openSettings(tab: SettingsTab = "general") {
+    setModelMenuOpen(false);
+    setSettingsTab(tab);
+    setSettingsOpen(true);
+  }
+
+  function openDraft() {
+    workspace.openDraft();
+    setHomeOpen(false);
+    setDiagnosticsOpen(false);
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }
+
+  function startConversationFlow() {
+    if (readiness === "ready") openDraft();
+    else goHome();
+  }
+
+  async function startPromptFromHome(prompt: string) {
+    if (readiness !== "ready") return false;
+    setHomeOpen(false);
+    setDiagnosticsOpen(false);
+    return workspace.startDraft(prompt);
+  }
+
+  function openDiagnostics() {
+    setDiagnosticsOpen(true);
+    setHomeOpen(false);
+  }
+
+  function selectConversation(id: string) {
+    void workspace.select(id);
+    setHomeOpen(false);
+    setDiagnosticsOpen(false);
+    requestAnimationFrame(() => composerInputRef.current?.focus());
+  }
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.ctrlKey && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        startConversationFlow();
+      } else if (event.ctrlKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        searchInputRef.current?.focus();
+      } else if (event.ctrlKey && event.key === ",") {
+        event.preventDefault();
+        setModelMenuOpen(false);
+        if (settingsOpen) setSettingsOpen(false);
+        else openSettings();
+      } else if (event.key === "Escape" && dialog) {
+        setDialog(null);
+      } else if (event.key === "Escape" && workspace.state.activeTurn) {
+        void workspace.stop();
+      } else if (event.key === "Escape" && settingsOpen) {
+        setSettingsOpen(false);
+        settingsButtonRef.current?.focus();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
 
   async function confirmDialog() {
     if (dialog === "reload") {
@@ -183,13 +270,34 @@ function NativeWorkspace() {
       <div className="workspace">
         <Sidebar
           sessions={sessions}
+          homeOpen={homeOpen}
           diagnosticsOpen={diagnosticsOpen}
+          readiness={readiness}
+          runtimeLabel={homeStatus.text}
+          modelName={state.modelName}
+          modelMenuOpen={modelMenuOpen}
+          modelMenu={<ModelMenu
+            open={modelMenuOpen}
+            modelName={state.modelPath ? state.modelName : ""}
+            modelPath={state.modelPath}
+            runtimeLabel={homeStatus.text}
+            backend={state.backend || runtime.appliedRuntime?.backend?.toUpperCase() || "런타임 없음"}
+            actionsDisabled={modelSelectDisabled || Boolean(workspace.state.activeTurn)}
+            onChooseModel={runtime.chooseModelPath}
+            onReplace={(modelPath) => runtime.applyConfiguration(runtime.options, runtime.appliedRuntime?.backend ?? "cpu", modelPath)}
+            onUnload={() => { setModelMenuOpen(false); void runtime.unload(); }}
+            onOpenRuntime={() => openSettings("runtime")}
+            onClose={() => setModelMenuOpen(false)}
+          />}
           searchInputRef={searchInputRef}
           searchValue={workspace.state.search}
           onSearchChange={workspace.setSearch}
-          onNew={() => void workspace.create()}
-          onDiagnostics={() => setDiagnosticsOpen(true)}
-          onSelect={(id) => { void workspace.select(id); setDiagnosticsOpen(false); }}
+          onNew={startConversationFlow}
+          onHome={goHome}
+          onDiagnostics={openDiagnostics}
+          onModelMenuToggle={() => setModelMenuOpen((current) => !current)}
+          onModelMenuClose={() => setModelMenuOpen(false)}
+          onSelect={selectConversation}
           onRename={async (id, nextTitle) => { await workspace.rename(id, nextTitle); }}
           onClear={(id) => openConversationDialog("reset", id)}
           onDelete={(id) => openConversationDialog("delete", id)}
@@ -197,38 +305,61 @@ function NativeWorkspace() {
         <section className="conversation-shell">
           <ChatHeader
             title={title}
-            modelName={state.modelName}
-            modelState={runtimeStatus}
+            view={homeOpen ? "home" : diagnosticsOpen ? "diagnostics" : "chat"}
             settingsOpen={settingsOpen}
             settingsButtonRef={settingsButtonRef}
             resetButtonRef={resetButtonRef}
-            onReset={() => current && openConversationDialog("reset", current.id)}
-            onSettings={() => setSettingsOpen((open) => !open)}
-            onModelSelect={() => void runtime.chooseModel()}
-            modelSelectDisabled={cpuRuntimeRecovery}
-            onRename={current ? async (nextTitle) => { await workspace.rename(current.id, nextTitle); } : undefined}
-            loadingProgress={state.loadingProgress}
+            onReset={!homeOpen && !diagnosticsOpen && current ? () => openConversationDialog("reset", current.id) : undefined}
+            onSettings={() => {
+              if (settingsOpen) setSettingsOpen(false);
+              else openSettings();
+            }}
+            onRename={!homeOpen && !diagnosticsOpen && current ? async (nextTitle) => { await workspace.rename(current.id, nextTitle); } : undefined}
           />
-          <main className="conversation" aria-label="대화">
-            {diagnosticsOpen
-              ? <NativeDiagnosticsView state={state} runtimePack={selectedRuntimePack} />
-              : <MessageList state={viewState} messages={messages} modelName={state.modelName} backend={state.backend} loadingProgress={state.loadingProgress} error={workspace.state.storageError ?? state.error} onChooseModel={() => void runtime.chooseModel()} onOpenSettings={() => setSettingsOpen(true)} />}
+          <main className="conversation" aria-label={homeOpen ? "홈" : diagnosticsOpen ? "진단" : "대화"}>
+            {homeOpen
+              ? <NativeHomeView
+                  readiness={readiness}
+                  modelName={state.modelName}
+                  backend={state.backend}
+                  sessions={sessions}
+                  cpuPack={availableCpuPack}
+                  installState={packInstaller.installState}
+                  modelProgress={state.loadingProgress}
+                  onInstallCpu={() => void packInstaller.install("cpu")}
+                  onRefreshCatalog={() => void packInstaller.refresh()}
+                  onCancelInstall={() => void packInstaller.cancel()}
+                  onRestart={() => void runtime.restartApp()}
+                  onDismissInstall={packInstaller.dismiss}
+                  onChooseModel={() => void runtime.chooseModel()}
+                  onCancelModelLoad={() => void runtime.unload()}
+                  onStartPrompt={startPromptFromHome}
+                  onOpenDiagnostics={openDiagnostics}
+                  onSelectSession={selectConversation}
+                />
+              : diagnosticsOpen
+                ? <NativeDiagnosticsView state={state} runtimePack={selectedRuntimePack} />
+                : <MessageList state={viewState} messages={messages} modelName={state.modelName} backend={state.backend} loadingProgress={state.loadingProgress} error={workspace.state.storageError ?? state.error} onChooseModel={() => void runtime.chooseModel()} onOpenSettings={() => openSettings("runtime")} />}
           </main>
-          {!diagnosticsOpen && (
+          {!homeOpen && !diagnosticsOpen && (
             <Composer
               disabled={composerDisabled}
               streaming={Boolean(workspace.state.activeTurn)}
               state={viewState}
               runtimeRecovery={cpuRuntimeRecovery}
               inputRef={composerInputRef}
-              onSend={(prompt) => void workspace.submit(prompt)}
+              onSend={workspace.submit}
               onStop={() => void workspace.stop()}
             />
           )}
         </section>
         <NativeSettingsPanel
           open={settingsOpen}
-          modelName={state.modelName}
+          initialTab={settingsTab}
+          modelLoaded={Boolean(state.modelPath)}
+          theme={theme}
+          startPage={generalPreferences.startPage}
+          autoLoadLastModel={generalPreferences.autoLoadLastModel}
           options={runtime.options}
           runtimePacks={runtime.runtimePacks}
           runtimePackError={runtime.runtimePackError}
@@ -237,21 +368,20 @@ function NativeWorkspace() {
           distributionError={packInstaller.error}
           distributionLoading={packInstaller.loading}
           appliedRuntime={runtime.appliedRuntime}
-          pendingRuntime={runtime.pendingRuntime}
+          reloadDisabled={Boolean(workspace.state.activeTurn) || readiness === "model-loading"}
+          onThemeChange={setTheme}
+          onStartPageChange={(startPage) => updateGeneralPreferences({ startPage })}
+          onAutoLoadLastModelChange={(autoLoadLastModel) => updateGeneralPreferences({ autoLoadLastModel })}
           onOptionsChange={runtime.setOptions}
-          onRuntimeChange={runtime.setPendingBackend}
-          onApplyRuntime={() => void runtime.applyPendingRuntime()}
+          onApplyConfiguration={runtime.applyConfiguration}
           onClose={() => { setSettingsOpen(false); settingsButtonRef.current?.focus(); }}
-          onChooseModel={() => void runtime.chooseModel()}
-          onUnload={() => void runtime.unload()}
-          onReload={() => { setDialogTargetId(null); setDialog("reload"); }}
           onInstall={(packId) => void packInstaller.install(packId)}
           onCancelInstall={() => void packInstaller.cancel()}
           onRestart={() => void runtime.restartApp()}
           onDismissInstall={packInstaller.dismiss}
         />
       </div>
-      <StatusBar snapshot={snapshot} />
+      <StatusBar snapshot={snapshot} compact={homeOpen || diagnosticsOpen} />
       {dialog && (
         <ConfirmDialog
           type={dialog}

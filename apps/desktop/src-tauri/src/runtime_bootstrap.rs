@@ -23,7 +23,7 @@ pub fn bootstrap_cpu(runtime_root: &Path, resource_root: &Path) -> BootstrapStat
             BootstrapState::Ready
         } else {
             BootstrapState::RecoveryRequired(
-                "CPU runtime is unavailable and the bundled recovery pack is missing; install CPU from Settings and restart".into(),
+                "CPU runtime is unavailable and the bundled recovery pack is missing; install CPU from Settings".into(),
             )
         };
     }
@@ -61,7 +61,7 @@ pub fn bootstrap_cpu(runtime_root: &Path, resource_root: &Path) -> BootstrapStat
         Ok(()) => BootstrapState::Ready,
         Err(_error) if runtime_directory_ready(&installed_cpu, "cpu") => BootstrapState::Ready,
         Err(error) => BootstrapState::RecoveryRequired(format!(
-            "CPU runtime recovery failed: {error}; reinstall CPU from Settings and restart"
+            "CPU runtime recovery failed: {error}; reinstall CPU from Settings"
         )),
     }
 }
@@ -79,7 +79,7 @@ mod tests {
         assert!(matches!(
             state,
             BootstrapState::RecoveryRequired(error)
-                if error.contains("install CPU from Settings and restart")
+                if error.contains("install CPU from Settings")
         ));
     }
 }

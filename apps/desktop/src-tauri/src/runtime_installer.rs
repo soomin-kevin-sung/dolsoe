@@ -43,6 +43,20 @@ pub struct RuntimeInstallProgress {
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
     pub error: Option<String>,
+    pub restart_required: Option<bool>,
+}
+
+impl RuntimeInstallProgress {
+    pub fn completed(pack_id: &str, restart_required: bool) -> Self {
+        Self {
+            pack_id: pack_id.into(),
+            phase: InstallPhase::Installed,
+            downloaded_bytes: 0,
+            total_bytes: 0,
+            error: None,
+            restart_required: Some(restart_required),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -353,6 +367,7 @@ fn progress(
         downloaded_bytes,
         total_bytes,
         error,
+        restart_required: None,
     }
 }
 
@@ -406,12 +421,19 @@ mod tests {
             downloaded_bytes: 12,
             total_bytes: 24,
             error: None,
+            restart_required: None,
         })
         .unwrap();
         assert_eq!(value["packId"], "cuda-1");
         assert_eq!(value["phase"], "downloading");
         assert_eq!(value["downloadedBytes"], 12);
         assert_eq!(value["totalBytes"], 24);
+        assert!(value["restartRequired"].is_null());
+
+        let completed =
+            serde_json::to_value(RuntimeInstallProgress::completed("cpu", false)).unwrap();
+        assert_eq!(completed["phase"], "installed");
+        assert_eq!(completed["restartRequired"], false);
     }
 
     #[tokio::test]

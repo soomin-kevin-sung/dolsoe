@@ -49,14 +49,6 @@ pub async fn conversation_bootstrap(
 }
 
 #[tauri::command]
-pub async fn conversation_create(
-    state: State<'_, ConversationStore>,
-) -> Result<ConversationDetail, String> {
-    let store = state.inner().clone();
-    blocking(move || store.create_conversation()).await
-}
-
-#[tauri::command]
 pub async fn conversation_load(
     state: State<'_, ConversationStore>,
     conversation_id: String,
@@ -88,9 +80,18 @@ pub async fn conversation_clear(
 pub async fn conversation_delete(
     state: State<'_, ConversationStore>,
     conversation_id: String,
-) -> Result<ConversationDetail, String> {
+) -> Result<Option<ConversationDetail>, String> {
     let store = state.inner().clone();
     blocking(move || store.delete_conversation(&conversation_id)).await
+}
+
+#[tauri::command]
+pub async fn conversation_start_new_turn(
+    state: State<'_, ConversationStore>,
+    prompt: String,
+) -> Result<StartedTurn, String> {
+    let store = state.inner().clone();
+    blocking(move || store.start_new_turn(&prompt)).await
 }
 
 #[tauri::command]
@@ -128,10 +129,8 @@ mod tests {
     #[test]
     fn bootstrap_dto_uses_camel_case_contract() {
         let store = ConversationStore::open_in_memory().unwrap();
-        let bootstrap = store.bootstrap().unwrap();
-        let turn = store
-            .start_turn(&bootstrap.selected.id, "question")
-            .unwrap();
+        store.bootstrap().unwrap();
+        let turn = store.start_new_turn("question").unwrap();
         let value = serde_json::to_value(store.bootstrap().unwrap()).unwrap();
 
         assert!(value["selected"]["createdAt"].is_number());
