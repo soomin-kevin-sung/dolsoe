@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Local LLM Wiki — 홈 화면 목업</title>
+<style>
+/* ============================================================
+   토큰 (apps/desktop/src/styles/tokens.css 값 그대로 인라인 복사)
+   ============================================================ */
+:root {
+  --bg-app: #f4f5f6; --bg-surface: #ffffff; --bg-inset: #eceef0; --bg-hover: #e8eaec;
+  --bg-active: #e1e4e7; --bg-statusbar: #f4f5f6;
+  --border: #d8dce0; --border-strong: #b8bec5;
+  --text-1: #1a1d21; --text-2: #555c64; --text-3: #6b737c;
+  --accent: #0f766e; --accent-solid: #0f766e; --accent-solid-hover: #0c5f59;
+  --on-accent: #ffffff; --accent-subtle: #e3f0ee;
+  --amber: #8a5c00; --amber-bg: #faf2dc;
+  --red: #b42318; --red-hover: #932015; --on-red: #ffffff; --red-bg: #fbebe9;
+  --shadow-overlay: 0 4px 16px rgba(15, 20, 25, 0.14), 0 0 0 1px rgba(15, 20, 25, 0.04);
+  --font-ui: "Pretendard Variable", Pretendard, "Segoe UI Variable Text", "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  --font-mono: "Cascadia Mono", "SF Mono", Consolas, "D2Coding", monospace;
+}
+html[data-theme="dark"] {
+  --bg-app: #17191d; --bg-surface: #1e2226; --bg-inset: #272c31; --bg-hover: #2a2f35;
+  --bg-active: #31373e; --bg-statusbar: #14161a;
+  --border: #33383f; --border-strong: #4a515a;
+  --text-1: #e7eaed; --text-2: #a6adb5; --text-3: #8f97a1;
+  --accent: #3ecbba; --accent-solid: #3ecbba; --accent-solid-hover: #5ad6c7;
+  --on-accent: #0b2b27; --accent-subtle: #1c3330;
+  --amber: #e3b45e; --amber-bg: #37301e;
+  --red: #f28b82; --red-hover: #f5a39c; --on-red: #331512; --red-bg: #3b2523;
+  --shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+/* ============================================================ 기본 */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font-family: var(--font-ui); font-size: 14px; line-height: 1.45;
+  color: var(--text-1); background: var(--bg-app); overflow: hidden;
+}
+button, input { font: inherit; color: inherit; }
+button { border: 0; background: none; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
+.icon { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.icon-sm { width: 14px; height: 14px; }
+.icon-lg { width: 20px; height: 20px; }
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .spin, .status-dot.loading { animation: none; } }
+
+/* ============================================================ 앱 골격 */
+.app { display: grid; grid-template-rows: minmax(0,1fr) 28px; width: 100vw; height: 100vh; background: var(--bg-surface); }
+.workspace { display: flex; min-width: 0; min-height: 0; }
+.conversation-shell { display: grid; grid-template-rows: 48px minmax(0,1fr); min-width: 0; flex: 1; background: var(--bg-surface); }
+
+/* ---------- 사이드바 ---------- */
+.sidebar { display: flex; flex: 0 0 264px; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); background: var(--bg-app); }
+.sidebar-header { display: flex; align-items: center; height: 48px; padding: 0 12px; gap: 8px; }
+.app-mark { width: 24px; height: 24px; flex: none; }
+.app-name-button { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; height: 32px; padding: 0 4px; margin-left: -4px; border-radius: 4px; background: transparent; text-align: left; cursor: pointer; }
+.app-name-button span { min-width: 0; overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.app-name-button:hover { background: var(--bg-hover); }
+.app-name-button.active { background: var(--bg-active); color: var(--accent); }
+.icon-button { display: inline-grid; width: 30px; height: 30px; flex: none; place-items: center; padding: 0; border-radius: 4px; color: var(--text-2); background: transparent; cursor: pointer; }
+.icon-button:hover { color: var(--text-1); background: var(--bg-hover); }
+.icon-button.active { color: var(--accent); background: var(--bg-active); }
+.icon-button:disabled { color: var(--text-3); background: transparent; cursor: not-allowed; }
+.search-wrap { position: relative; margin: 0 12px 8px; }
+.search-wrap svg { position: absolute; top: 7px; left: 8px; color: var(--text-3); }
+.search-input { width: 100%; height: 28px; padding: 0 8px 0 28px; border: 0; border-radius: 4px; outline: 0; color: var(--text-1); background: var(--bg-inset); font-size: 12px; }
+.session-list { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 2px; overflow: auto; padding: 0 8px; }
+.session-list-empty { padding: 8px 12px; color: var(--text-3); font-size: 12px; }
+.session-item { display: block; width: 100%; min-width: 0; padding: 8px 8px 8px 12px; border: 0; border-left: 2px solid transparent; border-radius: 4px; text-align: left; background: transparent; cursor: pointer; }
+.session-item:hover { background: var(--bg-hover); }
+.session-item.active { border-left-color: var(--accent); background: var(--bg-active); }
+.session-title { overflow: hidden; font-size: 13px; line-height: 16px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+.session-meta { display: flex; align-items: center; min-height: 16px; gap: 5px; color: var(--text-3); font-size: 11px; }
+.sidebar-footer { height: 36px; padding: 3px 8px; border-top: 1px solid var(--border); }
+.sidebar-footer .footer-button { display: flex; width: 100%; height: 30px; align-items: center; gap: 8px; padding: 0 8px; border-radius: 4px; color: var(--text-2); background: transparent; cursor: pointer; }
+.sidebar-footer .footer-button:hover { background: var(--bg-hover); }
+
+/* ---------- 헤더 ---------- */
+.chat-header { display: flex; min-width: 0; align-items: center; gap: 8px; padding: 0 12px 0 16px; border-bottom: 1px solid var(--border); }
+.chat-title { min-width: 0; overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.header-spacer { flex: 1; }
+.model-chip { display: flex; width: min(300px, 34vw); min-width: 0; height: 30px; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid var(--border); border-radius: 4px; background: transparent; cursor: pointer; color: var(--text-1); }
+.model-chip.empty { color: var(--text-2); font-weight: 400; }
+.model-chip.loading { pointer-events: none; }
+.model-chip:disabled { color: var(--text-3); background: var(--bg-inset); cursor: not-allowed; }
+.model-name { min-width: 0; overflow: hidden; flex: 1; font-size: 12px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+.header-divider { width: 1px; height: 16px; background: var(--border); }
+
+/* ---------- 버튼 ---------- */
+.button-primary { min-height: 32px; padding: 0 12px; border-radius: 4px; display: inline-flex; align-items: center; gap: 6px; color: var(--on-accent); background: var(--accent-solid); font-weight: 600; cursor: pointer; }
+.button-primary:hover { background: var(--accent-solid-hover); }
+.button-primary:disabled { color: var(--text-3); background: var(--bg-active); cursor: not-allowed; }
+.button-secondary { min-height: 30px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 4px; display: inline-flex; align-items: center; gap: 6px; color: var(--text-1); background: var(--bg-surface); cursor: pointer; }
+.button-secondary:hover { background: var(--bg-hover); }
+
+/* ---------- 홈 ---------- */
+.conversation { min-width: 0; min-height: 0; overflow: auto; background: var(--bg-surface); }
+.home-view { width: min(100%, 760px); margin: 0 auto; padding: 24px 32px; }
+
+.home-progress { display: flex; align-items: center; gap: 6px; height: 16px; margin: 0 0 8px; font-size: 12px; }
+.home-progress-step { display: inline-flex; align-items: center; gap: 6px; }
+.home-progress-step.done { color: var(--text-2); }
+.home-progress-step.current { color: var(--text-1); font-weight: 600; }
+.home-progress-step.pending { color: var(--text-3); }
+.home-progress-sep { color: var(--text-3); }
+
+.status-dot { width: 8px; height: 8px; flex: none; border: 1px solid var(--text-3); border-radius: 50%; }
+.status-dot.ready { border-color: var(--accent); background: var(--accent); }
+.status-dot.loading { border-color: var(--accent); background: var(--accent); animation: pulse 1.4s ease-in-out infinite; }
+.status-dot.pending { border-color: var(--amber); background: var(--amber); }
+.status-dot.error { border-color: var(--red); background: var(--red); }
+
+.home-panel { width: min(100%, 640px); padding: 16px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-surface); }
+.home-panel-title-row { display: flex; align-items: center; gap: 8px; margin: 0 0 4px; }
+.home-panel-icon { color: var(--accent); flex: none; }
+.home-panel-title { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.4; color: var(--text-1); }
+.home-panel-body { margin: 0 0 8px; max-width: 560px; font-size: 13px; line-height: 1.55; color: var(--text-2); }
+.home-panel-meta { margin: 0 0 12px; font-size: 11px; color: var(--text-2); font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.home-panel-caption { margin: 0 0 12px; color: var(--text-3); font-size: 11px; }
+.home-panel-reason { margin: 8px 0 0; color: var(--text-2); font-size: 11px; }
+.home-panel-actions { display: flex; gap: 8px; margin-top: 12px; }
+
+.loading-card { width: min(440px, 100%); padding: 20px; border: 1px solid var(--border); border-radius: 6px; text-align: left; background: var(--bg-surface); }
+.loading-card .home-progress { margin-bottom: 12px; }
+.loading-file { margin: 0 0 14px; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; color: var(--text-1); }
+.progress-track { height: 4px; overflow: hidden; border-radius: 2px; background: var(--bg-active); }
+.progress-fill { height: 100%; background: var(--accent); }
+.loading-meta { display: flex; justify-content: space-between; margin-top: 8px; color: var(--text-2); font-size: 12px; }
+.loading-meta .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.loading-card .home-panel-actions { margin-top: 14px; }
+
+.error-block { width: min(100%, 640px); padding: 12px 16px; border-left: 2px solid var(--red); border-radius: 0 6px 6px 0; background: var(--red-bg); }
+.error-block .home-progress { margin-bottom: 8px; }
+.error-title { display: flex; align-items: center; gap: 6px; margin: 0 0 6px; color: var(--red); font-size: 13px; font-weight: 600; }
+.error-block p { margin: 0; max-width: 560px; color: var(--text-2); font-size: 12px; line-height: 1.6; }
+.error-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+.runtime-restart-notice { width: min(100%, 640px); padding: 10px; border-left: 3px solid var(--amber); background: var(--amber-bg); }
+.runtime-restart-notice .home-progress { margin-bottom: 8px; }
+.runtime-restart-notice strong { display: block; font-size: 12px; color: var(--text-1); }
+.runtime-restart-notice p { margin: 4px 0 0; max-width: 560px; color: var(--text-2); font-size: 12px; line-height: 1.55; }
+.panel-actions { display: flex; gap: 6px; margin-top: 10px; }
+
+.ready-line { display: flex; min-width: 0; align-items: center; gap: 6px; margin-top: 20px; font-size: 12px; color: var(--text-2); }
+.ready-line .mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.ready-line-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.home-recent { margin-top: 16px; }
+.home-recent-header { margin: 0 0 8px; color: var(--text-3); font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; }
+.home-recent-list { display: flex; flex-direction: column; gap: 4px; list-style: none; }
+.home-recent-empty { font-size: 12px; color: var(--text-2); }
+
+/* ---------- 상태바 ---------- */
+.status-bar { display: flex; min-width: 0; align-items: center; border-top: 1px solid var(--border); background: var(--bg-statusbar); }
+.status-left { display: flex; min-width: 0; flex: 1; align-items: center; gap: 7px; padding: 0 10px; }
+.status-text { flex: none; font-size: 12px; font-weight: 500; }
+.status-model { min-width: 0; max-width: 300px; overflow: hidden; color: var(--text-2); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.status-metrics { display: flex; height: 100%; align-items: center; }
+.status-metric { display: flex; height: 100%; align-items: center; gap: 6px; padding: 0 12px; border-left: 1px solid var(--border); }
+.status-metric-label { color: var(--text-3); font-size: 10px; }
+.status-metric-value { white-space: nowrap; font: 11px var(--font-mono); font-variant-numeric: tabular-nums; color: var(--text-2); }
+.status-metric-value.live { color: var(--accent); font-weight: 600; }
+
+/* ---------- 반응형 (≤1179px = 최소 창 900px 포함) ---------- */
+@media (max-width: 1179px) {
+  .sidebar { flex: 0 0 224px; }
+  .model-chip { width: min(200px, 30vw); }
+  .home-view { padding-right: 20px; padding-left: 20px; }
+  .status-model { max-width: 180px; }
+  .metric-hide-narrow { display: none; }
+}
+
+/* 최근 대화 3~5개 규칙(spec 4.4절)은 세로 예산에 좌우되므로 창 "높이" 기준으로 적용한다.
+   경계값 651px: 5개 목록(52×5−4=256px) + 오버헤드 320px + 헤더 48px + 상태바 28px = 652px 필요 */
+@media (max-height: 651px) {
+  .home-recent-list li:nth-child(n+4) { display: none; }
+}
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="workspace">
+    <nav class="sidebar" aria-label="대화 목록">
+      <div class="sidebar-header">
+        <button type="button" class="app-name-button active" aria-label="홈으로 이동" aria-current="page">
+          <svg class="app-mark" viewBox="0 0 48 48" aria-hidden="true"><rect x="9" y="9" width="30" height="30" rx="5" fill="var(--accent)"/><path d="M24 18.5c-2.2-1.6-4.8-2.1-7-2.1v12.4c2.2 0 4.8.5 7 2.1 2.2-1.6 4.8-2.1 7-2.1V16.4c-2.2 0-4.8.5-7 2.1z" fill="var(--bg-surface)"/><rect x="3" y="15" width="4" height="6" rx="2" fill="var(--accent)"/><rect x="3" y="27" width="4" height="6" rx="2" fill="var(--accent)"/><rect x="41" y="15" width="4" height="6" rx="2" fill="var(--accent)"/><rect x="41" y="27" width="4" height="6" rx="2" fill="var(--accent)"/></svg>
+          <span>Local LLM Wiki</span>
+        </button>
+        <button type="button" class="icon-button" aria-label="새 대화" title="새 대화"><svg class="icon" viewBox="0 0 24 24"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z"/></svg></button>
+      </div>
+      <label class="search-wrap">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input class="search-input" type="search" aria-label="대화 검색" placeholder="대화 검색">
+      </label>
+      <div class="session-list" id="sidebarSessions"></div>
+      <div class="sidebar-footer">
+        <button type="button" class="footer-button"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>진단</button>
+      </div>
+    </nav>
+
+    <section class="conversation-shell">
+      <header class="chat-header">
+        <div class="chat-title">홈</div>
+        <div class="header-spacer"></div>
+        <button type="button" class="model-chip" id="modelChip" aria-label="GGUF 모델 선택"></button>
+        <span class="header-divider"></span>
+        <button type="button" class="icon-button" id="eraserBtn" aria-label="대화 초기화" title="대화 초기화" disabled><svg class="icon" viewBox="0 0 24 24"><path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/></svg></button>
+        <button type="button" class="icon-button" aria-label="설정" title="설정"><svg class="icon" viewBox="0 0 24 24"><line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/></svg></button>
+      </header>
+      <main class="conversation" aria-label="홈">
+        <div class="home-view" id="homeView"></div>
+        <p class="sr-only" id="homeLiveStatus" aria-live="polite" aria-atomic="true"></p>
+      </main>
+    </section>
+  </div>
+
+  <footer class="status-bar" role="status" id="statusBar"></footer>
+</div>
+
+<script>
+/* ============================================================
+   목업 상태 머신 — URL 파라미터
+   ?state=runtime-missing|runtime-checking|runtime-downloading|runtime-verifying
+         |runtime-installing|runtime-installed|runtime-failed-network
+         |runtime-failed-verify|runtime-failed-disk|runtime-failed-recovery
+         |runtime-failed-unknown|model-missing|model-loading|ready|ready-empty-recent
+   &theme=light|dark
+   ============================================================ */
+const params = new URLSearchParams(location.search);
+const stateName = params.get('state') || 'runtime-missing';
+const theme = params.get('theme') || 'light';
+document.documentElement.dataset.theme = theme;
+
+const ICONS = {
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>',
+  folderOpen: '<path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.55 6a2 2 0 0 1-1.94 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/>',
+  squarePen: '<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a2.121 2.121 0 1 1 3 3L12 15l-4 1 1-4Z"/>',
+  loader: '<path d="M21 12a9 9 0 1 1-6.219-8.56"/>',
+  triangleAlert: '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" x2="12" y1="9" y2="13"/><line x1="12" x2="12.01" y1="17" y2="17"/>',
+  activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+  box: '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="M3.3 7 12 12l8.7-5"/><path d="M12 22V12"/>',
+  bookOpen: '<path d="M12 7v14"/><path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z"/>',
+  rotateCw: '<path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>',
+  chevronDown: '<path d="m6 9 6 6 6-6"/>',
+};
+function icon(name, cls) {
+  return `<svg class="icon ${cls || ''}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name]}</svg>`;
+}
+
+/* ---------- 사이드바 최근 대화 표본 (updatedAt 내림차순, 실제 formatUpdatedAt 규칙과 동일한 값) ---------- */
+const SESSIONS = [
+  { title: 'GGUF 양자화 비교', meta: '방금' },
+  { title: 'llama.cpp 빌드 오류 분석', meta: '12분 전' },
+  { title: 'CUDA 오프로딩 설정 정리', meta: '3시간 전' },
+  { title: '주간 회의록 요약', meta: '7.18' },
+  { title: 'RAG 파이프라인 설계 메모', meta: '7.11' },
+];
+
+function sessionItem(s) {
+  return `<button type="button" class="session-item">
+    <div class="session-title">${s.title}</div>
+    <div class="session-meta"><span>${s.meta}</span></div>
+  </button>`;
+}
+
+document.getElementById('sidebarSessions').innerHTML = stateName === 'ready-empty-recent'
+  ? '<p class="session-list-empty">아직 대화가 없습니다.</p>'
+  : SESSIONS.map(sessionItem).join('');
+
+/* ---------- 준비 단계 표시줄 ---------- */
+const STEP_LABELS = ['CPU 런타임', '모델', '대화'];
+function trail(currentIndex, active) {
+  const parts = STEP_LABELS.map((label, i) => {
+    const cls = i < currentIndex ? 'done' : i === currentIndex ? 'current' : 'pending';
+    const dotCls = i < currentIndex ? 'ready' : i === currentIndex ? (active ? 'loading' : 'ready') : '';
+    return `<span class="home-progress-step ${cls}" aria-hidden="true"><span class="status-dot ${dotCls}"></span>${label}</span>`;
+  });
+  const summary = `준비 단계: ${STEP_LABELS.map((l, i) => `${l} ${i < currentIndex ? '완료' : i === currentIndex ? '진행 중' : '대기'}`).join(', ')}`;
+  return `<div class="home-progress" role="img" aria-label="${summary}">${parts.join('<span class="home-progress-sep" aria-hidden="true">›</span>')}</div>`;
+}
+
+/* ---------- 최근 대화 구역 ---------- */
+function recentSection(empty) {
+  const list = empty
+    ? `<p class="home-recent-empty">아직 대화가 없습니다.</p>`
+    : `<ul class="home-recent-list">${SESSIONS.map((s) => `<li>${sessionItem(s)}</li>`).join('')}</ul>`;
+  return `<section class="home-recent"><h2 class="home-recent-header">최근 대화</h2>${list}</section>`;
+}
+
+/* ---------- 패널: 뉴트럴 (home-panel) ---------- */
+function neutralPanel({ step, active, iconName, iconClass, title, body, meta, caption, primaryLabel, primaryIconName, primaryDisabled, secondaryLabel, secondaryIconName, reason }) {
+  return `<div class="home-panel">
+    ${trail(step, active)}
+    <div class="home-panel-title-row">
+      ${iconName ? icon(iconName, iconClass || 'icon-sm') : ''}
+      <h1 class="home-panel-title" tabindex="-1">${title}</h1>
+    </div>
+    ${body ? `<p class="home-panel-body">${body}</p>` : ''}
+    ${meta ? `<p class="home-panel-meta">${meta}</p>` : ''}
+    ${caption ? `<p class="home-panel-caption">${caption}</p>` : ''}
+    ${primaryLabel ? `<div class="home-panel-actions">
+      <button type="button" class="button-primary" ${primaryDisabled ? 'disabled aria-disabled="true"' : ''} aria-label="${primaryLabel}">${primaryIconName ? icon(primaryIconName, 'icon-sm') : ''}${primaryLabel}</button>
+      ${secondaryLabel ? `<button type="button" class="button-secondary" aria-label="${secondaryLabel}">${secondaryIconName ? icon(secondaryIconName, 'icon-sm') : ''}${secondaryLabel}</button>` : ''}
+    </div>` : ''}
+    ${reason ? `<p class="home-panel-reason">${reason}</p>` : ''}
+  </div>`;
+}
+
+/* ---------- 패널: 진행 중 (loading-card) ---------- */
+function loadingPanel({ step, fileLabel, stageLabel, valueText, percent, cancelable, cancelLabel, cancelAriaLabel }) {
+  return `<div class="loading-card">
+    ${trail(step, true)}
+    <p class="loading-file" tabindex="-1">${fileLabel}</p>
+    <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}" aria-label="${stageLabel}"><div class="progress-fill" style="width:${percent}%"></div></div>
+    <div class="loading-meta"><span>${stageLabel}</span>${valueText ? `<span class="mono">${valueText}</span>` : ''}</div>
+    ${cancelable ? `<div class="home-panel-actions"><button type="button" class="button-secondary" aria-label="${cancelAriaLabel || cancelLabel}">${cancelLabel}</button></div>` : ''}
+  </div>`;
+}
+
+/* ---------- 패널: amber (runtime-restart-notice) ---------- */
+function amberPanel({ step, title, body, primaryLabel, secondaryLabel }) {
+  return `<div class="runtime-restart-notice">
+    ${trail(step)}
+    <strong tabindex="-1">${title}</strong>
+    <p>${body}</p>
+    <div class="panel-actions">
+      <button type="button" class="button-primary" aria-label="${primaryLabel}">${primaryLabel}</button>
+      <button type="button" class="button-secondary" aria-label="${secondaryLabel}">${secondaryLabel}</button>
+    </div>
+  </div>`;
+}
+
+/* ---------- 패널: red (error-block) ---------- */
+function redPanel({ step, title, body, primaryLabel, secondaryLabel }) {
+  return `<div class="error-block">
+    ${trail(step)}
+    <h3 class="error-title" tabindex="-1">${icon('triangleAlert', 'icon-sm')}${title}</h3>
+    <p>${body}</p>
+    <div class="error-actions">
+      <button type="button" class="button-primary" aria-label="${primaryLabel}">${icon('rotateCw', 'icon-sm')}${primaryLabel}</button>
+      <button type="button" class="button-secondary" aria-label="${secondaryLabel}">${icon('activity', 'icon-sm')}${secondaryLabel}</button>
+    </div>
+  </div>`;
+}
+
+/* ---------- 모델 요약 줄 ---------- */
+function modelLine(text, dotCls) {
+  return `<div class="ready-line"><span class="status-dot ${dotCls}" aria-hidden="true"></span><span class="ready-line-text">${text}</span></div>`;
+}
+
+/* ---------- 상태 정의 (5절과 1:1 대응) ---------- */
+const FAILURE_COPY = {
+  network: ['인터넷 연결을 확인하세요', 'CPU 런타임 정보를 받아오지 못했습니다. 네트워크 연결을 확인한 뒤 다시 시도하세요.'],
+  verify: ['다운로드한 파일을 확인하지 못했습니다', '파일이 손상되었거나 체크섬이 일치하지 않습니다. 다시 시도하면 처음부터 다시 다운로드합니다.'],
+  disk: ['저장 공간이 부족합니다', 'CPU 런타임을 설치할 공간이 부족합니다. 여유 공간을 확보한 뒤 다시 시도하세요.'],
+  recovery: ['CPU 런타임을 불러오지 못했습니다', '기본 CPU 런타임을 불러오지 못했습니다. 다시 설치한 뒤 앱을 재시작하세요.'],
+  unknown: ['CPU 런타임을 설치하지 못했습니다', '알 수 없는 문제로 설치가 중단되었습니다. 다시 시도하거나 진단에서 자세한 내용을 확인하세요.'],
+};
+
+function buildPanel(name) {
+  switch (name) {
+    case 'runtime-missing':
+      return neutralPanel({ step: 0,
+        title: 'CPU 런타임 설치가 필요합니다',
+        body: '대화를 시작하려면 로컬 CPU 런타임이 필요합니다. 한 번만 설치하면 이후에는 바로 사용할 수 있습니다.',
+        meta: '18 MB · v0.1.0 · 로컬 설치',
+        primaryLabel: 'CPU 런타임 설치', primaryIconName: 'download' });
+    case 'runtime-checking':
+      return neutralPanel({ step: 0, active: true, iconName: 'loader', iconClass: 'icon-sm spin',
+        title: '다운로드 정보 확인 중...',
+        primaryLabel: 'CPU 런타임 설치', primaryIconName: 'download', primaryDisabled: true,
+        reason: '설치 정보를 불러오는 중에는 설치를 시작할 수 없습니다.' });
+    case 'runtime-downloading':
+      return loadingPanel({ step: 0, fileLabel: 'CPU 런타임을 다운로드하는 중입니다',
+        stageLabel: '다운로드 중', valueText: '6 / 18 MB · 32%', percent: 32,
+        cancelable: true, cancelLabel: '취소', cancelAriaLabel: '다운로드 취소' });
+    case 'runtime-verifying':
+      return loadingPanel({ step: 0, fileLabel: 'CPU 런타임을 검증하는 중입니다',
+        stageLabel: '검증 중', valueText: '', percent: 100, cancelable: false });
+    case 'runtime-installing':
+      return loadingPanel({ step: 0, fileLabel: 'CPU 런타임을 설치하는 중입니다',
+        stageLabel: '설치 중', valueText: '', percent: 100, cancelable: false });
+    case 'runtime-installed':
+      return amberPanel({ step: 0, title: 'CPU 런타임이 준비되었습니다',
+        body: '새 DLL을 안전하게 적용하려면 앱을 재시작해야 합니다. 재시작 후 모델 선택 단계로 이어집니다.',
+        primaryLabel: '지금 재시작', secondaryLabel: '나중에' });
+    case 'runtime-failed-network': {
+      // 규칙 5(distributionError) — 설치를 시도하지도 않은 카탈로그 조회 실패이므로 뉴트럴 렌더
+      // (spec 5.5절: red는 규칙 3/6의 "실제 시도 후 실패"에만 사용한다).
+      const [title, body] = FAILURE_COPY.network;
+      return neutralPanel({ step: 0, title, body,
+        primaryLabel: '다시 시도', primaryIconName: 'rotateCw',
+        secondaryLabel: '진단 보기', secondaryIconName: 'activity' });
+    }
+    case 'runtime-failed-verify':
+    case 'runtime-failed-disk':
+    case 'runtime-failed-recovery':
+    case 'runtime-failed-unknown': {
+      const key = name.replace('runtime-failed-', '');
+      const [title, body] = FAILURE_COPY[key];
+      return redPanel({ step: 0, title, body, primaryLabel: '다시 시도', secondaryLabel: '진단 보기' });
+    }
+    case 'model-missing':
+      return neutralPanel({ step: 1,
+        title: '사용할 GGUF 모델을 선택하세요',
+        body: '로컬 GGUF 파일을 선택하면 대화를 시작할 수 있습니다.',
+        caption: '지원 형식: .gguf · 모든 추론은 이 PC에서만 실행됩니다.',
+        primaryLabel: 'GGUF 모델 선택…', primaryIconName: 'folderOpen' });
+    case 'model-loading':
+      return loadingPanel({ step: 1, fileLabel: 'Qwen2.5-7B-Instruct-Q4_K_M.gguf',
+        stageLabel: '모델 로딩 중 · CPU', valueText: '64%', percent: 64,
+        cancelable: true, cancelLabel: '로드 취소' });
+    case 'ready':
+    case 'ready-empty-recent':
+      return neutralPanel({ step: 2, iconName: 'bookOpen', iconClass: 'icon-lg home-panel-icon',
+        title: '대화를 시작할 준비가 되었습니다',
+        primaryLabel: '새 대화 시작', primaryIconName: 'squarePen' });
+    default:
+      return neutralPanel({ step: 0, iconName: 'download', title: 'CPU 런타임 설치가 필요합니다',
+        body: '대화를 시작하려면 로컬 CPU 런타임이 필요합니다.', primaryLabel: 'CPU 런타임 설치', primaryIconName: 'download' });
+  }
+}
+
+/* ---------- 모델 칩 / 상태바 / 모델 요약 줄 데이터 ---------- */
+function chrome(name) {
+  if (name === 'model-loading') {
+    return {
+      chip: `${icon('loader', 'icon-sm spin')}<span class="model-name">Qwen2.5-7B-Instruct-Q4_K_M.gguf</span><span class="mono" style="font-size:11px;color:var(--accent)">64%</span>`,
+      chipClass: 'loading',
+      chipDisabled: false,
+      chipAriaLabel: '모델 로딩 중 · Qwen2.5-7B-Instruct-Q4_K_M.gguf · 64%',
+      statusDot: 'loading', statusText: '모델 로딩 중', statusModel: 'Qwen2.5-7B-Instruct-Q4_K_M.gguf',
+      modelLine: modelLine('Qwen2.5-7B-Instruct-Q4_K_M.gguf · CPU · 모델 로딩 중', 'loading'),
+      telemetry: false,
+    };
+  }
+  if (name === 'ready' || name === 'ready-empty-recent') {
+    return {
+      chip: `${icon('box', 'icon-sm')}<span class="model-name">Qwen2.5-7B-Instruct-Q4_K_M.gguf</span>${icon('chevronDown', 'icon-sm')}`,
+      chipClass: '',
+      chipDisabled: false,
+      chipAriaLabel: '모델: Qwen2.5-7B-Instruct-Q4_K_M.gguf, 변경',
+      statusDot: 'ready', statusText: '준비됨', statusModel: 'Qwen2.5-7B-Instruct-Q4_K_M.gguf',
+      modelLine: modelLine('Qwen2.5-7B-Instruct-Q4_K_M.gguf · CPU · 준비됨', 'ready'),
+      telemetry: true,
+    };
+  }
+  if (name === 'model-missing') {
+    return {
+      chip: `${icon('box', 'icon-sm')}<span class="model-name">GGUF 모델 선택…</span>${icon('chevronDown', 'icon-sm')}`,
+      chipClass: 'empty',
+      chipDisabled: false,
+      chipAriaLabel: 'GGUF 모델 선택',
+      statusDot: '', statusText: '모델 없음', statusModel: '',
+      modelLine: modelLine('모델 없음', ''),
+      telemetry: false,
+    };
+  }
+
+  // CPU가 준비되지 않은 상태에서는 모델 선택이 즉시 로드 실패로 이어지므로 항상 비활성화한다.
+  const isError = name.indexOf('runtime-failed-') === 0;
+  const isNetworkCause = name === 'runtime-failed-network';
+  const runtimeChrome = {
+    'runtime-missing': ['', 'CPU 런타임 필요'],
+    'runtime-checking': ['loading', 'CPU 런타임 확인 중'],
+    'runtime-downloading': ['loading', 'CPU 런타임 다운로드 중'],
+    'runtime-verifying': ['loading', 'CPU 런타임 검증 중'],
+    'runtime-installing': ['loading', 'CPU 런타임 설치 중'],
+    'runtime-installed': ['pending', '재시작 필요'],
+  };
+  const [statusDot, statusText] = runtimeChrome[name]
+    || [isError && !isNetworkCause ? 'error' : '', 'CPU 런타임 필요'];
+  return {
+    chip: `${icon('box', 'icon-sm')}<span class="model-name">모델 선택 불가</span>${icon('chevronDown', 'icon-sm')}`,
+    chipClass: 'empty',
+    chipDisabled: true,
+    chipAriaLabel: 'CPU 런타임 설치 후 모델 선택 가능',
+    statusDot,
+    statusText,
+    statusModel: '',
+    modelLine: modelLine('CPU 런타임 준비 후 모델 선택 가능', statusDot),
+    telemetry: false,
+  };
+}
+
+function metric(label, value, live, hideNarrow) {
+  return `<div class="status-metric ${hideNarrow ? 'metric-hide-narrow' : ''}"><span class="status-metric-label">${label}</span><span class="status-metric-value ${live ? 'live' : ''}">${value}</span></div>`;
+}
+
+/* ---------- 렌더 ---------- */
+const c = chrome(stateName);
+const modelChipEl = document.getElementById('modelChip');
+modelChipEl.className = `model-chip ${c.chipClass}`;
+modelChipEl.innerHTML = c.chip;
+modelChipEl.disabled = Boolean(c.chipDisabled);
+modelChipEl.setAttribute('aria-label', c.chipAriaLabel);
+
+document.getElementById('homeView').innerHTML = buildPanel(stateName) + c.modelLine + recentSection(stateName === 'ready-empty-recent');
+document.getElementById('homeLiveStatus').textContent = c.statusText;
+
+document.getElementById('statusBar').innerHTML = `
+  <div class="status-left">
+    <span class="status-dot ${c.statusDot}"></span>
+    <span class="status-text">${c.statusText}</span>
+    ${c.statusModel ? `<span class="status-model">${c.statusModel}</span>` : ''}
+  </div>
+  <span style="flex:1"></span>
+  <div class="status-metrics">
+    ${metric('백엔드', c.telemetry ? 'CPU' : '—')}
+    ${metric('속도', c.telemetry ? '18.4 tok/s' : '—')}
+    ${metric('토큰', c.telemetry ? '프롬프트 96 / 생성 0' : '—', false, true)}
+    ${metric('컨텍스트', c.telemetry ? '0 / 8,192' : '—')}
+    ${metric('시간', c.telemetry ? '—' : '—', false, true)}
+  </div>`;
+
+// 초기 포커스: primary 버튼이 있으면 그 버튼, 없으면 패널 heading(tabindex=-1)
+// .loading-card(상태 3/7)는 primary가 없는 진행 상태이므로 secondary(취소류) 버튼은 초기 포커스
+// 후보에서 제외한다 — 8.2절 (A): 패널 컨테이너/파일명(.loading-file)부터 읽게 한다.
+const primaryBtn = document.querySelector('.home-panel .button-primary, .runtime-restart-notice .button-primary, .error-block .button-primary');
+const heading = document.querySelector('.home-panel-title, .loading-file, .runtime-restart-notice strong, .error-title');
+(primaryBtn && !primaryBtn.disabled ? primaryBtn : heading)?.focus();
+</script>
+</body>
+</html>

@@ -7,8 +7,10 @@ Vulkan. The bridge is compiled against seven checksum-pinned public headers, but
 cloned, built, or statically linked. At runtime the bridge loads `ggml-base.dll`, `ggml.dll`, and `llama.dll`
 from the selected pack with absolute paths and resolves its required exports. Official CPU packs contain
 instruction-set variants such as `ggml-cpu-x64.dll`; the loader selects the compatible variant. Never combine
-DLLs from different llama.cpp releases. Changing CPU/CUDA/Vulkan packs requires model unload and
-process/runtime restart; in-process backend-core replacement is unsupported.
+DLLs from different llama.cpp releases. Switching between already installed CPU/CUDA/Vulkan packs unloads
+the current model and runtime before loading the selected pack. A process restart is required only when an
+installation replaces the backend DLL currently owned by the worker; first-time CPU recovery and installation
+of an inactive backend are available to the running app immediately.
 
 ## CPU
 
