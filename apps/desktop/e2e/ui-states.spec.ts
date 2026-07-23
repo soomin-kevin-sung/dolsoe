@@ -369,6 +369,24 @@ test("responsive settings dialog stays centered and inside the viewport", async 
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(640);
 });
 
+test("settings dialog keeps a stable frame across tabs", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/?state=settings");
+  const panel = page.locator(".settings-panel");
+  const tabs = page.locator(".settings-tabs button");
+  await expect(tabs).toHaveCount(4);
+  const initialBox = await panel.boundingBox();
+  expect(initialBox).not.toBeNull();
+
+  for (let index = 0; index < 4; index += 1) {
+    await tabs.nth(index).click();
+    const nextBox = await panel.boundingBox();
+    expect(nextBox?.width).toBe(initialBox?.width);
+    expect(nextBox?.height).toBe(initialBox?.height);
+  }
+});
+
 test("focus styling is visible for keyboard navigation", async ({ page }) => {
   await page.goto("/?state=ready");
   await page.keyboard.press("Tab");

@@ -145,7 +145,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .status-metric-value.live { color: var(--accent); font-weight: 600; }
 .settings-scrim { position: fixed; z-index: 10; inset: 0; display: grid; place-items: center; padding: 24px 24px 50px; background: rgba(15, 20, 25, 0.28); backdrop-filter: blur(2px); animation: settings-scrim-in 140ms ease-out; }
 html[data-theme="dark"] .settings-scrim { background: rgba(0, 0, 0, 0.48); }
-.settings-panel { display: flex; width: min(860px, 100%); max-height: min(760px, calc(100vh - 74px)); min-height: 0; flex-direction: column; overflow: hidden; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-surface); box-shadow: var(--shadow-overlay); animation: settings-panel-in 160ms ease-out; }
+.settings-panel { display: flex; width: min(860px, 100%); height: min(620px, calc(100vh - 74px)); min-height: 0; flex-direction: column; overflow: hidden; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-surface); box-shadow: var(--shadow-overlay); animation: settings-panel-in 160ms ease-out; }
 .panel-header { display: flex; height: 56px; flex: none; align-items: center; justify-content: space-between; padding: 0 12px 0 24px; border-bottom: 1px solid var(--border); }
 .panel-header h2 { margin: 0; font-size: 16px; font-weight: 600; }
 .settings-main { display: grid; grid-template-columns: 156px minmax(0, 1fr); min-height: 0; flex: 1; }
@@ -326,7 +326,7 @@ html[data-theme="dark"] .dialog-scrim { background: rgba(0, 0, 0, 0.5); }
 
 @media (max-width: 700px) {
   .settings-scrim { padding: 12px 12px 38px; }
-  .settings-panel { max-height: calc(100vh - 50px); }
+  .settings-panel { height: min(620px, calc(100vh - 50px)); }
   .panel-header { padding-left: 18px; }
   .settings-main { grid-template-columns: minmax(0, 1fr); }
   .settings-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 10px 12px; border-right: 0; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
