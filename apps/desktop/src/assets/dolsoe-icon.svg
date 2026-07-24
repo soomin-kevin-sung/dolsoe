@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 256 256">
+  <!-- Dolsoe app icon source: cartoon Dolsoe face on a light stone tile.
+       Black hair over a white work headband (knot + one ribbon tail on the
+       right), warm skin, bold determined brows, small dot eyes, small U nose,
+       confident smile. Four colors with uniform ink outlines.
+       The head spans y34..228, so the group is shifted up 3 to center the
+       face on the icon center. -->
+  <rect width="256" height="256" rx="58" fill="#ECE4D4"/>
+  <g transform="translate(0 -3)">
+    <!-- hair -->
+    <path d="M46 108c0-46 34-74 82-74s82 28 82 74v58c0 40-33 62-82 62s-82-22-82-62z" fill="#3F3D38"/>
+    <!-- face -->
+    <path d="M46 100h164v66c0 40-33 62-82 62s-82-22-82-62z" fill="#E8C08D" stroke="#3F3D38" stroke-width="4.5"/>
+    <!-- headband -->
+    <g fill="#FCFBF6" stroke="#3F3D38" stroke-width="4.5" stroke-linejoin="round">
+      <path d="M212 106c14 8 14 30-2 46c-3-17-9-28-12-38z"/>
+      <rect x="42" y="86" width="172" height="28" rx="14"/>
+      <circle cx="206" cy="100" r="12"/>
+    </g>
+    <!-- features -->
+    <g fill="#3F3D38">
+      <rect x="72" y="126" width="40" height="11" rx="5.5" transform="rotate(10 92 131.5)"/>
+      <rect x="144" y="126" width="40" height="11" rx="5.5" transform="rotate(-10 164 131.5)"/>
+      <circle cx="94" cy="156" r="6"/>
+      <circle cx="162" cy="156" r="6"/>
+    </g>
+    <g fill="none" stroke="#3F3D38" stroke-width="6.5" stroke-linecap="round">
+      <path d="M122 158c-1 11-7 15-7 23a13 13 0 0 0 26 0c0-8-6-12-7-23"/>
+      <path d="M112 214q16 9 32 0"/>
+    </g>
+  </g>
+</svg>

@@ -10,7 +10,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .conversation-shell { display: grid; grid-template-rows: 48px minmax(0, 1fr) auto; min-width: 0; flex: 1; background: var(--bg-surface); }
 .sidebar { display: flex; flex: 0 0 264px; flex-direction: column; min-width: 0; border-right: 1px solid var(--border); background: var(--bg-app); }
 .sidebar-header { display: flex; align-items: center; height: 48px; padding: 0 12px; gap: 8px; }
-.app-mark { width: 24px; height: 24px; flex: none; }
+.app-mark { display: block; width: 24px; height: 24px; flex: none; }
 .app-name-button { display: flex; min-width: 0; height: 32px; flex: 1; align-items: center; gap: 8px; margin-left: -4px; padding: 0 4px; border-radius: 4px; text-align: left; background: transparent; cursor: pointer; }
 .app-name-button span { min-width: 0; overflow: hidden; font-size: 13px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .app-name-button:hover { background: var(--bg-hover); }

@@ -1,5 +1,6 @@
 import { Activity, Box, ChevronRight, Cpu, Home, Layers3, LoaderCircle, MoreHorizontal, RotateCw, Search, SquarePen, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
+import dolsoeIconUrl from "../assets/dolsoe-icon.svg";
 import type { Session } from "../services/runtime";
 import type { HomeReadinessKind } from "../services/homeReadiness";
 import { IconButton } from "./IconButton";
@@ -162,7 +163,7 @@ export function Sidebar({
     <nav className="sidebar" aria-label="대화 목록">
       <div className="sidebar-header">
         <button type="button" className={`app-name-button ${homeOpen ? "active" : ""}`} aria-label="홈으로 이동" aria-current={homeOpen ? "page" : undefined} onClick={onHome}>
-          <svg className="app-mark" viewBox="0 0 48 48" aria-hidden="true"><rect x="9" y="9" width="30" height="30" rx="5" fill="var(--accent)"/><path d="M24 18.5c-2.2-1.6-4.8-2.1-7-2.1v12.4c2.2 0 4.8.5 7 2.1 2.2-1.6 4.8-2.1 7-2.1V16.4c-2.2 0-4.8.5-7 2.1z" fill="var(--app-mark-foreground)"/><rect x="3" y="15" width="4" height="6" rx="2" fill="var(--accent)"/><rect x="3" y="27" width="4" height="6" rx="2" fill="var(--accent)"/><rect x="41" y="15" width="4" height="6" rx="2" fill="var(--accent)"/><rect x="41" y="27" width="4" height="6" rx="2" fill="var(--accent)"/></svg>
+          <img className="app-mark" src={dolsoeIconUrl} alt="" aria-hidden="true" />
           <span>돌쇠</span>
         </button>
         <IconButton icon={SquarePen} label="새 대화" onClick={onNew} />
