@@ -3,6 +3,8 @@ mod conversation_store;
 mod llm_commands;
 mod llm_dto;
 mod llm_worker;
+mod persona_commands;
+mod persona_prompt;
 mod runtime_archive;
 mod runtime_bootstrap;
 mod runtime_download;
@@ -20,6 +22,7 @@ mod runtime_transaction;
 use tauri::Manager;
 
 use crate::conversation_store::ConversationStore;
+use crate::persona_prompt::PersonaPromptStore;
 use crate::runtime_bootstrap::BootstrapState;
 use crate::runtime_host::{spawn_runtime_worker, RuntimeHost};
 use crate::runtime_install_commands::RuntimeInstallerState;
@@ -45,6 +48,8 @@ pub fn run() {
             let bootstrap = runtime_bootstrap::bootstrap_cpu(&runtime_root, &resource_root);
             let conversation_store = ConversationStore::open(app_data.join("dolsoe.db"))
                 .map_err(std::io::Error::other)?;
+            let persona_store =
+                PersonaPromptStore::bootstrap(&app_data).map_err(std::io::Error::other)?;
             let selection_store =
                 RuntimeSelectionStore::open(app_data.join("runtime-selection.json"))
                     .map_err(std::io::Error::other)?;
@@ -61,6 +66,7 @@ pub fn run() {
                 BootstrapState::RecoveryRequired(error) => RuntimeHost::recovery(error),
             };
             app.manage(conversation_store);
+            app.manage(persona_store);
             app.manage(selection_store);
             app.manage(host);
             app.manage(RuntimeInstallerState::from_app_data(
@@ -85,6 +91,11 @@ pub fn run() {
             llm_commands::llm_submit,
             llm_commands::llm_cancel,
             llm_commands::llm_get_metrics,
+            persona_commands::persona_get_state,
+            persona_commands::persona_preview,
+            persona_commands::persona_save,
+            persona_commands::persona_reset_defaults,
+            persona_commands::persona_preview_conversation,
             conversation_commands::conversation_bootstrap,
             conversation_commands::conversation_load,
             conversation_commands::conversation_rename,

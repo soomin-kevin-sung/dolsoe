@@ -1,7 +1,8 @@
 use tauri::State;
 
+use crate::conversation_store::ConversationStore;
 use crate::llm_dto::{
-    LlmMetricsDto, LlmStatusDto, LoadModelRequest, SubmitRequest, SubmitResponse,
+    LlmMetricsDto, LlmStatusDto, LoadModelRequest, SubmitChatMessage, SubmitRequest, SubmitResponse,
 };
 use crate::runtime_host::RuntimeHost;
 
@@ -47,11 +48,40 @@ pub async fn llm_unload_model(state: State<'_, RuntimeHost>) -> Result<LlmStatus
 
 #[tauri::command]
 pub async fn llm_submit(
-    state: State<'_, RuntimeHost>,
-    request: SubmitRequest,
+    runtime_state: State<'_, RuntimeHost>,
+    conversation_state: State<'_, ConversationStore>,
+    mut request: SubmitRequest,
 ) -> Result<SubmitResponse, String> {
-    let worker = state.inner().clone();
+    if request.conversation_id.trim().is_empty() {
+        return Err("conversationId must not be empty".into());
+    }
+    let conversation_id = request.conversation_id.clone();
+    let conversations = conversation_state.inner().clone();
+    let snapshot = blocking(move || conversations.prompt_snapshot(&conversation_id))
+        .await?
+        .ok_or_else(|| "conversation system prompt snapshot was not initialized".to_string())?;
+    inject_system_message(&mut request.messages, &snapshot.system_prompt)?;
+    let worker = runtime_state.inner().clone();
     blocking(move || worker.submit(request)).await
+}
+
+fn inject_system_message(
+    messages: &mut Vec<SubmitChatMessage>,
+    system_prompt: &str,
+) -> Result<(), String> {
+    if messages.iter().any(|message| message.role == "system") {
+        return Err("system messages are managed by the persona prompt pipeline".into());
+    }
+    if !system_prompt.is_empty() {
+        messages.insert(
+            0,
+            SubmitChatMessage {
+                role: "system".into(),
+                content: system_prompt.into(),
+            },
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -72,7 +102,8 @@ pub async fn llm_get_metrics(state: State<'_, RuntimeHost>) -> Result<LlmMetrics
 
 #[cfg(test)]
 mod tests {
-    use super::parse_request_handle;
+    use super::{inject_system_message, parse_request_handle};
+    use crate::llm_dto::SubmitChatMessage;
 
     #[test]
     fn parses_full_width_decimal_request_handles() {
@@ -87,5 +118,19 @@ mod tests {
         assert!(parse_request_handle("42.0").is_err());
         assert!(parse_request_handle("-1").is_err());
         assert!(parse_request_handle("").is_err());
+    }
+
+    #[test]
+    fn injects_exactly_one_managed_system_message_first() {
+        let mut messages = vec![SubmitChatMessage {
+            role: "user".into(),
+            content: "hello".into(),
+        }];
+        inject_system_message(&mut messages, "persona").unwrap();
+
+        assert_eq!(messages[0].role, "system");
+        assert_eq!(messages[0].content, "persona");
+        assert_eq!(messages[1].role, "user");
+        assert!(inject_system_message(&mut messages, "duplicate").is_err());
     }
 }

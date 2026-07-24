@@ -1,12 +1,13 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { AppWindow, Cpu, Gauge, SlidersHorizontal, X, type LucideIcon } from "lucide-react";
+import { AppWindow, Cpu, Gauge, SlidersHorizontal, UserRoundCog, X, type LucideIcon } from "lucide-react";
 
 import { IconButton } from "./IconButton";
 
-export type SettingsTab = "general" | "generation" | "performance" | "runtime";
+export type SettingsTab = "general" | "persona" | "generation" | "performance" | "runtime";
 
 const tabs: { value: SettingsTab; label: string; icon: LucideIcon }[] = [
   { value: "general", label: "일반", icon: AppWindow },
+  { value: "persona", label: "페르소나", icon: UserRoundCog },
   { value: "generation", label: "생성", icon: SlidersHorizontal },
   { value: "performance", label: "성능", icon: Gauge },
   { value: "runtime", label: "런타임", icon: Cpu },
@@ -18,11 +19,14 @@ interface Props {
   closeOnEscape?: boolean;
   children: ReactNode;
   footer?: ReactNode;
+  availableTabs?: SettingsTab[];
   onTabChange(tab: SettingsTab): void;
   onClose(): void;
 }
 
-export function SettingsDialog({ open, activeTab, closeOnEscape = true, children, footer, onTabChange, onClose }: Props) {
+const defaultTabs: SettingsTab[] = ["general", "generation", "performance", "runtime"];
+
+export function SettingsDialog({ open, activeTab, closeOnEscape = true, children, footer, availableTabs = defaultTabs, onTabChange, onClose }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
   const onCloseRef = useRef(onClose);
@@ -70,7 +74,7 @@ export function SettingsDialog({ open, activeTab, closeOnEscape = true, children
         </div>
         <div className="settings-main">
           <div className="settings-tabs" role="tablist" aria-label="설정 분류">
-            {tabs.map((tab) => {
+            {tabs.filter((tab) => availableTabs.includes(tab.value)).map((tab) => {
               const Icon = tab.icon;
               return <button
                 key={tab.value}

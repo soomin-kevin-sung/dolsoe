@@ -162,12 +162,14 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
   }, [chooseModelPath, loadPath]);
 
   const submit = useCallback(async (
+    conversationId: string,
     prompt: string,
     messages: SubmitRequest["messages"] = [{ role: "user", content: prompt }],
   ) => {
     cancelWhenAccepted.current = false;
     setState((current) => nativeReducer(current, { type: "submit-started", prompt }));
     const request: SubmitRequest = {
+      conversationId,
       prompt,
       messages,
       maxNewTokens: options.maxNewTokens,

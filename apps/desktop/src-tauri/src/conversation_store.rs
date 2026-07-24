@@ -31,6 +31,12 @@ CREATE INDEX messages_conversation_created
 ON messages(conversation_id, created_at, id);
 "#;
 
+const MIGRATION_2: &str = r#"
+ALTER TABLE conversations ADD COLUMN persona_id TEXT;
+ALTER TABLE conversations ADD COLUMN persona_revision TEXT;
+ALTER TABLE conversations ADD COLUMN system_prompt TEXT;
+"#;
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum MessageRole {
@@ -132,6 +138,25 @@ pub struct StartedTurn {
     pub conversation: ConversationSummary,
     pub user: StoredMessage,
     pub assistant: StoredMessage,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationPromptSnapshot {
+    pub persona_id: String,
+    pub persona_revision: String,
+    pub system_prompt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelPromptMessage {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConversationPromptContext {
+    pub snapshot: Option<ConversationPromptSnapshot>,
+    pub messages: Vec<ModelPromptMessage>,
 }
 
 #[derive(Clone)]
@@ -248,7 +273,17 @@ impl ConversationStore {
         Ok(fallback)
     }
 
+    #[cfg(test)]
     pub fn start_turn(&self, conversation_id: &str, prompt: &str) -> StoreResult<StartedTurn> {
+        self.start_turn_with_prompt(conversation_id, prompt, None)
+    }
+
+    pub fn start_turn_with_prompt(
+        &self,
+        conversation_id: &str,
+        prompt: &str,
+        prompt_snapshot: Option<&ConversationPromptSnapshot>,
+    ) -> StoreResult<StartedTurn> {
         let prompt = prompt.trim();
         if prompt.is_empty() {
             return Err("prompt must not be empty".into());
@@ -256,13 +291,25 @@ impl ConversationStore {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(store_error)?;
         let conversation = conversation_summary(&transaction, conversation_id)?;
+        if let Some(snapshot) = prompt_snapshot {
+            bind_prompt_snapshot(&transaction, conversation_id, snapshot)?;
+        }
         let timestamp = now_millis()?;
         let turn = insert_turn(&transaction, conversation, prompt, timestamp)?;
         transaction.commit().map_err(store_error)?;
         Ok(turn)
     }
 
+    #[cfg(test)]
     pub fn start_new_turn(&self, prompt: &str) -> StoreResult<StartedTurn> {
+        self.start_new_turn_with_prompt(prompt, None)
+    }
+
+    pub fn start_new_turn_with_prompt(
+        &self,
+        prompt: &str,
+        prompt_snapshot: Option<&ConversationPromptSnapshot>,
+    ) -> StoreResult<StartedTurn> {
         let prompt = prompt.trim();
         if prompt.is_empty() {
             return Err("prompt must not be empty".into());
@@ -271,9 +318,37 @@ impl ConversationStore {
         let transaction = connection.transaction().map_err(store_error)?;
         let timestamp = now_millis()?;
         let conversation = insert_empty_conversation(&transaction, timestamp)?;
+        if let Some(snapshot) = prompt_snapshot {
+            bind_prompt_snapshot(&transaction, &conversation.id, snapshot)?;
+        }
         let turn = insert_turn(&transaction, conversation, prompt, timestamp)?;
         transaction.commit().map_err(store_error)?;
         Ok(turn)
+    }
+
+    pub fn prompt_snapshot(
+        &self,
+        conversation_id: &str,
+    ) -> StoreResult<Option<ConversationPromptSnapshot>> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        conversation_summary(&transaction, conversation_id)?;
+        let snapshot = prompt_snapshot(&transaction, conversation_id)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(snapshot)
+    }
+
+    pub fn model_prompt_context(
+        &self,
+        conversation_id: &str,
+    ) -> StoreResult<ConversationPromptContext> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        let detail = load_conversation(&transaction, conversation_id)?;
+        let snapshot = prompt_snapshot(&transaction, conversation_id)?;
+        let messages = model_prompt_messages(&detail.messages);
+        transaction.commit().map_err(store_error)?;
+        Ok(ConversationPromptContext { snapshot, messages })
     }
 
     pub fn finish_turn(
@@ -376,7 +451,108 @@ fn apply_migrations(transaction: &Transaction<'_>) -> StoreResult<()> {
             )
             .map_err(store_error)?;
     }
+    let applied = transaction
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = 2",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(store_error)?
+        .is_some();
+    if !applied {
+        transaction
+            .execute_batch(MIGRATION_2)
+            .map_err(store_error)?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (2, ?1)",
+                [now_millis()?],
+            )
+            .map_err(store_error)?;
+    }
     Ok(())
+}
+
+fn bind_prompt_snapshot(
+    transaction: &Transaction<'_>,
+    conversation_id: &str,
+    snapshot: &ConversationPromptSnapshot,
+) -> StoreResult<()> {
+    transaction
+        .execute(
+            "UPDATE conversations
+             SET persona_id = ?1, persona_revision = ?2, system_prompt = ?3
+             WHERE id = ?4 AND system_prompt IS NULL",
+            params![
+                snapshot.persona_id,
+                snapshot.persona_revision,
+                snapshot.system_prompt,
+                conversation_id
+            ],
+        )
+        .map_err(store_error)?;
+    Ok(())
+}
+
+fn prompt_snapshot(
+    transaction: &Transaction<'_>,
+    conversation_id: &str,
+) -> StoreResult<Option<ConversationPromptSnapshot>> {
+    let values = transaction
+        .query_row(
+            "SELECT persona_id, persona_revision, system_prompt
+             FROM conversations WHERE id = ?1",
+            [conversation_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            },
+        )
+        .map_err(store_error)?;
+    Ok(values.2.map(|system_prompt| ConversationPromptSnapshot {
+        persona_id: values.0.unwrap_or_default(),
+        persona_revision: values.1.unwrap_or_default(),
+        system_prompt,
+    }))
+}
+
+fn model_prompt_messages(messages: &[StoredMessage]) -> Vec<ModelPromptMessage> {
+    let mut prompt_messages = Vec::new();
+    let mut index = 0;
+    while index + 1 < messages.len() {
+        let user = &messages[index];
+        let assistant = &messages[index + 1];
+        if user.role == MessageRole::User
+            && user.status == MessageStatus::Complete
+            && assistant.role == MessageRole::Assistant
+        {
+            if assistant.status == MessageStatus::Complete {
+                prompt_messages.push(ModelPromptMessage {
+                    role: "user".into(),
+                    content: user.content.clone(),
+                });
+                prompt_messages.push(ModelPromptMessage {
+                    role: "assistant".into(),
+                    content: assistant.content.clone(),
+                });
+                index += 2;
+                continue;
+            }
+            if assistant.status == MessageStatus::Streaming && index + 2 == messages.len() {
+                prompt_messages.push(ModelPromptMessage {
+                    role: "user".into(),
+                    content: user.content.clone(),
+                });
+                break;
+            }
+        }
+        index += 1;
+    }
+    prompt_messages
 }
 
 fn insert_empty_conversation(
@@ -600,7 +776,7 @@ fn store_error(error: rusqlite::Error) -> String {
 mod tests {
     use rusqlite::params;
 
-    use super::{ConversationStore, MessageRole, MessageStatus};
+    use super::{ConversationPromptSnapshot, ConversationStore, MessageRole, MessageStatus};
 
     #[test]
     fn bootstrap_migrates_without_creating_an_empty_conversation_and_recovers_turns() {
@@ -623,13 +799,53 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_is_repeatable_and_records_one_migration() {
+    fn bootstrap_is_repeatable_and_records_all_migrations() {
         let store = ConversationStore::open_in_memory().unwrap();
 
         store.bootstrap().unwrap();
         store.bootstrap().unwrap();
 
-        assert_eq!(store.migration_count().unwrap(), 1);
+        assert_eq!(store.migration_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn conversation_prompt_snapshot_is_bound_once_and_drives_model_context() {
+        let store = ConversationStore::open_in_memory().unwrap();
+        store.bootstrap().unwrap();
+        let initial = ConversationPromptSnapshot {
+            persona_id: "dolsoe".into(),
+            persona_revision: "revision-1".into(),
+            system_prompt: "system one".into(),
+        };
+        let changed = ConversationPromptSnapshot {
+            persona_id: "dolsoe".into(),
+            persona_revision: "revision-2".into(),
+            system_prompt: "system two".into(),
+        };
+        let first = store
+            .start_new_turn_with_prompt("first", Some(&initial))
+            .unwrap();
+        store
+            .finish_turn(&first.assistant.id, "answer", MessageStatus::Complete)
+            .unwrap();
+        store
+            .start_turn_with_prompt(&first.conversation.id, "second", Some(&changed))
+            .unwrap();
+
+        assert_eq!(
+            store.prompt_snapshot(&first.conversation.id).unwrap(),
+            Some(initial.clone())
+        );
+        let context = store.model_prompt_context(&first.conversation.id).unwrap();
+        assert_eq!(context.snapshot, Some(initial));
+        assert_eq!(
+            context
+                .messages
+                .iter()
+                .map(|message| message.role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["user", "assistant", "user"]
+        );
     }
 
     #[test]

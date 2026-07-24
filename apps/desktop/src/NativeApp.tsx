@@ -10,6 +10,7 @@ import { ModelMenu } from "./components/ModelMenu";
 import { NativeDiagnosticsView } from "./components/NativeDiagnosticsView";
 import { NativeHomeView } from "./components/NativeHomeView";
 import { NativeSettingsPanel } from "./components/NativeSettingsPanel";
+import { PromptInspector } from "./components/PromptInspector";
 import type { SettingsTab } from "./components/SettingsDialog";
 import { Sidebar } from "./components/Sidebar";
 import { StatusBar } from "./components/StatusBar";
@@ -88,6 +89,7 @@ function NativeWorkspace() {
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [dialog, setDialog] = useState<DialogType | null>(null);
   const [dialogTargetId, setDialogTargetId] = useState<string | null>(null);
+  const [promptInspectorOpen, setPromptInspectorOpen] = useState(false);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const resetButtonRef = useRef<HTMLButtonElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -186,6 +188,7 @@ function NativeWorkspace() {
 
   function openSettings(tab: SettingsTab = "general") {
     setModelMenuOpen(false);
+    setPromptInspectorOpen(false);
     setSettingsTab(tab);
     setSettingsOpen(true);
   }
@@ -223,7 +226,14 @@ function NativeWorkspace() {
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
-      if (event.ctrlKey && event.key.toLowerCase() === "n") {
+      if (event.ctrlKey && event.shiftKey && event.altKey && event.key.toLowerCase() === "p") {
+        if (!homeOpen && !diagnosticsOpen && current) {
+          event.preventDefault();
+          setModelMenuOpen(false);
+          setSettingsOpen(false);
+          setPromptInspectorOpen(true);
+        }
+      } else if (event.ctrlKey && event.key.toLowerCase() === "n") {
         event.preventDefault();
         startConversationFlow();
       } else if (event.ctrlKey && event.key.toLowerCase() === "f") {
@@ -234,6 +244,8 @@ function NativeWorkspace() {
         setModelMenuOpen(false);
         if (settingsOpen) setSettingsOpen(false);
         else openSettings();
+      } else if (event.key === "Escape" && promptInspectorOpen) {
+        setPromptInspectorOpen(false);
       } else if (event.key === "Escape" && dialog) {
         setDialog(null);
       } else if (event.key === "Escape" && workspace.state.activeTurn) {
@@ -391,6 +403,12 @@ function NativeWorkspace() {
           returnFocusRef={dialog === "reset" ? resetButtonRef : dialog === "reload" ? settingsButtonRef : undefined}
         />
       )}
+      <PromptInspector
+        open={promptInspectorOpen}
+        conversationId={current?.id ?? null}
+        conversationTitle={current?.title ?? "현재 대화"}
+        onClose={() => setPromptInspectorOpen(false)}
+      />
     </div>
   );
 }

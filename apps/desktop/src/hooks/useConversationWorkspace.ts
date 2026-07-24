@@ -183,7 +183,7 @@ export function useConversationWorkspace() {
         : await service.startNewTurn(prompt);
       apply({ type: "turn-started", value: turn });
       try {
-        const response = await runtime.submit(prompt, chatMessages);
+        const response = await runtime.submit(turn.conversation.id, prompt, chatMessages);
         if (response) apply({ type: "request-bound", requestHandle: response.requestHandle });
       } catch (error) {
         const active = stateRef.current.activeTurn;

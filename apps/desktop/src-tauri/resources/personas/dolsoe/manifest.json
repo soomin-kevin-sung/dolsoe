@@ -1,0 +1,17 @@
+{
+  "id": "dolsoe",
+  "name": "돌쇠",
+  "version": 1,
+  "files": [
+    {
+      "path": "soul.md",
+      "label": "Soul",
+      "description": "돌쇠가 어떤 상황에서도 지켜야 하는 핵심 원칙"
+    },
+    {
+      "path": "dolsoe.md",
+      "label": "돌쇠",
+      "description": "돌쇠의 역할, 말투, 태도를 정의하는 페르소나"
+    }
+  ]
+}

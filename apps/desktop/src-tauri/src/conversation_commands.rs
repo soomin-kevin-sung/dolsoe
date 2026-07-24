@@ -2,9 +2,10 @@ use serde::Deserialize;
 use tauri::State;
 
 use crate::conversation_store::{
-    ConversationBootstrap, ConversationDetail, ConversationStore, ConversationSummary,
-    MessageStatus, StartedTurn,
+    ConversationBootstrap, ConversationDetail, ConversationPromptSnapshot, ConversationStore,
+    ConversationSummary, MessageStatus, StartedTurn,
 };
+use crate::persona_prompt::PersonaPromptStore;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,20 +89,42 @@ pub async fn conversation_delete(
 #[tauri::command]
 pub async fn conversation_start_new_turn(
     state: State<'_, ConversationStore>,
+    persona_state: State<'_, PersonaPromptStore>,
     prompt: String,
 ) -> Result<StartedTurn, String> {
     let store = state.inner().clone();
-    blocking(move || store.start_new_turn(&prompt)).await
+    let persona = persona_state.inner().clone();
+    blocking(move || {
+        let compiled = persona.compiled()?;
+        let snapshot = ConversationPromptSnapshot {
+            persona_id: compiled.persona_id,
+            persona_revision: compiled.revision,
+            system_prompt: compiled.content,
+        };
+        store.start_new_turn_with_prompt(&prompt, Some(&snapshot))
+    })
+    .await
 }
 
 #[tauri::command]
 pub async fn conversation_start_turn(
     state: State<'_, ConversationStore>,
+    persona_state: State<'_, PersonaPromptStore>,
     conversation_id: String,
     prompt: String,
 ) -> Result<StartedTurn, String> {
     let store = state.inner().clone();
-    blocking(move || store.start_turn(&conversation_id, &prompt)).await
+    let persona = persona_state.inner().clone();
+    blocking(move || {
+        let compiled = persona.compiled()?;
+        let snapshot = ConversationPromptSnapshot {
+            persona_id: compiled.persona_id,
+            persona_revision: compiled.revision,
+            system_prompt: compiled.content,
+        };
+        store.start_turn_with_prompt(&conversation_id, &prompt, Some(&snapshot))
+    })
+    .await
 }
 
 #[tauri::command]

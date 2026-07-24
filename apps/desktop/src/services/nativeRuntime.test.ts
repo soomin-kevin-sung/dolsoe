@@ -39,6 +39,7 @@ describe("NativeRuntimeService", () => {
       useMmap: true,
     };
     const submit = {
+      conversationId: "conversation-1",
       prompt: "안녕",
       messages: [{ role: "user" as const, content: "안녕" }],
       maxNewTokens: 256,

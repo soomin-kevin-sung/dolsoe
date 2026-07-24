@@ -29,6 +29,7 @@ export interface LoadModelRequest {
 }
 
 export interface SubmitRequest {
+  conversationId: string;
   prompt: string;
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
   maxNewTokens: number;

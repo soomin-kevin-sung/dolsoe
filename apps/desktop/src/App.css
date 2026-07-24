@@ -295,6 +295,52 @@ html[data-theme="dark"] .settings-scrim { background: rgba(0, 0, 0, 0.48); }
 .button-primary:disabled { color: var(--text-3); background: var(--bg-active); cursor: not-allowed; }
 .button-danger { color: var(--on-red); background: var(--red); }
 .button-danger:hover { background: var(--red-hover); }
+.persona-loading { display: grid; min-height: 260px; place-items: center; color: var(--text-2); font-size: 12px; }
+.persona-load-error { align-content: center; gap: 12px; color: var(--red); text-align: center; }
+.persona-load-error button { display: inline-flex; align-items: center; gap: 6px; }
+.persona-summary { display: grid; gap: 16px; }
+.persona-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
+.persona-heading > div { min-width: 0; }
+.persona-heading h3 { margin-bottom: 10px; }
+.persona-heading strong { display: block; font-size: 17px; font-weight: 600; }
+.persona-heading .switch-control { min-width: 132px; flex: none; }
+.persona-toolbar { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; padding-top: 14px; border-top: 1px solid var(--border); }
+.persona-toolbar button, .persona-reset-row button, .prompt-inspector-footer button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.persona-status, .persona-error { padding: 8px 10px; border-left: 3px solid var(--ready); background: var(--ready-bg); }
+.persona-error { border-left-color: var(--red); color: var(--red) !important; background: var(--red-bg); }
+.persona-editor-section, .persona-preview-section { display: grid; gap: 14px; }
+.persona-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
+.persona-section-heading h3 { display: flex; align-items: center; gap: 6px; margin-bottom: 0; }
+.persona-section-heading p { margin-top: 5px; }
+.persona-section-heading > span { flex: none; color: var(--text-3); font: 10px var(--font-mono); font-variant-numeric: tabular-nums; }
+.persona-document-tabs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; border-bottom: 1px solid var(--border); background: var(--border); }
+.persona-document-tabs button { display: grid; min-width: 0; min-height: 54px; align-content: center; gap: 3px; padding: 7px 12px; color: var(--text-2); background: var(--bg-surface); text-align: left; cursor: pointer; }
+.persona-document-tabs button:hover { background: var(--bg-hover); }
+.persona-document-tabs button.selected { color: var(--text-1); background: var(--accent-subtle); box-shadow: inset 0 -2px 0 var(--accent); }
+.persona-document-tabs strong { overflow: hidden; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.persona-document-tabs span { overflow: hidden; color: var(--text-3); font: 10px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.persona-editor { display: grid; gap: 7px; }
+.persona-editor label { color: var(--text-2); font-size: 11px; line-height: 1.45; }
+.persona-editor textarea { width: 100%; min-height: 220px; resize: vertical; padding: 12px 13px; border: 1px solid var(--border-strong); border-radius: 5px; outline: 0; background: var(--bg-inset); font: 12px/1.65 var(--font-mono); }
+.persona-editor textarea:focus { border-color: var(--accent); background: var(--bg-surface); box-shadow: 0 0 0 1px var(--accent); }
+.persona-compiled-preview { max-height: 280px; min-height: 160px; margin: 0; overflow: auto; padding: 14px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-2); background: var(--bg-inset); font: 11px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.persona-reset-row { display: flex; min-height: 34px; align-items: center; justify-content: flex-end; gap: 8px; }
+.persona-reset-row > span { margin-right: auto; color: var(--amber); font-size: 11px; }
+.prompt-inspector-scrim { position: fixed; z-index: 30; inset: 0; display: grid; place-items: center; padding: 24px 24px 48px; background: rgba(15, 20, 25, 0.38); backdrop-filter: blur(2px); }
+html[data-theme="dark"] .prompt-inspector-scrim { background: rgba(0, 0, 0, 0.58); }
+.prompt-inspector { display: grid; width: min(900px, 100%); height: min(680px, calc(100vh - 72px)); grid-template-rows: auto auto auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-surface); box-shadow: var(--shadow-overlay); animation: settings-panel-in 160ms ease-out; }
+.prompt-inspector-header { display: flex; min-height: 62px; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 14px 10px 22px; border-bottom: 1px solid var(--border); }
+.prompt-inspector-header > div { min-width: 0; }
+.prompt-inspector-header h2 { margin: 0; font-size: 15px; font-weight: 600; }
+.prompt-inspector-header p { margin: 3px 0 0; overflow: hidden; color: var(--text-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.prompt-inspector-meta { display: flex; min-height: 34px; align-items: center; gap: 14px; padding: 0 22px; border-bottom: 1px solid var(--border); color: var(--text-3); background: var(--bg-inset); font-size: 10px; }
+.prompt-inspector-meta code { min-width: 0; margin-left: auto; overflow: hidden; font: 10px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.prompt-inspector-note { margin: 0; padding: 10px 22px; border-bottom: 1px solid var(--border); color: var(--text-2); font-size: 11px; line-height: 1.5; }
+.prompt-inspector-body { min-width: 0; min-height: 0; overflow: auto; background: var(--bg-inset); }
+.prompt-inspector-body pre { min-height: 100%; margin: 0; padding: 18px 22px 28px; color: var(--text-1); font: 11px/1.65 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.prompt-inspector-state { display: grid; min-height: 100%; place-items: center; padding: 20px; color: var(--text-2); font-size: 12px; text-align: center; }
+.prompt-inspector-state.error { color: var(--red); }
+.prompt-inspector-footer { display: flex; min-height: 58px; align-items: center; justify-content: flex-end; gap: 7px; padding: 10px 18px; border-top: 1px solid var(--border); }
 .diagnostics { width: min(100%, 760px); margin: 0 auto; padding: 24px 32px; }
 .diagnostics > h1 { margin: 0 0 8px; font-size: 18px; font-weight: 600; }
 .diagnostic-section { padding: 16px 0; border-bottom: 1px solid var(--border); }
@@ -329,7 +375,7 @@ html[data-theme="dark"] .dialog-scrim { background: rgba(0, 0, 0, 0.5); }
   .settings-panel { height: min(620px, calc(100vh - 50px)); }
   .panel-header { padding-left: 18px; }
   .settings-main { grid-template-columns: minmax(0, 1fr); }
-  .settings-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); padding: 10px 12px; border-right: 0; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
+  .settings-tabs { grid-template-columns: repeat(auto-fit, minmax(72px, 1fr)); padding: 10px 12px; border-right: 0; border-bottom: 1px solid var(--border); background: var(--bg-surface); }
   .settings-tabs button { justify-content: center; padding: 0 8px; text-align: center; }
   .settings-tabs button.selected { box-shadow: inset 0 -2px 0 var(--accent); }
   .panel-body { padding-right: 18px; padding-left: 18px; }
@@ -343,6 +389,16 @@ html[data-theme="dark"] .dialog-scrim { background: rgba(0, 0, 0, 0.5); }
   .option-value-stack { grid-column: 2; grid-row: 1 / span 2; }
   .general-setting-row { grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 14px 0; }
   .general-setting-row .switch-control { justify-content: flex-start; }
+  .persona-heading { display: grid; gap: 14px; }
+  .persona-heading .switch-control { justify-content: flex-start; }
+  .persona-toolbar { justify-content: flex-start; }
+  .persona-section-heading { display: grid; gap: 7px; }
+  .persona-reset-row { flex-wrap: wrap; justify-content: flex-start; }
+  .persona-reset-row > span { width: 100%; margin-right: 0; }
+  .prompt-inspector-scrim { padding: 10px 10px 36px; }
+  .prompt-inspector { height: calc(100vh - 46px); }
+  .prompt-inspector-meta { flex-wrap: wrap; gap: 4px 10px; padding-top: 6px; padding-bottom: 6px; }
+  .prompt-inspector-meta code { width: 100%; margin-left: 0; }
   .home-setup-band { grid-template-columns: 38px minmax(0, 1fr); }
   .home-setup-actions { grid-column: 1 / -1; justify-content: flex-start; }
   .home-inline-progress { width: 100%; }

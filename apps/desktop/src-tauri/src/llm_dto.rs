@@ -70,6 +70,7 @@ fn default_repeat_penalty() -> f32 {
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SubmitRequest {
+    pub conversation_id: String,
     pub prompt: String,
     #[serde(default)]
     pub messages: Vec<SubmitChatMessage>,
@@ -247,6 +248,7 @@ mod tests {
     #[test]
     fn defaults_advanced_generation_options_for_older_requests() {
         let request: SubmitRequest = serde_json::from_value(serde_json::json!({
+            "conversationId": "conversation-1",
             "prompt": "hello",
             "messages": [{ "role": "user", "content": "hello" }],
             "maxNewTokens": 128,
@@ -268,6 +270,7 @@ mod tests {
     #[test]
     fn deserializes_advanced_generation_options() {
         let request: SubmitRequest = serde_json::from_value(serde_json::json!({
+            "conversationId": "conversation-1",
             "prompt": "hello",
             "messages": [],
             "maxNewTokens": 128,

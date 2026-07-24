@@ -6,6 +6,7 @@ import type { ThemePreference } from "../services/runtime";
 import { formatBytes, type AvailableRuntimePack, type RuntimeBackend, type RuntimeInstallState, type RuntimePack, type RuntimeSelection } from "../services/runtimePacks";
 import { GenerationSettingsControls, PerformanceSettingsControls } from "./InferenceSettingsControls";
 import { GeneralSettingsControls } from "./GeneralSettingsControls";
+import { PersonaPromptSettings } from "./PersonaPromptSettings";
 import { RuntimeBackendRow } from "./RuntimeBackendRow";
 import { SettingsDialog, type SettingsTab } from "./SettingsDialog";
 import { StopSequenceOption } from "./StopSequenceOption";
@@ -41,6 +42,7 @@ interface Props {
 const backends: RuntimeBackend[] = ["cpu", "cuda", "vulkan"];
 const labels: Record<RuntimeBackend, string> = { cpu: "CPU", cuda: "CUDA", vulkan: "Vulkan" };
 const performanceKeys = ["contextSize", "batchSize", "physicalBatchSize", "threads", "useMmap"] as const;
+const nativeSettingsTabs: SettingsTab[] = ["general", "persona", "generation", "performance", "runtime"];
 
 function mergePerformanceOptions(active: NativeOptions, draft: NativeOptions): NativeOptions {
   return performanceKeys.reduce((next, key) => ({ ...next, [key]: draft[key] }), active);
@@ -98,7 +100,7 @@ export function NativeSettingsPanel(props: Props) {
   </> : undefined;
 
   return <>
-    <SettingsDialog open={open} activeTab={activeTab} closeOnEscape={!confirmBackend} onTabChange={setActiveTab} onClose={props.onClose} footer={footer}>
+    <SettingsDialog open={open} activeTab={activeTab} closeOnEscape={!confirmBackend} availableTabs={nativeSettingsTabs} onTabChange={setActiveTab} onClose={props.onClose} footer={footer}>
       {activeTab === "general" && <div id="settings-panel-general" role="tabpanel">
         <GeneralSettingsControls
           theme={props.theme}
@@ -109,6 +111,8 @@ export function NativeSettingsPanel(props: Props) {
           onAutoLoadLastModelChange={props.onAutoLoadLastModelChange}
         />
       </div>}
+
+      {activeTab === "persona" && <PersonaPromptSettings active={open && activeTab === "persona"} />}
 
       {activeTab === "runtime" && <div id="settings-panel-runtime" role="tabpanel">
         <section className="settings-section settings-section-first">
