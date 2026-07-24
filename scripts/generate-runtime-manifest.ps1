@@ -2,7 +2,7 @@ param(
   [Parameter(Mandatory)][string]$Version,
   [Parameter(Mandatory)][string]$AssetDirectory,
   [string]$OutputDirectory = $AssetDirectory,
-  [string]$Repository = 'soomin-kevin-sung/local-llm-wiki',
+  [string]$Repository = 'soomin-kevin-sung/dolsoe',
   [string]$MinimumAppVersion = '0.1.0',
   [string]$MaximumAppVersion = '0.1.x'
 )
@@ -19,7 +19,7 @@ $assetRoot = [IO.Path]::GetFullPath($AssetDirectory)
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Force -Path $outputRoot | Out-Null
 $escapedVersion = [Regex]::Escape($Version)
-$assetPattern = "^local-llm-wiki-runtime-$escapedVersion-windows-x86_64-(cpu|cuda|vulkan)\.zip$"
+$assetPattern = "^dolsoe-runtime-$escapedVersion-windows-x86_64-(cpu|cuda|vulkan)\.zip$"
 $assets = Get-ChildItem -LiteralPath $assetRoot -File | Where-Object { $_.Name -match $assetPattern } | Sort-Object Name
 if (-not $assets) { throw "No runtime ZIP assets found for version $Version." }
 

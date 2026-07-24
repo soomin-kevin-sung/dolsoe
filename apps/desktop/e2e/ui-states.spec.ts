@@ -27,7 +27,7 @@ for (const state of mockStates) {
   test(`mock state: ${state}`, async ({ page }) => {
     await page.goto(`/?state=${state}`);
     await expect(page.locator(`[data-app-state="${state}"]`)).toBeVisible();
-    await expect(page.getByText("Local LLM Wiki", { exact: true })).toBeVisible();
+    await expect(page.getByText("돌쇠", { exact: true })).toBeVisible();
     await expect(page.getByText(landmarks[state], { exact: false }).filter({ visible: true }).first()).toBeVisible();
   });
 }

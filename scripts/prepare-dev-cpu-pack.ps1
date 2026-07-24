@@ -1,5 +1,5 @@
 param(
-  [string]$DestinationRoot = (Join-Path $env:LOCALAPPDATA 'io.github.soomin-kevin-sung.local-llm-wiki/runtime-packs'),
+  [string]$DestinationRoot = (Join-Path $env:LOCALAPPDATA 'ai.dolsoe.desktop/runtime-packs'),
   [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
   [switch]$Force
 )
@@ -96,7 +96,7 @@ $builderArguments = @{
   Configuration = $Configuration
 }
 & $builder @builderArguments
-$assetPath = Join-Path $outputRoot "local-llm-wiki-runtime-$packVersion-windows-x86_64-cpu.zip"
+$assetPath = Join-Path $outputRoot "dolsoe-runtime-$packVersion-windows-x86_64-cpu.zip"
 if (-not (Test-Path -LiteralPath $assetPath -PathType Leaf)) {
   throw "CPU runtime builder did not produce the expected archive: $assetPath"
 }

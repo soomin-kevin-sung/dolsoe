@@ -1,4 +1,4 @@
-# Local LLM Wiki — UI 디자인 명세 (handoff)
+# 돌쇠 — UI 디자인 명세 (handoff)
 
 작성일: 2026-07-18 · 기준 설계서: `docs/superpowers/specs/2026-07-18-local-llm-desktop-mvp-design.md`
 
@@ -506,7 +506,7 @@ Tauri 창: `minWidth: 1024, minHeight: 700`, 기본 `1440×900`.
 
 ```json
 {
-  "title": "Local LLM Wiki",
+  "title": "돌쇠",
   "width": 1440, "height": 900,
   "minWidth": 1024, "minHeight": 700
 }

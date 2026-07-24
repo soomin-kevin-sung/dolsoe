@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  LEGACY_PREFERENCE_KEY,
   PREFERENCE_KEY,
   RuntimePackService,
   applyRuntimeSelection,
@@ -138,6 +139,14 @@ describe("runtime pack selection", () => {
     const storage = new MemoryStorage();
     storage.setItem(PREFERENCE_KEY, "not-json");
     expect(readRuntimePreference(storage)).toBeNull();
+  });
+
+  it("migrates a legacy runtime preference to the Dolsoe storage key", () => {
+    const storage = new MemoryStorage();
+    storage.setItem(LEGACY_PREFERENCE_KEY, JSON.stringify({ packId: "cpu", backend: "cpu" }));
+
+    expect(readRuntimePreference(storage)).toEqual({ packId: "cpu", backend: "cpu" });
+    expect(storage.getItem(PREFERENCE_KEY)).toBe(storage.getItem(LEGACY_PREFERENCE_KEY));
   });
 
   it("reads and persists Rust-owned backend selection", async () => {

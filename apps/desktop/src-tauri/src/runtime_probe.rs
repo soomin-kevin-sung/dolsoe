@@ -71,7 +71,7 @@ mod tests {
     impl TestDir {
         fn new() -> Self {
             let unique = format!(
-                "local-llm-wiki-runtime-probe-{}-{}-{}",
+                "dolsoe-runtime-probe-{}-{}-{}",
                 std::process::id(),
                 SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -93,8 +93,7 @@ mod tests {
         fn drop(&mut self) {
             let is_owned_test_dir = self.path.starts_with(std::env::temp_dir())
                 && self.path.file_name().is_some_and(|name| {
-                    name.to_string_lossy()
-                        .starts_with("local-llm-wiki-runtime-probe-")
+                    name.to_string_lossy().starts_with("dolsoe-runtime-probe-")
                 });
             assert!(is_owned_test_dir, "refusing to clean unexpected test path");
             if let Err(error) = fs::remove_dir_all(&self.path) {

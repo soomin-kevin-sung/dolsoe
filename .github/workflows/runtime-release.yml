@@ -79,4 +79,4 @@ jobs:
           gh release create "$LLW_RUNTIME_TAG" .runtime-release/*.zip .runtime-release/runtime-manifest.json .runtime-release/runtime-source.json \
             --target "$GITHUB_SHA" \
             --title "Runtime packs $LLW_RUNTIME_VERSION" \
-            --notes "Pinned Windows x64 runtime packs for Local LLM Wiki."
+            --notes "Pinned Windows x64 runtime packs for Dolsoe."

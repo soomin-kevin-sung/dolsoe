@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <!-- Local LLM Wiki 앱 아이콘 — 단색 변형 (책은 투명 컷아웃)
+  <!-- 돌쇠 앱 아이콘 — 단색 변형 (책은 투명 컷아웃)
        fill 색상 하나만 바꾸면 어떤 단색 컨텍스트에도 대응. -->
   <mask id="book-cutout">
     <rect width="1024" height="1024" fill="white"/>

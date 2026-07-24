@@ -2,10 +2,14 @@ import { useEffect, useState } from "react";
 
 import type { ThemePreference } from "../services/runtime";
 
-const storageKey = "local-llm-wiki-theme";
+const storageKey = "dolsoe.theme";
+const legacyStorageKey = "local-llm-wiki-theme";
 
 function storedPreference(): ThemePreference {
-  const value = localStorage.getItem(storageKey);
+  const value = localStorage.getItem(storageKey) ?? localStorage.getItem(legacyStorageKey);
+  if (value && !localStorage.getItem(storageKey)) {
+    localStorage.setItem(storageKey, value);
+  }
   return value === "light" || value === "dark" || value === "system" ? value : "system";
 }
 

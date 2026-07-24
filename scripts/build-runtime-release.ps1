@@ -111,7 +111,7 @@ if ($Backend -eq 'CUDA') {
   if ($missingCuda) { throw "CUDA redistributable DLLs are missing: $($missingCuda -join ', ')" }
 }
 
-$assetName = "local-llm-wiki-runtime-$Version-windows-x86_64-$backendLower.zip"
+$assetName = "dolsoe-runtime-$Version-windows-x86_64-$backendLower.zip"
 $assetPath = Join-Path $outputRootPath $assetName
 $temporaryAsset = "$assetPath.part"
 if (Test-Path -LiteralPath $temporaryAsset) { Remove-Item -Force -LiteralPath $temporaryAsset }

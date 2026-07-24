@@ -28,7 +28,7 @@ function DesktopRequired() {
     <div className="app" data-app-state="desktop-required">
       <div className="workspace">
         <section className="conversation-shell">
-          <header className="chat-header"><div className="chat-title">Local LLM Wiki</div></header>
+          <header className="chat-header"><div className="chat-title">돌쇠</div></header>
           <main className="conversation" aria-label="대화">
             <div className="message-column">
               <div className="empty-state">

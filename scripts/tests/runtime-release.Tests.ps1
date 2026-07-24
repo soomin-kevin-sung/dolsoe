@@ -60,7 +60,7 @@ try {
   [IO.File]::WriteAllText((Join-Path $fixture 'include/development-only.h'), 'not-a-runtime-asset')
 
   & $builder -Version $version -Backend CPU -OutputRoot $output -SourcePack $fixture
-  $assetName = "local-llm-wiki-runtime-$version-windows-x86_64-cpu.zip"
+  $assetName = "dolsoe-runtime-$version-windows-x86_64-cpu.zip"
   $assetPath = Join-Path $output $assetName
   Assert-True (Test-Path -LiteralPath $assetPath -PathType Leaf) 'Builder did not emit the deterministic CPU asset name.'
   Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -88,7 +88,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $cudaFixture $name), "fixture-$name")
   }
   & $builder -Version $version -Backend CUDA -OutputRoot $cudaOutput -SourcePack $cudaFixture
-  Assert-True (Test-Path -LiteralPath (Join-Path $cudaOutput "local-llm-wiki-runtime-$version-windows-x86_64-cuda.zip")) 'CUDA asset was not created after redistributables were supplied.'
+  Assert-True (Test-Path -LiteralPath (Join-Path $cudaOutput "dolsoe-runtime-$version-windows-x86_64-cuda.zip")) 'CUDA asset was not created after redistributables were supplied.'
 
   $opensslCandidates = @(
     (Get-Command openssl -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source -ErrorAction SilentlyContinue),

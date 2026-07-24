@@ -7,8 +7,10 @@ export interface GeneralPreferences {
   autoLoadLastModel: boolean;
 }
 
-const preferencesKey = "local-llm-wiki-general-preferences";
-const lastModelPathKey = "local-llm-wiki-last-model-path";
+const preferencesKey = "dolsoe.general-preferences";
+const legacyPreferencesKey = "local-llm-wiki-general-preferences";
+const lastModelPathKey = "dolsoe.last-model-path";
+const legacyLastModelPathKey = "local-llm-wiki-last-model-path";
 const defaults: GeneralPreferences = {
   startPage: "home",
   autoLoadLastModel: false,
@@ -16,7 +18,11 @@ const defaults: GeneralPreferences = {
 
 function readPreferences(): GeneralPreferences {
   try {
-    const value = JSON.parse(localStorage.getItem(preferencesKey) ?? "{}") as Partial<GeneralPreferences>;
+    const stored = localStorage.getItem(preferencesKey) ?? localStorage.getItem(legacyPreferencesKey);
+    if (stored && !localStorage.getItem(preferencesKey)) {
+      localStorage.setItem(preferencesKey, stored);
+    }
+    const value = JSON.parse(stored ?? "{}") as Partial<GeneralPreferences>;
     return {
       startPage: value.startPage === "last-conversation" ? "last-conversation" : "home",
       autoLoadLastModel: value.autoLoadLastModel === true,
@@ -27,7 +33,11 @@ function readPreferences(): GeneralPreferences {
 }
 
 export function readLastModelPath(): string | null {
-  return localStorage.getItem(lastModelPathKey);
+  const stored = localStorage.getItem(lastModelPathKey) ?? localStorage.getItem(legacyLastModelPathKey);
+  if (stored && !localStorage.getItem(lastModelPathKey)) {
+    localStorage.setItem(lastModelPathKey, stored);
+  }
+  return stored;
 }
 
 export function rememberLastModelPath(modelPath: string): void {

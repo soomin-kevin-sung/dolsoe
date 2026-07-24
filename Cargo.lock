@@ -829,6 +829,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "dolsoe-desktop"
+version = "0.1.0"
+dependencies = [
+ "crossbeam-channel",
+ "futures-util",
+ "llm-runtime",
+ "reqwest",
+ "rusqlite",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-opener",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "zip",
+]
+
+[[package]]
 name = "dom_query"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2100,30 +2124,6 @@ name = "llm-runtime-sys"
 version = "0.1.0"
 dependencies = [
  "libloading 0.8.9",
-]
-
-[[package]]
-name = "local-llm-wiki-desktop"
-version = "0.1.0"
-dependencies = [
- "crossbeam-channel",
- "futures-util",
- "llm-runtime",
- "reqwest",
- "rusqlite",
- "semver",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-opener",
- "tempfile",
- "thiserror 2.0.18",
- "tokio",
- "uuid",
- "zip",
 ]
 
 [[package]]

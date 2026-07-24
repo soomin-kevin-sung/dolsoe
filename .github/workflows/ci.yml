@@ -56,7 +56,7 @@ jobs:
         shell: pwsh
         run: |
           scripts/build-runtime-release.ps1 -Version 0.0.0-ci -Backend CPU -OutputRoot .runtime-release -BuildDirectory .cmake-build/llm-cpu -Configuration Debug
-          Expand-Archive .runtime-release/local-llm-wiki-runtime-0.0.0-ci-windows-x86_64-cpu.zip .runtime-packs/cpu-debug
+          Expand-Archive .runtime-release/dolsoe-runtime-0.0.0-ci-windows-x86_64-cpu.zip .runtime-packs/cpu-debug
           $pack = '.runtime-packs/cpu-debug'
           $required = 'local_llm_runtime.dll','llama.dll','ggml.dll','ggml-base.dll','llw_runtime_backend_test.exe'
           $missing = $required | Where-Object { -not (Test-Path (Join-Path $pack $_)) }

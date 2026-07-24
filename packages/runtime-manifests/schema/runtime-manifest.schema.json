@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/soomin-kevin-sung/local-llm-wiki/runtime-manifest.schema.json",
-  "title": "Local LLM Wiki runtime manifest",
+  "$id": "https://github.com/soomin-kevin-sung/dolsoe/runtime-manifest.schema.json",
+  "title": "Dolsoe runtime manifest",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "releaseVersion", "minimumAppVersion", "maximumAppVersion", "abiMajor", "abiMinor", "llamaCppCommit", "packs"],

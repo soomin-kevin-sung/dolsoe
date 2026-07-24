@@ -28,7 +28,7 @@ mock 구현으로 14개 상태를 모두 재현할 수 있게 한다 (MVP 설계
    SettingsPanel, SegmentedControl, OptionRow, PackRow, DiagnosticsView, ConfirmDialog.
 3. 앱 상태 머신: 모델 없음 → 로딩 중 → 준비됨 ⇄ 생성 중 → (완료|취소|오류) + 스펙 §4 의
    14개 상태를 mock 서비스로 전환 가능하게 한다.
-4. tauri.conf.json 창 설정을 스펙 §8.3 값(1440×900, min 1024×700, title "Local LLM Wiki")으로
+4. tauri.conf.json 창 설정을 스펙 §8.3 값(1440×900, min 1024×700, title "돌쇠")으로
    교체하고, 앱 아이콘을 §8.4 명령으로 생성한다:
    cd apps/desktop && npm run tauri icon ../../design/app-icon-1024.png
 5. Playwright 로 상태별 화면을 검증한다 (아래 합격 기준).

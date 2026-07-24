@@ -1,4 +1,4 @@
-# Local LLM Wiki — 홈 화면 설계 명세
+# 돌쇠 — 홈 화면 설계 명세
 
 작성일: 2026-07-21 · 대상: `apps/desktop` (Tauri 2 + React + TypeScript)
 기준 창 크기: 기본 **1180×660**, 최소 **900×580** (`apps/desktop/src-tauri/tauri.conf.json` 실측값).
@@ -703,7 +703,7 @@ DOM에서 제거되는 경우의 예외가 하나 있다. 대표 사례: 상태 
 ### 9.3 `Sidebar`의 필요한 변경
 
 - `SidebarProps`에 `onHome(): void` 추가.
-- `<span className="app-name">Local LLM Wiki</span>` → `<button type="button" className="app-name-button" onClick={onHome} aria-label="홈으로 이동">`(내부에 기존 `app-mark` SVG + 텍스트를 그대로 포함).
+- `<span className="app-name">돌쇠</span>` → `<button type="button" className="app-name-button" onClick={onHome} aria-label="홈으로 이동">`(내부에 기존 `app-mark` SVG + 텍스트를 그대로 포함).
 - 신규 CSS(치수 확정, 그대로 구현):
   ```css
   .app-name-button { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px;

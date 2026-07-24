@@ -18,7 +18,7 @@ Build the small bridge, run its tests beside the official DLLs, and assemble a c
 
 ```powershell
 & scripts/build-runtime-release.ps1 -Version 0.1.0-dev -Backend CPU -Configuration Release
-Expand-Archive .runtime-release/local-llm-wiki-runtime-0.1.0-dev-windows-x86_64-cpu.zip .runtime-packs/cpu-release
+Expand-Archive .runtime-release/dolsoe-runtime-0.1.0-dev-windows-x86_64-cpu.zip .runtime-packs/cpu-release
 ```
 
 For desktop development, build, test, and activate the managed stable `cpu` pack under the Tauri app-local data directory with:
@@ -46,7 +46,7 @@ Validate the native workflow in this order:
 4. Confirm both conversation titles and the first conversation's user/assistant messages are restored.
 5. Confirm stored messages remain visible before a model is selected after restart.
 
-The SQLite database is stored at `app_local_data_dir/local-llm-wiki.db`. Startup migrations are repeatable, and assistant messages left in `streaming` state are recovered as `interrupted`.
+The SQLite database is stored at `app_local_data_dir/dolsoe.db`. Startup migrations are repeatable, and assistant messages left in `streaming` state are recovered as `interrupted`.
 
 ## Installed runtime selection smoke
 

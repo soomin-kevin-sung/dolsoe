@@ -53,6 +53,6 @@ jobs:
         run: npm --prefix apps/desktop run tauri -- build
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: local-llm-wiki-windows-${{ github.run_number }}
+          name: dolsoe-windows-${{ github.run_number }}
           path: target/release/bundle/**/*
           if-no-files-found: error

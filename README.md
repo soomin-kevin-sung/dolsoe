@@ -1,4 +1,4 @@
-# local-llm-wiki
+# Dolsoe
 
 Local notes and experiments for working with local LLMs.
 
