@@ -1,4 +1,3 @@
-mod app_data_migration;
 mod conversation_commands;
 mod conversation_store;
 mod llm_commands;
@@ -34,7 +33,6 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let app_data = app.path().app_local_data_dir()?;
-            app_data_migration::migrate_legacy_app_data(&app_data)?;
             std::fs::create_dir_all(&app_data)?;
             let runtime_root = app_data.join("runtime-packs");
             std::fs::create_dir_all(&runtime_root)?;

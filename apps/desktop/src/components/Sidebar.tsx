@@ -83,10 +83,11 @@ export function Sidebar({
   const [menuId, setMenuId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
+  const sessionListRef = useRef<HTMLDivElement>(null);
   const modelMenuAnchorRef = useRef<HTMLDivElement>(null);
   const modelMenuButtonRef = useRef<HTMLButtonElement>(null);
-  const query = (searchValue ?? localSearch).trim().toLocaleLowerCase();
-  const visible = query
+  const query = localSearch.trim().toLocaleLowerCase();
+  const visible = searchValue === undefined && query
     ? sessions.filter((session) => session.title.toLocaleLowerCase().includes(query))
     : sessions;
 
@@ -110,6 +111,25 @@ export function Sidebar({
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [modelMenuOpen, onModelMenuClose]);
+
+  useEffect(() => {
+    if (!menuId) return;
+
+    const closeOutside = (event: PointerEvent) => {
+      if (!sessionListRef.current?.contains(event.target as Node)) setMenuId(null);
+    };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setMenuId(null);
+    };
+    document.addEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [menuId]);
 
   function changeSearch(value: string) {
     setLocalSearch(value);
@@ -157,7 +177,7 @@ export function Sidebar({
         </button>
       </div>
       <div className="sidebar-section-label">최근 대화</div>
-      <div className="session-list">
+      <div ref={sessionListRef} className="session-list">
         {visible.map((session) => (
           <div className="session-row" key={session.id}>
             <button type="button" className={`session-item ${session.active ? "active" : ""}`} onClick={() => onSelect(session.id)}>

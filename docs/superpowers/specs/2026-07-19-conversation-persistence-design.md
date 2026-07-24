@@ -44,7 +44,7 @@ Rejected alternatives:
 The database path is:
 
 ```text
-<app_local_data_dir>/local-llm-wiki.db
+<app_local_data_dir>/dolsoe.db
 ```
 
 The connection enables:

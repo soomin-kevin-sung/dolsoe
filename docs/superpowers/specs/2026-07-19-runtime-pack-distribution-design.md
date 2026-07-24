@@ -25,9 +25,9 @@ Windows 11 x64 앱이 프로젝트 GitHub Releases에서 현재 앱과 호환되
 ```text
 runtime-manifest.json
 runtime-manifest.sig
-local-llm-wiki-runtime-<version>-windows-x86_64-cpu.zip
-local-llm-wiki-runtime-<version>-windows-x86_64-cuda.zip
-local-llm-wiki-runtime-<version>-windows-x86_64-vulkan.zip
+dolsoe-runtime-<version>-windows-x86_64-cpu.zip
+dolsoe-runtime-<version>-windows-x86_64-cuda.zip
+dolsoe-runtime-<version>-windows-x86_64-vulkan.zip
 THIRD_PARTY_NOTICES.txt
 ```
 

@@ -140,7 +140,7 @@ function NativeWorkspace() {
     ? workspace.state.activeTurn ? "streaming" : "ready"
     : homeStatus.tone;
   const selectedRuntimePack = runtime.runtimePacks.find((pack) => pack.id === runtime.appliedRuntime?.packId);
-  const sessions: Session[] = workspace.state.conversations.map((conversation) => ({
+  const sessions: Session[] = workspace.visibleConversations.map((conversation) => ({
     id: conversation.id,
     title: conversation.title,
     meta: formatUpdatedAt(conversation.updatedAt),

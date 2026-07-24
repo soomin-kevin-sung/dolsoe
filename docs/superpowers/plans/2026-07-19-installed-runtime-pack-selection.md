@@ -64,7 +64,7 @@ fn fallback_prefers_cpu_dev_then_other_cpu_then_any_ready_pack() {
 
 - [ ] **Step 2: Run focused tests and verify RED**
 
-Run `cargo test -p local-llm-wiki-desktop runtime_packs::tests -- --nocapture`.
+Run `cargo test -p dolsoe-desktop runtime_packs::tests -- --nocapture`.
 
 Expected: FAIL because `runtime_packs` and inventory types do not exist.
 
@@ -113,8 +113,8 @@ Add `list_runtime_packs(app: tauri::AppHandle) -> Result<RuntimePackInventoryDto
 - [ ] **Step 5: Verify GREEN and commit**
 
 ```powershell
-cargo test -p local-llm-wiki-desktop runtime_packs::tests -- --nocapture
-cargo check -p local-llm-wiki-desktop
+cargo test -p dolsoe-desktop runtime_packs::tests -- --nocapture
+cargo check -p dolsoe-desktop
 git add apps/desktop/src-tauri/src/runtime_packs.rs apps/desktop/src-tauri/src/lib.rs
 git commit -m "feat: inventory installed runtime packs"
 ```
@@ -144,7 +144,7 @@ fn model_target_rejects_unknown_backend() {
 }
 ```
 
-- [ ] **Step 2: Run `cargo test -p local-llm-wiki-desktop model_target -- --nocapture`**
+- [ ] **Step 2: Run `cargo test -p dolsoe-desktop model_target -- --nocapture`**
 
 Expected: FAIL because `model_target` and request fields do not exist.
 
@@ -168,7 +168,7 @@ Pass all three values to `ModelOptions` and report uppercase backend in status.
 - [ ] **Step 4: Verify and commit**
 
 ```powershell
-cargo test -p local-llm-wiki-desktop --lib
+cargo test -p dolsoe-desktop --lib
 cargo test -p llm-runtime --lib
 git add apps/desktop/src-tauri/src/llm_dto.rs apps/desktop/src-tauri/src/llm_worker.rs
 git commit -m "feat: load models on selected backends"
@@ -213,7 +213,7 @@ Define `RuntimeBackend`, `RuntimeDevice`, `RuntimePack`, `RuntimePackInventory`,
 
 ```typescript
 export interface RuntimeSelection { packId: string; backend: RuntimeBackend; deviceIndex: number; }
-export const PREFERENCE_KEY = "local-llm-wiki.runtime-pack";
+export const PREFERENCE_KEY = "dolsoe.runtime-pack";
 export function readRuntimePreference(storage: Storage): RuntimePreference | null;
 export function writeRuntimePreference(storage: Storage, value: RuntimeSelection): void;
 export function resolveRuntimeSelection(inventory: RuntimePackInventory, preference: RuntimePreference | null): RuntimeSelection | null;
@@ -355,9 +355,9 @@ $env:LLW_TEST_GGUF = & scripts/acquire-test-model.ps1
 cargo fmt --all -- --check
 cargo test -p llm-runtime --lib
 cargo test --workspace --exclude llm-runtime
-$env:LLW_TEST_RUNTIME = Join-Path $env:LOCALAPPDATA 'io.github.soomin-kevin-sung.local-llm-wiki\runtime-packs\cpu-dev\local_llm_runtime.dll'
+$env:LLW_TEST_RUNTIME = Join-Path $env:LOCALAPPDATA 'ai.dolsoe.desktop\runtime-packs\cpu-dev\local_llm_runtime.dll'
 cargo test -p llm-runtime --test fake_runtime -- --nocapture
-cargo check -p local-llm-wiki-desktop
+cargo check -p dolsoe-desktop
 npm --prefix apps/desktop run test:unit
 npm --prefix apps/desktop run build
 npm --prefix apps/desktop run test:e2e

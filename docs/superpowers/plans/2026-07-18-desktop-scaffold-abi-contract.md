@@ -91,7 +91,7 @@ Expected: both `cl.exe` and `link.exe` resolve inside the selected Visual Studio
 ```powershell
 New-Item -ItemType Directory -Force apps | Out-Null
 Push-Location apps
-npm create tauri-app@latest desktop -- --manager npm --template react-ts --identifier io.github.soomin-kevin-sung.local-llm-wiki --tauri-version 2 --yes
+npm create tauri-app@latest desktop -- --manager npm --template react-ts --identifier ai.dolsoe.desktop --tauri-version 2 --yes
 Pop-Location
 npm --prefix apps/desktop install
 ```
@@ -115,7 +115,7 @@ Update `apps/desktop/package.json`:
 
 ```json
 {
-  "name": "local-llm-wiki-desktop",
+  "name": "dolsoe-desktop",
   "private": true,
   "version": "0.1.0",
   "type": "module"
@@ -128,7 +128,7 @@ Update the `[package]` section in `apps/desktop/src-tauri/Cargo.toml`:
 
 ```toml
 [package]
-name = "local-llm-wiki-desktop"
+name = "dolsoe-desktop"
 version = "0.1.0"
 description = "Local-first desktop interface for Local LLM Wiki"
 authors = ["Local LLM Wiki contributors"]
@@ -141,7 +141,7 @@ Update the matching fields in `apps/desktop/src-tauri/tauri.conf.json`:
 {
   "productName": "Local LLM Wiki",
   "version": "0.1.0",
-  "identifier": "io.github.soomin-kevin-sung.local-llm-wiki"
+  "identifier": "ai.dolsoe.desktop"
 }
 ```
 
@@ -1463,7 +1463,7 @@ Add `serde_json = "1"` under `[dev-dependencies]` in `apps/desktop/src-tauri/Car
 Run:
 
 ```powershell
-cargo test -p local-llm-wiki-desktop runtime_info_serializes_with_camel_case_fields
+cargo test -p dolsoe-desktop runtime_info_serializes_with_camel_case_fields
 ```
 
 Expected: FAIL because `RuntimeInfoDto` is not defined.

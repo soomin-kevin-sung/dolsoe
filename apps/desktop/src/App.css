@@ -374,8 +374,18 @@ body { font-size: 14px; }
 .app-name-button.active { color: var(--text-1); background: transparent; }
 .search-wrap { margin: 0 12px 10px; }
 .search-wrap svg { top: 9px; left: 10px; }
-.search-input { height: 32px; padding-left: 32px; border: 1px solid transparent; border-radius: 6px; background: var(--bg-inset); }
-.search-input:focus { border-color: var(--accent); background: var(--bg-surface); }
+.search-wrap svg { color: var(--text-2); pointer-events: none; }
+.search-input {
+  height: 32px;
+  padding-left: 32px;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--bg-inset) 80%, transparent);
+}
+.search-input::placeholder { color: var(--text-2); }
+.search-input:hover { border-color: color-mix(in srgb, var(--accent) 40%, var(--border-strong)); }
+.search-input:focus { border-color: var(--accent); background: var(--bg-surface); box-shadow: 0 0 0 1px var(--accent); }
 .sidebar-primary-nav { padding: 0 10px 9px; border-bottom: 1px solid var(--border); }
 .sidebar-nav-button { display: flex; width: 100%; height: 34px; align-items: center; gap: 9px; padding: 0 10px; border-radius: 6px; color: var(--text-2); background: transparent; cursor: pointer; }
 .sidebar-nav-button:hover { color: var(--text-1); background: var(--bg-hover); }
@@ -428,8 +438,10 @@ body { font-size: 14px; }
 
 .chat-header { gap: 9px; min-height: 58px; padding: 0 14px 0 20px; }
 .header-title-group { display: grid; min-width: 0; gap: 1px; }
-.header-eyebrow { color: var(--text-3); font-size: 10px; font-weight: 600; }
 .chat-title, .chat-title-button { font-size: 14px; font-weight: 600; }
+.chat-title.home-title { display: flex; align-items: center; gap: 7px; }
+.chat-title.home-title svg { flex: none; color: var(--text-2); }
+.chat-title.home-title span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .icon-button { border-radius: 6px; }
 
 .home-view { width: min(100%, 720px); padding: 34px 34px 26px; }

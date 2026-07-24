@@ -62,7 +62,7 @@ Tauri 명령은 DLL 경로를 입력받지 않는다. `runtime_pack_id`만 받�
 - 체크섬 고정 tiny GGUF acquisition은 기존 스크립트를 재사용한다.
 - 고정 llama.cpp 커밋으로 CPU Debug 팩을 configure/build/install한다.
 - 설치 결과의 필수 DLL 5개와 테스트 실행 파일을 확인한다.
-- `%LOCALAPPDATA%/io.github.soomin-kevin-sung.local-llm-wiki/runtime-packs/cpu-dev`에 완전한 팩을 staging한 뒤 디렉터리 단위로 교체한다.
+- `%LOCALAPPDATA%/ai.dolsoe.desktop/runtime-packs/cpu-dev`에 완전한 팩을 staging한 뒤 디렉터리 단위로 교체한다.
 
 staging 디렉터리는 대상과 같은 부모 아래 `cpu-dev.staging-<pid>`로 만들고 검증이 끝난 뒤에만 활성화한다. 기존 팩은 `cpu-dev.backup-<pid>`로 이름을 바꾸고 staging을 `cpu-dev`로 바꾼 다음 백업을 삭제한다. 활성화가 실패하면 기존 팩 이름을 복원하고 staging을 남겨 진단할 수 있게 한다. `-DestinationRoot`를 선택 인자로 제공하되 기본값은 위 앱 식별자 경로다.
 

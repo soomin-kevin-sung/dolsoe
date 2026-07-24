@@ -77,7 +77,6 @@ interface RuntimePackBindings {
 const tauriRuntimePackBindings: RuntimePackBindings = { invoke, listen };
 
 export const PREFERENCE_KEY = "dolsoe.runtime-pack";
-export const LEGACY_PREFERENCE_KEY = "local-llm-wiki.runtime-pack";
 
 export function formatBytes(value: number): string {
   return value >= 1024 ** 3
@@ -90,9 +89,8 @@ function isBackend(value: unknown): value is RuntimeBackend {
 }
 
 export function readRuntimePreference(storage: Storage): RuntimePreference | null {
-  const raw = storage.getItem(PREFERENCE_KEY) ?? storage.getItem(LEGACY_PREFERENCE_KEY);
+  const raw = storage.getItem(PREFERENCE_KEY);
   if (!raw) return null;
-  if (!storage.getItem(PREFERENCE_KEY)) storage.setItem(PREFERENCE_KEY, raw);
   try {
     const value = JSON.parse(raw) as Partial<RuntimePreference>;
     return typeof value.packId === "string" && isBackend(value.backend)

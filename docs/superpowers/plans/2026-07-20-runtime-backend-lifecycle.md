@@ -92,7 +92,7 @@ assert!(catalog.validate(&policy).is_err_when_identity_differs());
 
 - [ ] **Step 2: Run the focused Rust tests and confirm failure**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_source runtime_manifest`
+Run: `cargo test -p dolsoe-desktop runtime_source runtime_manifest`
 
 Expected: FAIL because `runtime_source` and unsigned catalog contracts do not exist.
 
@@ -104,7 +104,7 @@ Replace `SignedRuntimeManifest` with `RuntimeCatalog`; remove `base64`, `ed25519
 
 - [ ] **Step 4: Run the focused Rust tests**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_source runtime_manifest`
+Run: `cargo test -p dolsoe-desktop runtime_source runtime_manifest`
 
 Expected: PASS.
 
@@ -127,7 +127,7 @@ assert_eq!(partial_name("cuda", &digest), format!("cuda-{digest}.zip.part"));
 
 - [ ] **Step 2: Run focused tests and confirm failure**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_archive runtime_download`
+Run: `cargo test -p dolsoe-desktop runtime_archive runtime_download`
 
 Expected: FAIL for the new internal-manifest and resume rules.
 
@@ -139,7 +139,7 @@ Name partials `<backend>-<archive-sha256>.zip.part`. Accept HTTP `206` only when
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_archive runtime_download`
+Run: `cargo test -p dolsoe-desktop runtime_archive runtime_download`
 
 Expected: PASS.
 
@@ -162,7 +162,7 @@ assert!(root.join("cpu").exists());
 
 - [ ] **Step 2: Run focused tests and confirm failure**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_transaction`
+Run: `cargo test -p dolsoe-desktop runtime_transaction`
 
 Expected: FAIL because the transaction module does not exist.
 
@@ -174,7 +174,7 @@ Return `Installed` for an unloaded backend and `DeferredUntilRestart` for a curr
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_transaction`
+Run: `cargo test -p dolsoe-desktop runtime_transaction`
 
 Expected: PASS.
 
@@ -200,7 +200,7 @@ assert_eq!(RuntimeHost::recovery("cpu corrupt").status().error,
 
 - [ ] **Step 2: Run focused tests and confirm failure**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_bootstrap runtime_host`
+Run: `cargo test -p dolsoe-desktop runtime_bootstrap runtime_host`
 
 Expected: FAIL because bootstrap/optional host do not exist.
 
@@ -212,7 +212,7 @@ Change LLM commands to access `RuntimeHost`; recovery mode keeps conversations/U
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_bootstrap runtime_host llm_commands`
+Run: `cargo test -p dolsoe-desktop runtime_bootstrap runtime_host llm_commands`
 
 Expected: PASS.
 
@@ -238,7 +238,7 @@ assert!(selection.pending_activation.is_none());
 
 - [ ] **Step 2: Run focused tests and confirm failure**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_packs runtime_selection runtime_path`
+Run: `cargo test -p dolsoe-desktop runtime_packs runtime_selection runtime_path`
 
 Expected: FAIL under the current free-form IDs, `cpu-dev` fallback, and WebView persistence.
 
@@ -252,7 +252,7 @@ Add commands to get selection, request backend activation, and restart after act
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_packs runtime_selection runtime_path`
+Run: `cargo test -p dolsoe-desktop runtime_packs runtime_selection runtime_path`
 
 Expected: PASS.
 
@@ -270,7 +270,7 @@ Use the existing local HTTP fixture to cover lazy catalog fetch, one active oper
 
 - [ ] **Step 2: Run focused tests and confirm failure**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_installer runtime_install_commands`
+Run: `cargo test -p dolsoe-desktop runtime_installer runtime_install_commands`
 
 Expected: FAIL under signed config/versioned IDs/conflict refusal.
 
@@ -282,7 +282,7 @@ Replace conflict refusal with journaled install or deferred replacement. Record 
 
 - [ ] **Step 4: Run focused tests**
 
-Run: `cargo test -p local-llm-wiki-desktop runtime_installer runtime_install_commands`
+Run: `cargo test -p dolsoe-desktop runtime_installer runtime_install_commands`
 
 Expected: PASS.
 

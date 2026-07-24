@@ -1,4 +1,4 @@
-import { Eraser, SlidersHorizontal } from "lucide-react";
+import { Eraser, Home, SlidersHorizontal } from "lucide-react";
 import { useState, type KeyboardEvent, type Ref } from "react";
 import { IconButton } from "./IconButton";
 
@@ -27,12 +27,14 @@ export function ChatHeader({ title, view, settingsOpen, settingsButtonRef, reset
   return (
     <header className="chat-header">
       <div className="header-title-group">
-      {view === "home" && <span className="header-eyebrow">PRIVATE WORKSPACE</span>}
       {renaming ? (
         <input autoFocus className="chat-title-input" aria-label="대화 이름" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={renameKeyDown} onBlur={commitRename} />
       ) : onRename ? (
         <button type="button" className="chat-title-button" onClick={() => { setDraft(title); setRenaming(true); }}>{title}</button>
-      ) : <div className="chat-title">{title}</div>}
+      ) : <div className={`chat-title ${view === "home" ? "home-title" : ""}`}>
+        {view === "home" && <Home size={15} aria-hidden="true" />}
+        <span>{title}</span>
+      </div>}
       </div>
       <div className="header-spacer" />
       {view === "chat" && <><span className="header-divider" /><IconButton buttonRef={resetButtonRef} icon={Eraser} label="대화 초기화" onClick={onReset} disabled={!onReset} /></>}

@@ -68,7 +68,7 @@ fn bootstrap_is_repeatable_and_records_one_migration() {
 Run:
 
 ```powershell
-cargo test -p local-llm-wiki-desktop conversation_store::tests::bootstrap -- --nocapture
+cargo test -p dolsoe-desktop conversation_store::tests::bootstrap -- --nocapture
 ```
 
 Expected: compilation fails because `ConversationStore` and its domain records do not exist.
@@ -116,7 +116,7 @@ Implement `ConversationStore { connection: Arc<Mutex<Connection>> }`, file and i
 - [ ] **Step 4: Run focused and desktop tests**
 
 ```powershell
-cargo test -p local-llm-wiki-desktop conversation_store -- --nocapture
+cargo test -p dolsoe-desktop conversation_store -- --nocapture
 cargo fmt --all -- --check
 ```
 
@@ -169,7 +169,7 @@ Also test 40-character automatic title truncation, 80-character rename validatio
 - [ ] **Step 2: Run and verify RED**
 
 ```powershell
-cargo test -p local-llm-wiki-desktop conversation_store::tests -- --nocapture
+cargo test -p dolsoe-desktop conversation_store::tests -- --nocapture
 ```
 
 Expected: missing CRUD methods fail compilation.
@@ -193,7 +193,7 @@ Use `chars().take(limit)` for Unicode-safe title limits, `split_whitespace().joi
 - [ ] **Step 4: Verify store behavior**
 
 ```powershell
-cargo test -p local-llm-wiki-desktop conversation_store::tests -- --nocapture
+cargo test -p dolsoe-desktop conversation_store::tests -- --nocapture
 ```
 
 Expected: all store tests pass.
@@ -232,7 +232,7 @@ fn finish_request_rejects_streaming_status() {
 - [ ] **Step 2: Run and verify RED**
 
 ```powershell
-cargo test -p local-llm-wiki-desktop conversation_commands -- --nocapture
+cargo test -p dolsoe-desktop conversation_commands -- --nocapture
 ```
 
 - [ ] **Step 3: Implement commands and setup**
@@ -242,7 +242,7 @@ Create request DTOs with `#[serde(rename_all = "camelCase")]` and Tauri commands
 ```rust
 let app_data = app.path().app_local_data_dir()?;
 std::fs::create_dir_all(&app_data)?;
-app.manage(ConversationStore::open(app_data.join("local-llm-wiki.db"))?);
+app.manage(ConversationStore::open(app_data.join("dolsoe.db"))?);
 ```
 
 Register every `conversation_*` command alongside the existing `llm_*` commands.
@@ -250,8 +250,8 @@ Register every `conversation_*` command alongside the existing `llm_*` commands.
 - [ ] **Step 4: Verify Rust command layer**
 
 ```powershell
-cargo test -p local-llm-wiki-desktop conversation_commands -- --nocapture
-cargo check -p local-llm-wiki-desktop
+cargo test -p dolsoe-desktop conversation_commands -- --nocapture
+cargo check -p dolsoe-desktop
 ```
 
 - [ ] **Step 5: Commit**
@@ -477,9 +477,9 @@ Create two conversations, submit and stop one prompt, rename the other, close th
 cargo fmt --all -- --check
 cargo test -p llm-runtime --lib
 cargo test --workspace --exclude llm-runtime
-$env:LLW_TEST_RUNTIME = Join-Path $env:LOCALAPPDATA 'io.github.soomin-kevin-sung.local-llm-wiki\runtime-packs\cpu-dev\local_llm_runtime.dll'
+$env:LLW_TEST_RUNTIME = Join-Path $env:LOCALAPPDATA 'ai.dolsoe.desktop\runtime-packs\cpu-dev\local_llm_runtime.dll'
 cargo test -p llm-runtime --test fake_runtime -- --nocapture
-cargo check -p local-llm-wiki-desktop
+cargo check -p dolsoe-desktop
 npm --prefix apps/desktop run test:unit
 npm --prefix apps/desktop run build
 npm --prefix apps/desktop run test:e2e

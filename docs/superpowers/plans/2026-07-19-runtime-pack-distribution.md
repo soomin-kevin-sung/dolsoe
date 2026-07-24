@@ -20,7 +20,7 @@
 - Test: `apps/desktop/src-tauri/src/runtime_manifest.rs`
 
 - [ ] Add failing Rust tests for valid manifest parsing, unsupported schema, app version mismatch, ABI mismatch, duplicate backend, invalid pack ID, non-GitHub HTTPS asset URL, malformed SHA-256, and Ed25519 signature rejection.
-- [ ] Run `cargo test -p local-llm-wiki-desktop runtime_manifest::tests -- --nocapture` and confirm failures are caused by missing manifest types and validation.
+- [ ] Run `cargo test -p dolsoe-desktop runtime_manifest::tests -- --nocapture` and confirm failures are caused by missing manifest types and validation.
 - [ ] Add `base64`, `ed25519-dalek`, `semver`, and `sha2` dependencies and implement `SignedRuntimeManifest::verify_and_parse(raw, signature, public_key, policy)` over the exact downloaded bytes.
 - [ ] Add the JSON schema matching the Rust camelCase contract and validate representative fixtures in tests.
 - [ ] Re-run the focused tests and commit `feat: define signed runtime manifest contract`.
@@ -34,7 +34,7 @@
 - Test: `apps/desktop/src-tauri/src/runtime_archive.rs`
 
 - [ ] Add failing tests that build ZIP fixtures for a valid pack, `../` traversal, absolute paths, duplicate entries, symlink entries, undeclared files, missing files, size mismatch, checksum mismatch, wrong backend DLL, existing identical pack, and existing conflicting pack.
-- [ ] Run `cargo test -p local-llm-wiki-desktop runtime_archive::tests -- --nocapture` and verify the expected failures.
+- [ ] Run `cargo test -p dolsoe-desktop runtime_archive::tests -- --nocapture` and verify the expected failures.
 - [ ] Add `zip` and `hex` dependencies and implement bounded extraction with `enclosed_name`, normalized relative paths, duplicate rejection, file count and total-size limits, per-file hash validation, backend-specific required file validation, owned staging cleanup, and final directory rename.
 - [ ] Re-run focused tests and commit `feat: install verified runtime archives atomically`.
 

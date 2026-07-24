@@ -5731,7 +5731,7 @@ fn command_accepts_pack_id_not_runtime_library_path() {
 Run:
 
 ```powershell
-cargo test -p local-llm-wiki-desktop runtime_probe
+cargo test -p dolsoe-desktop runtime_probe
 ```
 
 Expected: PASS without changing the production command. If it fails, restore the command to pack-ID-only resolution; do not add an arbitrary path compatibility overload.

@@ -199,7 +199,7 @@ Update only the documented window fields.
 
 ```powershell
 npm --prefix apps/desktop run build
-cargo check -p local-llm-wiki-desktop
+cargo check -p dolsoe-desktop
 git add apps/desktop/src-tauri
 git commit -m "feat: apply desktop product identity"
 ```
@@ -226,8 +226,8 @@ Review the complete diff against `claude-ui-spec.md`, reporting only user-visibl
 ```powershell
 npm --prefix apps/desktop run build
 npm --prefix apps/desktop run test:e2e
-cargo test -p local-llm-wiki-desktop runtime_probe
-cargo check -p local-llm-wiki-desktop
+cargo test -p dolsoe-desktop runtime_probe
+cargo check -p dolsoe-desktop
 git diff --check
 ```
 

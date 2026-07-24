@@ -70,7 +70,7 @@ Verify `requestHandle`, `sequenceNumber`, and all 64-bit metric counters seriali
 
 - [ ] **Step 2: Run the focused tests and observe RED**
 
-Run: `cargo test -p local-llm-wiki-desktop`
+Run: `cargo test -p dolsoe-desktop`
 
 Expected: FAIL because both modules and their types are missing.
 
@@ -93,7 +93,7 @@ Define `LlmPhase` (`NoModel`, `Loading`, `Ready`, `Streaming`, `Error`), `LlmSta
 
 - [ ] **Step 4: Run focused and existing resolver tests**
 
-Run: `cargo test -p local-llm-wiki-desktop`
+Run: `cargo test -p dolsoe-desktop`
 
 Expected: PASS with the existing eight probe behaviors plus the new DTO tests.
 
@@ -136,7 +136,7 @@ Also test a bounded channel capacity of 32, decimal-string cancel parsing, model
 
 - [ ] **Step 2: Run worker tests and observe RED**
 
-Run: `cargo test -p local-llm-wiki-desktop`
+Run: `cargo test -p dolsoe-desktop`
 
 Expected: FAIL because the worker and commands do not exist.
 
@@ -178,7 +178,7 @@ Run blocking channel waits through `tauri::async_runtime::spawn_blocking`. Regis
 
 - [ ] **Step 5: Run Rust tests and checks**
 
-Run: `cargo test -p local-llm-wiki-desktop && cargo check -p local-llm-wiki-desktop`
+Run: `cargo test -p dolsoe-desktop && cargo check -p dolsoe-desktop`
 
 Expected: PASS; no native DLL is needed because unit tests exercise guards, DTOs, and command parsing.
 
@@ -302,7 +302,7 @@ Parameters are:
 ```powershell
 param(
   [string]$PackId = 'cpu-dev',
-  [string]$DestinationRoot = (Join-Path $env:LOCALAPPDATA 'io.github.soomin-kevin-sung.local-llm-wiki/runtime-packs'),
+  [string]$DestinationRoot = (Join-Path $env:LOCALAPPDATA 'ai.dolsoe.desktop/runtime-packs'),
   [ValidateSet('Debug','Release')][string]$Configuration = 'Debug'
 )
 ```
@@ -343,7 +343,7 @@ Run:
 
 ```powershell
 $model = & scripts/acquire-test-model.ps1
-$pack = Join-Path $env:LOCALAPPDATA 'io.github.soomin-kevin-sung.local-llm-wiki/runtime-packs/cpu-dev'
+$pack = Join-Path $env:LOCALAPPDATA 'ai.dolsoe.desktop/runtime-packs/cpu-dev'
 $env:LLW_TEST_GGUF = $model
 $env:LLW_TEST_RUNTIME = Join-Path $pack 'local_llm_runtime.dll'
 & (Join-Path $pack 'llw_runtime_backend_test.exe') $model
@@ -360,7 +360,7 @@ Run:
 cargo fmt --all -- --check
 cargo test -p llm-runtime --lib
 cargo test --workspace --exclude llm-runtime
-cargo check -p local-llm-wiki-desktop
+cargo check -p dolsoe-desktop
 npm --prefix apps/desktop run test:unit
 npm --prefix apps/desktop run build
 npm --prefix apps/desktop run test:e2e
