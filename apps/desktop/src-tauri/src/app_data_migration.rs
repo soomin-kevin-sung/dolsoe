@@ -21,6 +21,10 @@ pub(crate) fn migrate_legacy_app_data(app_data: &Path) -> io::Result<()> {
         ("local-llm-wiki.db-shm", "dolsoe.db-shm"),
         ("runtime-packs", "runtime-packs"),
         ("runtime-selection.json", "runtime-selection.json"),
+        (
+            "EBWebView/Default/Local Storage",
+            "EBWebView/Default/Local Storage",
+        ),
     ] {
         move_if_destination_missing(legacy_root.join(legacy_name), app_data.join(current_name))?;
     }
@@ -30,6 +34,9 @@ pub(crate) fn migrate_legacy_app_data(app_data: &Path) -> io::Result<()> {
 fn move_if_destination_missing(source: PathBuf, destination: PathBuf) -> io::Result<()> {
     if !source.exists() || destination.exists() {
         return Ok(());
+    }
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent)?;
     }
     fs::rename(source, destination)
 }
@@ -53,6 +60,13 @@ mod tests {
             .expect("write runtime");
         fs::write(legacy.join("runtime-selection.json"), b"legacy-selection")
             .expect("write selection");
+        fs::create_dir_all(legacy.join("EBWebView/Default/Local Storage/leveldb"))
+            .expect("create legacy web storage");
+        fs::write(
+            legacy.join("EBWebView/Default/Local Storage/leveldb/CURRENT"),
+            b"MANIFEST-000001",
+        )
+        .expect("write legacy web storage");
         fs::create_dir_all(&current).expect("create current root");
         fs::write(current.join("runtime-selection.json"), b"current-selection")
             .expect("write current selection");
@@ -70,6 +84,10 @@ mod tests {
         assert_eq!(
             fs::read(current.join("runtime-selection.json")).unwrap(),
             b"current-selection"
+        );
+        assert_eq!(
+            fs::read(current.join("EBWebView/Default/Local Storage/leveldb/CURRENT")).unwrap(),
+            b"MANIFEST-000001"
         );
         assert!(legacy.join("runtime-selection.json").is_file());
     }
