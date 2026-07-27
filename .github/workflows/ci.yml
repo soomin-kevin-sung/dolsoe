@@ -42,6 +42,9 @@ jobs:
       - name: Test runtime release packaging contract
         shell: pwsh
         run: scripts/tests/runtime-release.Tests.ps1
+      - name: Test desktop release contract
+        shell: pwsh
+        run: scripts/tests/desktop-release.Tests.ps1
       - name: Cache checksum-pinned CPU test model
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:

@@ -27,3 +27,7 @@ target/
 native/llm-runtime/out/
 .test-models/
 .runtime-packs/
+.desktop-package/
+.desktop-release/
+.desktop-runtime/
+.desktop-release-notes.md

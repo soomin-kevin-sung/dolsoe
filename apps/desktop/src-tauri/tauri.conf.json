@@ -7,11 +7,13 @@
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run build",
-    "frontendDist": "../dist"
+    "frontendDist": "../dist",
+    "removeUnusedCommands": true
   },
   "app": {
     "windows": [
       {
+        "label": "main",
         "title": "돌쇠",
         "width": 1180,
         "height": 660,
@@ -20,15 +22,24 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": {
+        "default-src": "'self'",
+        "connect-src": "ipc: http://ipc.localhost",
+        "font-src": "'self'",
+        "img-src": "'self' data:",
+        "style-src": "'self' 'unsafe-inline'"
+      },
+      "devCsp": {
+        "default-src": "'self'",
+        "connect-src": "ipc: http://ipc.localhost ws://localhost:1420",
+        "font-src": "'self'",
+        "img-src": "'self' data:",
+        "style-src": "'self' 'unsafe-inline'"
+      },
+      "freezePrototype": true
     }
   },
   "bundle": {
-    "active": true,
-    "targets": "all",
-    "resources": {
-      "resources/runtime-packs/*": "runtime-packs/"
-    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

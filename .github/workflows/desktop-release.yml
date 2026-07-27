@@ -1,23 +1,93 @@
 name: desktop release
-run-name: Desktop with runtime ${{ inputs.runtime_tag }}
+run-name: Desktop ${{ inputs.version || github.ref_name }}
 
 on:
+  push:
+    tags:
+      - 'desktop-v*'
   workflow_dispatch:
     inputs:
-      runtime_tag:
-        description: Immutable runtime release tag to bundle and install from
+      version:
+        description: Semantic desktop version without a leading v
         required: true
         type: string
+      runtime_tag:
+        description: Immutable runtime release tag (defaults to runtime-v<version>)
+        required: false
+        type: string
+      prerelease:
+        description: Publish as a GitHub prerelease
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
+concurrency:
+  group: desktop-release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  metadata:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      desktop_tag: ${{ steps.release.outputs.desktop_tag }}
+      runtime_tag: ${{ steps.release.outputs.runtime_tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EVENT_NAME: ${{ github.event_name }}
+      REF_NAME: ${{ github.ref_name }}
+      MANUAL_VERSION: ${{ inputs.version }}
+      MANUAL_RUNTIME_TAG: ${{ inputs.runtime_tag }}
+      MANUAL_PRERELEASE: ${{ inputs.prerelease }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Resolve and validate release metadata
+        id: release
+        shell: pwsh
+        run: |
+          if ($env:EVENT_NAME -eq 'push') {
+            if ($env:REF_NAME -notmatch '^desktop-v(.+)$') {
+              throw "Desktop release tags must use desktop-v<version>."
+            }
+            $version = $Matches[1]
+          } else {
+            $version = $env:MANUAL_VERSION
+          }
+
+          $desktopTag = "desktop-v$version"
+          $runtimeTag = if ($env:MANUAL_RUNTIME_TAG) {
+            $env:MANUAL_RUNTIME_TAG
+          } else {
+            "runtime-v$version"
+          }
+          $prerelease = $version.Contains('-') -or $env:MANUAL_PRERELEASE -eq 'true'
+
+          scripts/assert-desktop-release-version.ps1 -Version $version -RuntimeTag $runtimeTag
+
+          $runtimeRelease = gh release view $runtimeTag --repo $env:GITHUB_REPOSITORY --json tagName,isDraft | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw "Runtime release does not exist: $runtimeTag" }
+          if ($runtimeRelease.isDraft) { throw "Runtime release is still a draft: $runtimeTag" }
+
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "desktop_tag=$desktopTag" >> $env:GITHUB_OUTPUT
+          "runtime_tag=$runtimeTag" >> $env:GITHUB_OUTPUT
+          "prerelease=$($prerelease.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+
   build-windows:
+    needs: metadata
     runs-on: windows-2025
     timeout-minutes: 90
     env:
       GH_TOKEN: ${{ github.token }}
+      VPK_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+      RUNTIME_TAG: ${{ needs.metadata.outputs.runtime_tag }}
+      PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -28,31 +98,168 @@ jobs:
           node-version: 24.13.1
           cache: npm
           cache-dependency-path: apps/desktop/package-lock.json
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install pinned Velopack CLI
+        run: dotnet tool install --global vpk --version 1.2.0
       - name: Download pinned runtime release
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force .desktop-runtime | Out-Null
-          gh release download '${{ inputs.runtime_tag }}' --repo '${{ github.repository }}' --dir .desktop-runtime `
+          gh release download $env:RUNTIME_TAG --repo $env:GITHUB_REPOSITORY --dir .desktop-runtime `
             --pattern 'runtime-manifest.json' `
             --pattern 'runtime-source.json' `
             --pattern '*-windows-x86_64-cpu.zip'
-          $cpu = @(Get-ChildItem .desktop-runtime -File -Filter '*-windows-x86_64-cpu.zip')
-          if ($cpu.Count -ne 1) { throw "Expected exactly one CPU runtime archive, found $($cpu.Count)." }
-          $source = Get-Content -Raw -Encoding UTF8 .desktop-runtime/runtime-source.json | ConvertFrom-Json
-          $catalogSha256 = (Get-FileHash -Algorithm SHA256 .desktop-runtime/runtime-manifest.json).Hash.ToLowerInvariant()
-          if ($source.manifestSha256 -ne $catalogSha256) {
-            throw 'runtime-source.json does not pin the downloaded runtime-manifest.json.'
-          }
-          Copy-Item -Force .desktop-runtime/runtime-source.json apps/desktop/src-tauri/resources/runtime-source.default.json
-          scripts/prepare-bundled-cpu-runtime.ps1 `
-            -RuntimeAsset $cpu[0].FullName `
-            -Catalog .desktop-runtime/runtime-manifest.json
+          scripts/prepare-desktop-runtime.ps1 `
+            -RuntimeDirectory .desktop-runtime `
+            -RuntimeTag $env:RUNTIME_TAG `
+            -Repository $env:GITHUB_REPOSITORY
       - name: Install frontend dependencies
         run: npm ci --prefix apps/desktop
-      - name: Build unsigned Windows installer
-        run: npm --prefix apps/desktop run tauri -- build
+      - name: Test frontend
+        run: npm run test:unit --prefix apps/desktop
+      - name: Test desktop backend
+        run: cargo test --locked -p dolsoe-desktop --lib
+      - name: Download previous Velopack release
+        shell: pwsh
+        run: |
+          $arguments = @(
+            'download', 'github',
+            '--repoUrl', "https://github.com/$env:GITHUB_REPOSITORY",
+            '--channel', 'win-x64',
+            '--outputDir', '.desktop-release',
+            '--skip-updates',
+            '--yes'
+          )
+          if ($env:PRERELEASE -eq 'true') {
+            $arguments += '--pre'
+          }
+          & vpk @arguments
+          if ($LASTEXITCODE -ne 0) {
+            throw "Velopack download failed: $LASTEXITCODE"
+          }
+      - name: Build unsigned Windows application
+        run: npm --prefix apps/desktop run tauri -- build --ci
+      - name: Stage Velopack application
+        shell: pwsh
+        run: scripts/stage-desktop-velopack.ps1
+      - name: Build Velopack installer and update packages
+        shell: pwsh
+        run: |
+          @"
+          Dolsoe $env:RELEASE_VERSION for Windows x64.
+
+          Bundled runtime: ``$env:RUNTIME_TAG``
+
+          This build is not Authenticode-signed.
+          "@ | Set-Content -Encoding UTF8 .desktop-release-notes.md
+
+          vpk pack `
+            --packId Dolsoe `
+            --packVersion $env:RELEASE_VERSION `
+            --packDir .desktop-package `
+            --mainExe dolsoe-desktop.exe `
+            --packTitle Dolsoe `
+            --packAuthors "Dolsoe contributors" `
+            --icon apps/desktop/src-tauri/icons/icon.ico `
+            --runtime win-x64 `
+            --channel win-x64 `
+            --framework webview2 `
+            --releaseNotes .desktop-release-notes.md `
+            --noPortable `
+            --outputDir .desktop-release `
+            --skip-updates `
+            --yes
+      - name: Finalize release metadata
+        shell: pwsh
+        run: |
+          scripts/package-desktop-release.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -RuntimeTag $env:RUNTIME_TAG `
+            -CommitSha $env:GITHUB_SHA
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dolsoe-windows-${{ github.run_number }}
-          path: target/release/bundle/**/*
+          name: dolsoe-windows-${{ needs.metadata.outputs.version }}
+          path: |
+            .desktop-release/assets.win-x64.json
+            .desktop-release/releases.win-x64.json
+            .desktop-release/RELEASES-win-x64
+            .desktop-release/Dolsoe-win-x64-Setup.exe
+            .desktop-release/Dolsoe-${{ needs.metadata.outputs.version }}-win-x64-full.nupkg
+            .desktop-release/Dolsoe-${{ needs.metadata.outputs.version }}-win-x64-delta.nupkg
+            .desktop-release/desktop-release.json
+            .desktop-release/SHA256SUMS.txt
           if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [metadata, build-windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VPK_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+      DESKTOP_TAG: ${{ needs.metadata.outputs.desktop_tag }}
+      RUNTIME_TAG: ${{ needs.metadata.outputs.runtime_tag }}
+      PRERELEASE: ${{ needs.metadata.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dolsoe-windows-${{ needs.metadata.outputs.version }}
+          path: .desktop-release
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Install pinned Velopack CLI
+        run: dotnet tool install --global vpk --version 1.2.0
+      - name: Publish immutable Velopack GitHub Release
+        shell: bash
+        run: |
+          if gh release view "$DESKTOP_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Refusing to overwrite existing release $DESKTOP_TAG" >&2
+            exit 1
+          fi
+
+          cat > release-notes.md <<EOF
+          Dolsoe $RELEASE_VERSION for Windows x64.
+
+          Bundled runtime: \`$RUNTIME_TAG\`
+
+          Assets include a Velopack one-click installer, update packages and feed, a release manifest, and SHA-256 checksums.
+          This build is not Authenticode-signed.
+          EOF
+
+          velopack_args=()
+          if [[ "$PRERELEASE" == "true" ]]; then
+            velopack_args+=(--pre)
+          fi
+
+          vpk upload github \
+            --repoUrl "https://github.com/$GITHUB_REPOSITORY" \
+            --channel win-x64 \
+            --outputDir .desktop-release \
+            --tag "$DESKTOP_TAG" \
+            --releaseName "Dolsoe $RELEASE_VERSION" \
+            --targetCommitish "$GITHUB_SHA" \
+            --skip-updates \
+            --yes \
+            "${velopack_args[@]}"
+
+          gh release upload "$DESKTOP_TAG" \
+            .desktop-release/desktop-release.json \
+            .desktop-release/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY"
+
+          publish_args=(--draft=false)
+          if [[ "$PRERELEASE" == "true" ]]; then
+            publish_args+=(--prerelease)
+          fi
+          gh release edit "$DESKTOP_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Dolsoe $RELEASE_VERSION" \
+            --notes-file release-notes.md \
+            "${publish_args[@]}"

@@ -2,6 +2,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
+    velopack::VelopackApp::build().run();
+
     if let Some(status) = dolsoe_desktop_lib::run_runtime_probe_cli_if_requested() {
         std::process::exit(status);
     }
