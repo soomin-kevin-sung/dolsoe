@@ -21,8 +21,8 @@ describe("CPU runtime recovery", () => {
     }));
 
     expect(isCpuRuntimeRecoveryError(error)).toBe(true);
-    expect(markup).toContain("CPU 런타임이 필요합니다");
-    expect(markup).toContain("CPU 런타임 설치");
+    expect(markup).toContain("런타임이 필요합니다");
+    expect(markup).toContain("런타임 설치");
     expect(markup).not.toContain(error);
     expect(markup).not.toContain("모델 다시 선택");
   });

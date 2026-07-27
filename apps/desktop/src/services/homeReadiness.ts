@@ -62,15 +62,15 @@ export function isCpuReady(kind: HomeReadinessKind): boolean {
 }
 
 export function readinessStatus(kind: HomeReadinessKind): { text: string; tone: "none" | "loading" | "pending" | "error" | "ready" } {
-  if (kind === "runtime-checking") return { text: "CPU 런타임 확인 중", tone: "loading" };
-  if (kind === "runtime-downloading") return { text: "CPU 런타임 다운로드 중", tone: "loading" };
-  if (kind === "runtime-verifying") return { text: "CPU 런타임 검증 중", tone: "loading" };
-  if (kind === "runtime-installing") return { text: "CPU 런타임 설치 중", tone: "loading" };
+  if (kind === "runtime-checking") return { text: "런타임 확인 중", tone: "loading" };
+  if (kind === "runtime-downloading") return { text: "런타임 다운로드 중", tone: "loading" };
+  if (kind === "runtime-verifying") return { text: "런타임 검증 중", tone: "loading" };
+  if (kind === "runtime-installing") return { text: "런타임 설치 중", tone: "loading" };
   if (kind === "runtime-installed") return { text: "재시작 필요", tone: "pending" };
   if (kind.startsWith("runtime-failed-")) {
-    return { text: "CPU 런타임 필요", tone: kind === "runtime-failed-network" ? "none" : "error" };
+    return { text: "런타임 필요", tone: kind === "runtime-failed-network" ? "none" : "error" };
   }
-  if (kind === "runtime-missing") return { text: "CPU 런타임 필요", tone: "none" };
+  if (kind === "runtime-missing") return { text: "런타임 필요", tone: "none" };
   if (kind === "model-loading") return { text: "모델 로딩 중", tone: "loading" };
   if (kind === "model-missing") return { text: "모델 없음", tone: "none" };
   return { text: "준비됨", tone: "ready" };

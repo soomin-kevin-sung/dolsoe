@@ -141,7 +141,7 @@ export function NativeSettingsPanel(props: Props) {
           {distributionError && <p className="runtime-pack-error">다운로드 정보를 불러오지 못했습니다. 이미 설치된 백엔드는 계속 사용할 수 있습니다. {distributionError}</p>}
           {installedBackend && <div className={`runtime-install-result ${restartRequired ? "pending" : "success"}`} role="status">
             <strong>{labels[installedBackend]} 설치 완료</strong>
-            <p>{restartRequired ? "현재 사용 중인 DLL을 안전하게 교체하려면 앱을 재시작해야 합니다." : installedBackend === "cpu" ? "CPU 런타임을 바로 사용할 수 있습니다." : "백엔드 목록에서 선택한 뒤 모델에 적용할 수 있습니다."}</p>
+            <p>{restartRequired ? "현재 사용 중인 DLL을 안전하게 교체하려면 앱을 재시작해야 합니다." : installedBackend === "cpu" ? "런타임을 바로 사용할 수 있습니다." : "백엔드 목록에서 선택한 뒤 모델에 적용할 수 있습니다."}</p>
             <div className="panel-actions">{restartRequired && <button className="button-primary" type="button" onClick={props.onRestart}>지금 재시작</button>}<button className="button-secondary" type="button" onClick={props.onDismissInstall}>{restartRequired ? "나중에" : "확인"}</button></div>
           </div>}
         </section>

@@ -44,11 +44,11 @@ interface Props {
 }
 
 const failureCopy: Record<string, [string, string]> = {
-  "runtime-failed-network": ["인터넷 연결을 확인하세요", "CPU 런타임 정보를 받아오지 못했습니다."],
+  "runtime-failed-network": ["인터넷 연결을 확인하세요", "런타임 정보를 받아오지 못했습니다."],
   "runtime-failed-verification": ["다운로드 파일을 확인하지 못했습니다", "파일 체크섬이 일치하지 않습니다."],
   "runtime-failed-disk": ["저장 공간이 부족합니다", "여유 공간을 확보한 뒤 다시 시도하세요."],
-  "runtime-failed-recovery": ["CPU 런타임을 불러오지 못했습니다", "검증된 CPU 런타임을 다시 설치하세요."],
-  "runtime-failed-unknown": ["CPU 런타임을 설치하지 못했습니다", "다시 시도하거나 진단에서 자세한 내용을 확인하세요."],
+  "runtime-failed-recovery": ["런타임을 불러오지 못했습니다", "검증된 런타임을 다시 설치하세요."],
+  "runtime-failed-unknown": ["런타임을 설치하지 못했습니다", "다시 시도하거나 진단에서 자세한 내용을 확인하세요."],
 };
 
 function SetupBand({ icon, title, body, meta, tone = "neutral", children }: {
@@ -79,7 +79,7 @@ export function NativeHomeView(props: Props) {
     ? Math.round((props.modelProgress ?? 0) * 100)
     : props.installState?.progress ?? 0;
   const announcement = useMemo(() => props.readiness === "runtime-downloading"
-    ? `CPU 런타임 다운로드 ${Math.floor(progress / 10) * 10}%`
+    ? `런타임 다운로드 ${Math.floor(progress / 10) * 10}%`
     : status.text, [progress, props.readiness, status.text]);
 
   useEffect(() => {
@@ -125,8 +125,8 @@ export function NativeHomeView(props: Props) {
       const checking = props.readiness === "runtime-checking";
       return <SetupBand
         icon={checking ? <LoaderCircle className="spin" /> : <Cpu />}
-        title={checking ? "런타임 정보를 확인하고 있습니다" : "로컬 추론 엔진을 준비합니다"}
-        body={checking ? "설치 가능한 CPU 런타임을 불러오는 중입니다." : "CPU 런타임을 한 번 설치하면 이후에는 바로 사용할 수 있습니다."}
+        title={checking ? "런타임 정보를 확인하고 있습니다" : "런타임을 준비합니다"}
+        body={checking ? "설치 가능한 런타임을 불러오는 중입니다." : "런타임을 한 번 설치하면 이후에는 바로 사용할 수 있습니다."}
         meta={!checking && props.cpuPack ? <><span>{formatBytes(props.cpuPack.sizeBytes)}</span><span>v{props.cpuPack.releaseVersion}</span><span>SHA-256 검증</span></> : undefined}
         tone={checking ? "loading" : "neutral"}
       >
@@ -138,13 +138,13 @@ export function NativeHomeView(props: Props) {
       const label = props.readiness === "runtime-downloading" ? "다운로드 중" : props.readiness === "runtime-verifying" ? "검증 중" : "설치 중";
       const bytes = props.readiness === "runtime-downloading" && props.installState
         ? `${formatBytes(props.installState.downloadedBytes)} / ${formatBytes(props.installState.totalBytes)}` : null;
-      return <SetupBand icon={<LoaderCircle className="spin" />} title={`CPU 런타임 ${label}`} body="앱을 닫지 않아도 곧 다음 단계로 이어집니다." tone="loading"
+      return <SetupBand icon={<LoaderCircle className="spin" />} title={`런타임 ${label}`} body="앱을 닫지 않아도 곧 다음 단계로 이어집니다." tone="loading"
         meta={<div className="home-inline-progress"><div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress} aria-label={label}><div className="progress-fill" style={{ width: `${progress}%` }} /></div><span>{bytes ? `${bytes} · ` : ""}{progress}%</span></div>}>
         {props.readiness === "runtime-downloading" && <button className="button-secondary" type="button" onClick={props.onCancelInstall}>취소</button>}
       </SetupBand>;
     }
 
-    if (props.readiness === "runtime-installed") return <SetupBand icon={<RotateCw />} title="CPU 런타임 교체가 준비되었습니다" body="현재 사용 중인 DLL을 안전하게 교체하려면 앱을 한 번 재시작해야 합니다." tone="pending">
+    if (props.readiness === "runtime-installed") return <SetupBand icon={<RotateCw />} title="런타임 교체가 준비되었습니다" body="현재 사용 중인 DLL을 안전하게 교체하려면 앱을 한 번 재시작해야 합니다." tone="pending">
       <button ref={primaryRef} className="button-primary" type="button" onClick={props.onRestart}>지금 재시작</button>
       <button className="button-secondary" type="button" onClick={props.onDismissInstall}>나중에</button>
     </SetupBand>;
@@ -204,10 +204,10 @@ export function NativeHomeView(props: Props) {
         <section className="home-setup-intro">
           <img className="home-dolsoe-mark" src={dolsoeIconUrl} alt="" aria-hidden="true" />
           <h1>연장만 챙기면 바로 시작합니다</h1>
-          <p>대화에 필요한 실행 환경과 사용할 모델을 이 기기에 준비합니다.</p>
+          <p>대화에 필요한 런타임과 사용할 모델을 이 기기에 준비합니다.</p>
         </section>
         <ol className="home-setup-steps" aria-label="로컬 AI 준비 단계">
-          <li className={setupStep === 1 ? "active" : "complete"}><span>{cpuReady ? <Check size={13} /> : "1"}</span><div><strong>CPU 런타임</strong><small>{cpuReady ? "설치됨" : status.text}</small></div></li>
+          <li className={setupStep === 1 ? "active" : "complete"}><span>{cpuReady ? <Check size={13} /> : "1"}</span><div><strong>런타임</strong><small>{cpuReady ? "설치됨" : status.text}</small></div></li>
           <li className={setupStep === 2 ? "active" : ""}><span>2</span><div><strong>모델 선택</strong><small>{cpuReady ? status.text : "런타임 설치 후 선택"}</small></div></li>
           <li><span>3</span><div><strong>대화 시작</strong><small>모델 준비 후 바로 사용</small></div></li>
         </ol>

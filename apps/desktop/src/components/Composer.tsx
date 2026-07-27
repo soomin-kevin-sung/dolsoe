@@ -14,7 +14,7 @@ export function Composer({ disabled, streaming, state, runtimeRecovery, inputRef
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [placeholder, hint] = runtimeRecovery
-    ? ["CPU 런타임을 설치하면 대화를 시작할 수 있습니다", "설정에서 CPU 런타임을 설치하세요"]
+    ? ["런타임을 설치하면 대화를 시작할 수 있습니다", "설정에서 런타임을 설치하세요"]
     : copy[state] ?? ["메시지를 입력하세요", "Enter 전송 · Shift+Enter 줄바꿈"];
   async function submit() {
     const value = draft.trim();
