@@ -10,6 +10,7 @@ interface Props {
   settingsButtonRef: Ref<HTMLButtonElement>; resetButtonRef: Ref<HTMLButtonElement>; onSettings(): void; onReset?(): void;
   onRename?(title: string): void | Promise<void>;
   agentMode?: AgentModeId;
+  agentModeDisabled?: boolean;
   onAgentModeChange?(mode: AgentModeId): void;
   onOpenAgentSettings?(): void;
 }
@@ -24,6 +25,7 @@ export function ChatHeader({
   onReset,
   onRename,
   agentMode = DEFAULT_AGENT_MODE,
+  agentModeDisabled = false,
   onAgentModeChange,
   onOpenAgentSettings,
 }: Props) {
@@ -57,6 +59,7 @@ export function ChatHeader({
       {view !== "diagnostics" && (
         <AgentModeMenu
           value={agentMode}
+          disabled={agentModeDisabled}
           context={view === "home" ? "new-conversation" : "conversation"}
           onChange={onAgentModeChange}
           onOpenSettings={onOpenAgentSettings}

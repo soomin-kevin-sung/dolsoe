@@ -59,9 +59,18 @@ pub async fn llm_submit(
     }
     let conversation_id = request.conversation_id.clone();
     let conversations = conversation_state.inner().clone();
-    let snapshot = blocking(move || conversations.prompt_snapshot(&conversation_id))
-        .await?
+    let context = blocking(move || conversations.model_prompt_context(&conversation_id)).await?;
+    let snapshot = context
+        .snapshot
         .ok_or_else(|| "conversation system prompt snapshot was not initialized".to_string())?;
+    request.messages = context
+        .messages
+        .into_iter()
+        .map(|message| SubmitChatMessage {
+            role: message.role,
+            content: message.content,
+        })
+        .collect();
     inject_system_message(&mut request.messages, &snapshot.system_prompt)?;
     let runtime = runtime_state.inner().clone();
     let agent = agent_state.inner().clone();
@@ -89,12 +98,14 @@ fn inject_system_message(
 
 #[tauri::command]
 pub async fn llm_cancel(
-    state: State<'_, RuntimeHost>,
+    runtime_state: State<'_, RuntimeHost>,
+    agent_state: State<'_, AgentController>,
     request_handle: String,
 ) -> Result<(), String> {
     let handle = parse_request_handle(&request_handle)?;
-    let worker = state.inner().clone();
-    blocking(move || worker.cancel(handle)).await
+    let runtime = runtime_state.inner().clone();
+    let agent = agent_state.inner().clone();
+    blocking(move || agent.cancel(&runtime, handle)).await
 }
 
 #[tauri::command]

@@ -10,6 +10,9 @@ function message(role: "user" | "assistant", content: string, status: StoredMess
     role,
     content,
     status,
+    kind: "chat",
+    source: role === "user" ? "user" : "model",
+    metadataJson: null,
     createdAt: 1,
     updatedAt: 1,
   };

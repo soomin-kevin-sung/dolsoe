@@ -2,8 +2,8 @@ use serde::Deserialize;
 use tauri::State;
 
 use crate::conversation_store::{
-    ConversationBootstrap, ConversationDetail, ConversationPromptSnapshot, ConversationStore,
-    ConversationSummary, MessageStatus, StartedTurn,
+    AgentPreferences, ConversationBootstrap, ConversationDetail, ConversationPromptSnapshot,
+    ConversationStore, ConversationSummary, MessageStatus, StartedTurn,
 };
 use crate::persona_prompt::PersonaPromptStore;
 
@@ -91,19 +91,50 @@ pub async fn conversation_start_new_turn(
     state: State<'_, ConversationStore>,
     persona_state: State<'_, PersonaPromptStore>,
     prompt: String,
+    agent_mode: Option<String>,
 ) -> Result<StartedTurn, String> {
     let store = state.inner().clone();
     let persona = persona_state.inner().clone();
     blocking(move || {
+        let mode = agent_mode
+            .map(Ok)
+            .unwrap_or_else(|| store.agent_preferences().map(|value| value.default_mode))?;
         let compiled = persona.compiled()?;
         let snapshot = ConversationPromptSnapshot {
             persona_id: compiled.persona_id,
             persona_revision: compiled.revision,
             system_prompt: compiled.content,
         };
-        store.start_new_agent_turn_with_prompt(&prompt, Some(&snapshot))
+        store.start_new_agent_turn_with_mode(&prompt, &mode, Some(&snapshot))
     })
     .await
+}
+
+#[tauri::command]
+pub async fn agent_get_preferences(
+    state: State<'_, ConversationStore>,
+) -> Result<AgentPreferences, String> {
+    let store = state.inner().clone();
+    blocking(move || store.agent_preferences()).await
+}
+
+#[tauri::command]
+pub async fn agent_set_default_mode(
+    state: State<'_, ConversationStore>,
+    mode: String,
+) -> Result<AgentPreferences, String> {
+    let store = state.inner().clone();
+    blocking(move || store.set_default_agent_mode(&mode)).await
+}
+
+#[tauri::command]
+pub async fn conversation_set_agent_mode(
+    state: State<'_, ConversationStore>,
+    conversation_id: String,
+    mode: String,
+) -> Result<ConversationDetail, String> {
+    let store = state.inner().clone();
+    blocking(move || store.set_conversation_agent_mode(&conversation_id, &mode)).await
 }
 
 #[tauri::command]

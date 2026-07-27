@@ -182,6 +182,7 @@ function NativeWorkspace() {
   }
 
   function goHome() {
+    workspace.resetDraftMode();
     setHomeOpen(true);
     setDiagnosticsOpen(false);
   }
@@ -321,6 +322,12 @@ function NativeWorkspace() {
             settingsOpen={settingsOpen}
             settingsButtonRef={settingsButtonRef}
             resetButtonRef={resetButtonRef}
+            agentMode={homeOpen || !current ? workspace.draftAgentMode : current.agentMode}
+            agentModeDisabled={workspace.agentModeLoading || Boolean(workspace.state.activeTurn)}
+            onAgentModeChange={(mode) => {
+              if (homeOpen || !current) workspace.updateDraftAgentMode(mode);
+              else void workspace.updateConversationAgentMode(mode);
+            }}
             onReset={!homeOpen && !diagnosticsOpen && current ? () => openConversationDialog("reset", current.id) : undefined}
             onSettings={() => {
               if (settingsOpen) setSettingsOpen(false);
@@ -373,6 +380,7 @@ function NativeWorkspace() {
           theme={theme}
           startPage={generalPreferences.startPage}
           autoLoadLastModel={generalPreferences.autoLoadLastModel}
+          defaultAgentMode={workspace.defaultAgentMode}
           options={runtime.options}
           runtimePacks={runtime.runtimePacks}
           runtimePackError={runtime.runtimePackError}
@@ -385,6 +393,7 @@ function NativeWorkspace() {
           onThemeChange={setTheme}
           onStartPageChange={(startPage) => updateGeneralPreferences({ startPage })}
           onAutoLoadLastModelChange={(autoLoadLastModel) => updateGeneralPreferences({ autoLoadLastModel })}
+          onDefaultAgentModeChange={(mode) => void workspace.updateDefaultAgentMode(mode)}
           onOptionsChange={runtime.setOptions}
           onApplyConfiguration={runtime.applyConfiguration}
           onClose={() => { setSettingsOpen(false); settingsButtonRef.current?.focus(); }}

@@ -19,8 +19,8 @@ export const AGENT_MODES: readonly AgentModeDefinition[] = [
   {
     id: "react",
     label: "ReAct",
-    description: "도구 결과를 관찰하며 판단과 실행을 반복합니다.",
-    availability: "coming-soon",
+    description: "필요할 때 도구를 사용하고 결과를 확인하며 답을 완성합니다.",
+    availability: "available",
   },
   {
     id: "plan-and-solve",

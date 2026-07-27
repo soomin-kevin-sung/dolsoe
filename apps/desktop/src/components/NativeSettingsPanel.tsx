@@ -6,6 +6,7 @@ import type { ThemePreference } from "../services/runtime";
 import { formatBytes, type AvailableRuntimePack, type RuntimeBackend, type RuntimeInstallState, type RuntimePack, type RuntimeSelection } from "../services/runtimePacks";
 import { GenerationSettingsControls, PerformanceSettingsControls } from "./InferenceSettingsControls";
 import { AgentModeSettings } from "./AgentModeSettings";
+import type { AgentModeId } from "../services/agentModes";
 import { GeneralSettingsControls } from "./GeneralSettingsControls";
 import { PersonaPromptSettings } from "./PersonaPromptSettings";
 import { RuntimeBackendRow } from "./RuntimeBackendRow";
@@ -19,6 +20,7 @@ interface Props {
   theme: ThemePreference;
   startPage: StartPagePreference;
   autoLoadLastModel: boolean;
+  defaultAgentMode: AgentModeId;
   options: NativeOptions;
   runtimePacks: RuntimePack[];
   runtimePackError: string | null;
@@ -31,6 +33,7 @@ interface Props {
   onThemeChange(theme: ThemePreference): void;
   onStartPageChange(startPage: StartPagePreference): void;
   onAutoLoadLastModelChange(enabled: boolean): void;
+  onDefaultAgentModeChange(mode: AgentModeId): void;
   onOptionsChange(options: NativeOptions): void;
   onApplyConfiguration(options: NativeOptions, backend: RuntimeBackend): Promise<boolean>;
   onClose(): void;
@@ -115,7 +118,12 @@ export function NativeSettingsPanel(props: Props) {
 
       {activeTab === "persona" && <PersonaPromptSettings active={open && activeTab === "persona"} />}
 
-      {activeTab === "agent" && <AgentModeSettings />}
+      {activeTab === "agent" && (
+        <AgentModeSettings
+          value={props.defaultAgentMode}
+          onChange={props.onDefaultAgentModeChange}
+        />
+      )}
 
       {activeTab === "runtime" && <div id="settings-panel-runtime" role="tabpanel">
         <section className="settings-section settings-section-first">

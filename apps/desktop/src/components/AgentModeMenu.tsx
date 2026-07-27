@@ -6,15 +6,20 @@ import { AgentModeIcon } from "./AgentModeIcon";
 
 interface Props {
   value: AgentModeId;
+  disabled?: boolean;
   context: "conversation" | "new-conversation";
   onChange?(mode: AgentModeId): void;
   onOpenSettings?(): void;
 }
 
-export function AgentModeMenu({ value, context, onChange, onOpenSettings }: Props) {
+export function AgentModeMenu({ value, disabled = false, context, onChange, onOpenSettings }: Props) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const selectedMode = getAgentMode(value);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
 
   useEffect(() => {
     if (!open) return;
@@ -43,6 +48,7 @@ export function AgentModeMenu({ value, context, onChange, onOpenSettings }: Prop
         aria-label={`에이전트 모드: ${selectedMode.label}`}
         aria-haspopup="menu"
         aria-expanded={open}
+        disabled={disabled}
         onClick={() => setOpen((current) => !current)}
       >
         <AgentModeIcon mode={value} size={15} strokeWidth={2} aria-hidden="true" />

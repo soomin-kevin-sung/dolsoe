@@ -1,4 +1,6 @@
 mod agent_loop;
+mod agent_mode;
+mod agent_tools;
 mod conversation_commands;
 mod conversation_store;
 mod llm_commands;
@@ -108,6 +110,9 @@ pub fn run() {
             conversation_commands::conversation_start_new_turn,
             conversation_commands::conversation_start_turn,
             conversation_commands::conversation_finish_turn,
+            conversation_commands::agent_get_preferences,
+            conversation_commands::agent_set_default_mode,
+            conversation_commands::conversation_set_agent_mode,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

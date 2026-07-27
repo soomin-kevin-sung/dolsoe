@@ -899,6 +899,7 @@ name = "dolsoe-desktop"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "fasteval",
  "futures-util",
  "llm-runtime",
  "reqwest",
@@ -1091,6 +1092,12 @@ name = "fallible-streaming-iterator"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
+
+[[package]]
+name = "fasteval"
+version = "0.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f4cdac9e4065d7c48e30770f8665b8cef9a3a73a63a4056a33a5f395bc7cf75"
 
 [[package]]
 name = "fastrand"

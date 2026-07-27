@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { AgentModeId } from "./agentModes";
 
 export type MessageRole = "user" | "assistant";
 export type MessageStatus = "complete" | "streaming" | "cancelled" | "interrupted" | "error";
@@ -7,6 +8,7 @@ export type TerminalMessageStatus = Exclude<MessageStatus, "streaming">;
 export interface ConversationSummary {
   id: string;
   title: string;
+  agentMode: AgentModeId;
   createdAt: number;
   updatedAt: number;
 }
@@ -17,6 +19,9 @@ export interface StoredMessage {
   role: MessageRole;
   content: string;
   status: MessageStatus;
+  kind: "chat" | "agent-mode-change";
+  source: "user" | "model" | "application";
+  metadataJson: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -40,6 +45,10 @@ export interface StartedTurn {
 
 export interface ConversationBindings {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
+}
+
+export interface AgentPreferences {
+  defaultMode: AgentModeId;
 }
 
 export const tauriConversationBindings: ConversationBindings = { invoke };
@@ -67,12 +76,27 @@ export class ConversationService {
     return this.bindings.invoke("conversation_delete", { conversationId });
   }
 
-  startNewTurn(prompt: string): Promise<StartedTurn> {
-    return this.bindings.invoke("conversation_start_new_turn", { prompt });
+  startNewTurn(prompt: string, agentMode: AgentModeId): Promise<StartedTurn> {
+    return this.bindings.invoke("conversation_start_new_turn", { prompt, agentMode });
   }
 
   startTurn(conversationId: string, prompt: string): Promise<StartedTurn> {
     return this.bindings.invoke("conversation_start_turn", { conversationId, prompt });
+  }
+
+  getAgentPreferences(): Promise<AgentPreferences> {
+    return this.bindings.invoke("agent_get_preferences");
+  }
+
+  setDefaultAgentMode(mode: AgentModeId): Promise<AgentPreferences> {
+    return this.bindings.invoke("agent_set_default_mode", { mode });
+  }
+
+  setConversationAgentMode(
+    conversationId: string,
+    mode: AgentModeId,
+  ): Promise<ConversationDetail> {
+    return this.bindings.invoke("conversation_set_agent_mode", { conversationId, mode });
   }
 
   finishTurn(

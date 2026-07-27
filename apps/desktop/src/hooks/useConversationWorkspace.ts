@@ -13,9 +13,12 @@ import {
   type ConversationAction,
   type ConversationState,
 } from "../services/conversationState";
+import {
+  DEFAULT_AGENT_MODE,
+  type AgentModeId,
+} from "../services/agentModes";
 import type { LlmEventDto } from "../services/nativeRuntime";
 import { TokenDecoders } from "../services/nativeState";
-import { chatMessagesForPrompt } from "../services/chatMessages";
 import { restartAfterTerminalPersistence, TerminalWaiters } from "../services/terminalWaiters";
 import { useNativeRuntime } from "./useNativeRuntime";
 
@@ -28,7 +31,13 @@ export function useConversationWorkspace() {
   const decoders = useRef(new TokenDecoders());
   const stateRef = useRef<ConversationState>(createConversationState());
   const terminalWaiters = useRef(new TerminalWaiters());
+  const defaultAgentModeRef = useRef<AgentModeId>(DEFAULT_AGENT_MODE);
+  const draftAgentModeRef = useRef<AgentModeId>(DEFAULT_AGENT_MODE);
+  const draftModeOverriddenRef = useRef(false);
   const [state, setState] = useState(stateRef.current);
+  const [defaultAgentMode, setDefaultAgentModeState] = useState<AgentModeId>(DEFAULT_AGENT_MODE);
+  const [draftAgentMode, setDraftAgentModeState] = useState<AgentModeId>(DEFAULT_AGENT_MODE);
+  const [agentModeLoading, setAgentModeLoading] = useState(true);
 
   const apply = useCallback((action: ConversationAction) => {
     setState((current) => {
@@ -79,7 +88,16 @@ export function useConversationWorkspace() {
   useEffect(() => {
     let disposed = false;
     void service.bootstrap()
-      .then((value) => { if (!disposed) apply({ type: "bootstrapped", value }); })
+      .then(async (value) => ({ value, preferences: await service.getAgentPreferences() }))
+      .then(({ value, preferences }) => {
+        if (disposed) return;
+        defaultAgentModeRef.current = preferences.defaultMode;
+        draftAgentModeRef.current = preferences.defaultMode;
+        setDefaultAgentModeState(preferences.defaultMode);
+        setDraftAgentModeState(preferences.defaultMode);
+        setAgentModeLoading(false);
+        apply({ type: "bootstrapped", value });
+      })
       .catch((error) => { if (!disposed) apply({ type: "storage-error", error: errorText(error) }); });
     return () => {
       disposed = true;
@@ -88,7 +106,16 @@ export function useConversationWorkspace() {
     };
   }, [apply, service]);
 
-  const openDraft = useCallback(() => apply({ type: "draft-opened" }), [apply]);
+  const resetDraftMode = useCallback(() => {
+    draftModeOverriddenRef.current = false;
+    draftAgentModeRef.current = defaultAgentModeRef.current;
+    setDraftAgentModeState(defaultAgentModeRef.current);
+  }, []);
+
+  const openDraft = useCallback(() => {
+    resetDraftMode();
+    apply({ type: "draft-opened" });
+  }, [apply, resetDraftMode]);
 
   const select = useCallback(async (conversationId: string) => {
     const cached = stateRef.current.details[conversationId];
@@ -171,16 +198,17 @@ export function useConversationWorkspace() {
     }
   }, [apply, cancelSource, service]);
 
-  const submitPrompt = useCallback(async (prompt: string, forceNewConversation: boolean) => {
+  const submitPrompt = useCallback(async (
+    prompt: string,
+    forceNewConversation: boolean,
+    newConversationMode?: AgentModeId,
+  ) => {
     const current = forceNewConversation ? null : selectCurrentConversation(stateRef.current);
     if (Boolean(stateRef.current.activeTurn)) return false;
     try {
-      const chatMessages = current
-        ? chatMessagesForPrompt(current.messages, prompt)
-        : [{ role: "user" as const, content: prompt }];
       const turn = current
         ? await service.startTurn(current.id, prompt)
-        : await service.startNewTurn(prompt);
+        : await service.startNewTurn(prompt, newConversationMode ?? draftAgentModeRef.current);
       apply({ type: "turn-started", value: turn });
       try {
         if (!turn.agentRunId || !turn.agentStepId) {
@@ -191,7 +219,6 @@ export function useConversationWorkspace() {
           turn.agentRunId,
           turn.agentStepId,
           prompt,
-          chatMessages,
         );
         if (response) apply({ type: "request-bound", requestHandle: response.requestHandle });
       } catch (error) {
@@ -222,8 +249,45 @@ export function useConversationWorkspace() {
 
   const startDraft = useCallback((prompt: string) => {
     apply({ type: "draft-opened" });
-    return submitPrompt(prompt, true);
+    return submitPrompt(prompt, true, draftAgentModeRef.current);
   }, [apply, submitPrompt]);
+
+  const updateDefaultAgentMode = useCallback(async (mode: AgentModeId) => {
+    try {
+      const preferences = await service.setDefaultAgentMode(mode);
+      defaultAgentModeRef.current = preferences.defaultMode;
+      setDefaultAgentModeState(preferences.defaultMode);
+      if (!draftModeOverriddenRef.current) {
+        draftAgentModeRef.current = preferences.defaultMode;
+        setDraftAgentModeState(preferences.defaultMode);
+      }
+      return true;
+    } catch (error) {
+      apply({ type: "storage-error", error: errorText(error) });
+      return false;
+    }
+  }, [apply, service]);
+
+  const updateDraftAgentMode = useCallback((mode: AgentModeId) => {
+    draftModeOverriddenRef.current = true;
+    draftAgentModeRef.current = mode;
+    setDraftAgentModeState(mode);
+  }, []);
+
+  const updateConversationAgentMode = useCallback(async (mode: AgentModeId) => {
+    const current = selectCurrentConversation(stateRef.current);
+    if (!current || stateRef.current.activeTurn) return false;
+    try {
+      apply({
+        type: "selected",
+        detail: await service.setConversationAgentMode(current.id, mode),
+      });
+      return true;
+    } catch (error) {
+      apply({ type: "storage-error", error: errorText(error) });
+      return false;
+    }
+  }, [apply, service]);
 
   const setSearch = useCallback((value: string) => apply({ type: "search", value }), [apply]);
   const current = selectCurrentConversation(state);
@@ -243,6 +307,13 @@ export function useConversationWorkspace() {
     submit,
     stop: workspaceRuntime.stop,
     setSearch,
+    defaultAgentMode,
+    draftAgentMode,
+    agentModeLoading,
+    updateDefaultAgentMode,
+    updateDraftAgentMode,
+    updateConversationAgentMode,
+    resetDraftMode,
   };
 }
 

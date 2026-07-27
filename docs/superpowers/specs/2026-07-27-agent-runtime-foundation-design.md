@@ -11,7 +11,7 @@ The foundation must support:
 - a persistent per-conversation mode;
 - a run-time snapshot that cannot change during an active run;
 - mode-specific, multi-stage prompt pipelines;
-- future ReAct and Plan-and-Solve strategies;
+- ReAct and future Plan-and-Solve strategies;
 - tool execution, approval, and observations;
 - a progress window that resets only after a novel successful tool result;
 - an absolute run limit that never resets;
@@ -19,36 +19,41 @@ The foundation must support:
 - prompt inspection for every model step;
 - cancellation, crash recovery, and deterministic terminal persistence.
 
-The first shipped strategy is `chat`. It performs one model step and must remain
-behaviorally equivalent to the current conversation flow.
+The first shipped strategy was `chat`. It performs one model step and remains
+behaviorally equivalent to the original conversation flow. ReAct v1 is now
+available as the first multi-step strategy.
 
-### 1.1 Implementation status: Agent Loop Zero
+### 1.1 Implementation status: ReAct v1
 
-The first internal slice is implemented with no mode UI or behavior change:
+The runtime foundation and first selectable multi-step mode are implemented:
 
 - every newly prepared turn atomically creates a durable `agent_run` and its
   first `agent_step`;
-- the only registered mode is `chat`, and `ChatStrategy` allows one model step;
+- `chat` remains the default, while `react` can schedule bounded model and tool
+  steps;
+- ReAct decisions use a strict JSON contract with one repair attempt;
+- the first read-only tool is a calculator;
+- a novel successful tool result resets only the progress window, while
+  absolute model-step and tool-call limits never reset;
 - a persisted nonzero correlation ID travels through native
   `request_user_data`;
 - `AgentController` owns correlated runtime events, accumulates output, and
   commits terminal run, step, and assistant-message state before emitting the
   terminal event to the frontend;
 - startup marks prepared or running runs and steps as `interrupted`;
-- the existing frontend terminal write remains temporarily as an idempotent
-  fallback while the two-command prepare/submit UI contract is retained.
+- the settings default applies to new conversations, and each conversation
+  persists its own selectable mode.
 
-Loop Zero uses synchronized in-process controller state because the native
-runtime currently permits one active request and the strategy cannot schedule
-tools or a second model step. Before enabling multi-step modes, controller
-commands, persistence, and tool execution move behind bounded worker channels so
-database or tool latency cannot stall runtime event intake.
+The controller keeps synchronized in-process ownership because the native
+runtime currently permits one active request. Follow-up ReAct model steps run
+outside the runtime event callback so persistence and resubmission do not block
+event relay.
 
 ## 2. Non-goals
 
-This foundation does not implement ReAct, Plan-and-Solve, or production tools.
-It does not expose unrestricted chain-of-thought, run multiple model requests in
-parallel, or add remote inference.
+This foundation does not implement Plan-and-Solve or production-capability
+tools. It does not expose unrestricted chain-of-thought, run multiple model
+requests in parallel, or add remote inference.
 
 Mode prompt editing is not part of the first implementation milestone. The
 contracts allow validated user guidance later without making the parser-critical
@@ -834,15 +839,15 @@ Use a fake model and fake tool registry for:
 - [x] add Migration 3 and store APIs;
 - [x] register only `chat`;
 - [x] add store and migration tests;
-- [ ] add conversation profiles and message provenance with the mode UI.
+- [x] add conversation profiles and message provenance with the mode UI.
 
 ### Milestone 2: preferences and conversation UI
 
-- add agent preferences commands and hook;
-- add settings tab and conversation selector;
-- implement draft inheritance and conversation profile persistence;
-- implement synthetic assistant mode-change messages;
-- keep inference on the current path temporarily.
+- [x] add agent preferences commands and hook;
+- [x] add settings tab and conversation selector;
+- [x] implement draft inheritance and conversation profile persistence;
+- [x] implement synthetic assistant mode-change messages;
+- [x] route inference through the selected strategy.
 
 ### Milestone 3: event correlation
 
@@ -872,10 +877,10 @@ Use a fake model and fake tool registry for:
 
 Only after the foundation passes all acceptance criteria:
 
-- implement the ReAct protocol and parser;
-- add a small read-only tool set;
+- [x] implement the ReAct protocol and parser;
+- [x] add a small read-only tool set;
 - implement Plan-and-Solve planner, executor, and reviewer stages;
-- mark each mode available independently.
+- [x] mark each mode available independently.
 
 ## 20. Acceptance Criteria
 
