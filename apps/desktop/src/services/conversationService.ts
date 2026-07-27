@@ -34,6 +34,8 @@ export interface StartedTurn {
   conversation: ConversationSummary;
   user: StoredMessage;
   assistant: StoredMessage;
+  agentRunId?: string;
+  agentStepId?: string;
 }
 
 export interface ConversationBindings {

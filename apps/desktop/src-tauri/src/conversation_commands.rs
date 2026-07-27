@@ -101,7 +101,7 @@ pub async fn conversation_start_new_turn(
             persona_revision: compiled.revision,
             system_prompt: compiled.content,
         };
-        store.start_new_turn_with_prompt(&prompt, Some(&snapshot))
+        store.start_new_agent_turn_with_prompt(&prompt, Some(&snapshot))
     })
     .await
 }
@@ -122,7 +122,7 @@ pub async fn conversation_start_turn(
             persona_revision: compiled.revision,
             system_prompt: compiled.content,
         };
-        store.start_turn_with_prompt(&conversation_id, &prompt, Some(&snapshot))
+        store.start_agent_turn_with_prompt(&conversation_id, &prompt, Some(&snapshot))
     })
     .await
 }

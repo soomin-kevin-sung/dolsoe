@@ -507,7 +507,15 @@ impl NativeState {
                 .as_ref()
                 .ok_or_else(|| WorkerError::ModelNotLoaded.to_string())?;
             let stream = if request.messages.is_empty() {
-                model.submit(request.prompt.as_bytes(), options)
+                if request.correlation_id == 0 {
+                    model.submit(request.prompt.as_bytes(), options)
+                } else {
+                    model.submit_with_correlation(
+                        request.prompt.as_bytes(),
+                        options,
+                        request.correlation_id,
+                    )
+                }
             } else {
                 let messages = request
                     .messages
@@ -517,7 +525,11 @@ impl NativeState {
                         content: message.content,
                     })
                     .collect::<Vec<_>>();
-                model.submit_chat(&messages, options)
+                if request.correlation_id == 0 {
+                    model.submit_chat(&messages, options)
+                } else {
+                    model.submit_chat_with_correlation(&messages, options, request.correlation_id)
+                }
             }
             .map_err(|error| error.to_string())?;
             let handle = stream.handle();

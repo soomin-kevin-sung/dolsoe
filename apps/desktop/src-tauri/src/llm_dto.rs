@@ -71,6 +71,12 @@ fn default_repeat_penalty() -> f32 {
 #[serde(rename_all = "camelCase")]
 pub struct SubmitRequest {
     pub conversation_id: String,
+    #[serde(default)]
+    pub agent_run_id: Option<String>,
+    #[serde(default)]
+    pub agent_step_id: Option<String>,
+    #[serde(skip)]
+    pub correlation_id: u64,
     pub prompt: String,
     #[serde(default)]
     pub messages: Vec<SubmitChatMessage>,
@@ -130,6 +136,7 @@ pub enum LlmEventKind {
 pub struct LlmEventDto {
     pub kind: LlmEventKind,
     pub request_handle: Option<String>,
+    pub correlation_id: Option<String>,
     pub sequence_number: String,
     pub bytes: Vec<u8>,
     pub error_code: i32,
@@ -206,6 +213,8 @@ impl LlmEventDto {
         Some(Self {
             kind,
             request_handle: (event.request_handle != 0).then(|| event.request_handle.to_string()),
+            correlation_id: (event.request_user_data != 0)
+                .then(|| event.request_user_data.to_string()),
             sequence_number: event.sequence_number.to_string(),
             bytes: event.payload,
             error_code: event.error_code,
@@ -223,6 +232,7 @@ mod tests {
         let dto = LlmEventDto {
             kind: LlmEventKind::Metrics,
             request_handle: Some(u64::MAX.to_string()),
+            correlation_id: Some("7".into()),
             sequence_number: u64::MAX.to_string(),
             bytes: vec![0xed, 0x95, 0x9c],
             error_code: 0,
@@ -240,6 +250,7 @@ mod tests {
         let value = serde_json::to_value(dto).expect("serialize event DTO");
 
         assert_eq!(value["requestHandle"], u64::MAX.to_string());
+        assert_eq!(value["correlationId"], "7");
         assert_eq!(value["sequenceNumber"], u64::MAX.to_string());
         assert_eq!(value["metrics"]["generatedTokens"], u64::MAX.to_string());
         assert_eq!(value["bytes"], serde_json::json!([237, 149, 156]));

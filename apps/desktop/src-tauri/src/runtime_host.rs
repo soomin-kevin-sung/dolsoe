@@ -1,4 +1,5 @@
 use crate::{
+    agent_loop::AgentController,
     llm_dto::{
         LlmMetricsDto, LlmPhase, LlmStatusDto, LoadModelRequest, SubmitRequest, SubmitResponse,
     },
@@ -6,7 +7,6 @@ use crate::{
     runtime_path::RuntimePackResolver,
 };
 use std::sync::{Arc, RwLock};
-use tauri::{AppHandle, Emitter};
 
 #[derive(Clone)]
 enum RuntimeHostState {
@@ -95,13 +95,10 @@ impl RuntimeHost {
 }
 
 pub fn spawn_runtime_worker(
-    app: AppHandle,
     resolver: RuntimePackResolver,
+    agent: AgentController,
 ) -> Result<WorkerHandle, String> {
-    WorkerHandle::spawn(resolver, move |event| {
-        app.emit("llm://event", event)
-            .map_err(|error| error.to_string())
-    })
+    WorkerHandle::spawn(resolver, move |event| agent.route_event(event))
 }
 
 #[cfg(test)]

@@ -30,6 +30,8 @@ export interface LoadModelRequest {
 
 export interface SubmitRequest {
   conversationId: string;
+  agentRunId: string;
+  agentStepId: string;
   prompt: string;
   messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
   maxNewTokens: number;
@@ -62,6 +64,7 @@ export interface LlmMetricsDto {
 export interface LlmEventDto {
   kind: LlmEventKind;
   requestHandle: string | null;
+  correlationId: string | null;
   sequenceNumber: string;
   bytes: number[];
   errorCode: number;

@@ -417,6 +417,30 @@ mod tests {
     }
 
     #[test]
+    fn copies_owned_request_correlation_from_native_events() {
+        let mut correlation = 42_u64;
+        let raw = sys::Event {
+            struct_size: std::mem::size_of::<sys::Event>() as u32,
+            flags: 0,
+            event_type: 3,
+            error_code: 0,
+            model_handle: 1,
+            request_handle: 2,
+            slot_id: 0,
+            reserved0: 0,
+            sequence_number: 3,
+            data: std::ptr::null(),
+            data_len: 0,
+            request_user_data: (&mut correlation as *mut u64).cast(),
+            reserved: [0; 8],
+        };
+
+        let event = RuntimeEvent::from_raw(&raw, Vec::new()).unwrap();
+
+        assert_eq!(event.request_user_data, 42);
+    }
+
+    #[test]
     fn retries_device_enumeration_when_required_count_grows() {
         let mut calls = 0;
 
@@ -1017,7 +1041,7 @@ pub struct RuntimeEvent {
     pub request_handle: u64,
     pub slot_id: u32,
     pub sequence_number: u64,
-    pub request_user_data: usize,
+    pub request_user_data: u64,
     pub payload: Vec<u8>,
 }
 
@@ -1042,7 +1066,12 @@ impl RuntimeEvent {
             request_handle: raw.request_handle,
             slot_id: raw.slot_id,
             sequence_number: raw.sequence_number,
-            request_user_data: raw.request_user_data as usize,
+            request_user_data: if raw.request_user_data.is_null() {
+                0
+            } else {
+                // Correlated submissions own this u64 until the terminal callback returns.
+                unsafe { *raw.request_user_data.cast::<u64>() }
+            },
             payload,
         })
     }
@@ -1088,6 +1117,7 @@ struct RequestState {
     native_done: AtomicBool,
     delivery_failed: AtomicBool,
     native_cancel_requested: AtomicBool,
+    request_correlation: Option<Box<u64>>,
 }
 
 enum TerminalRoute {
@@ -1731,7 +1761,16 @@ impl Model {
         prompt: &[u8],
         options: GenerationOptions,
     ) -> Result<RequestStream, Error> {
-        self.submit_inner(prompt, &[], options)
+        self.submit_inner(prompt, &[], options, None)
+    }
+
+    pub fn submit_with_correlation(
+        &self,
+        prompt: &[u8],
+        options: GenerationOptions,
+        correlation_id: u64,
+    ) -> Result<RequestStream, Error> {
+        self.submit_inner(prompt, &[], options, Some(correlation_id))
     }
 
     pub fn submit_chat(
@@ -1745,7 +1784,22 @@ impl Model {
             .find(|message| message.role == "user")
             .map(|message| message.content.as_bytes())
             .ok_or_else(|| Error::InvalidInput("chat requires a user message".into()))?;
-        self.submit_inner(prompt, messages, options)
+        self.submit_inner(prompt, messages, options, None)
+    }
+
+    pub fn submit_chat_with_correlation(
+        &self,
+        messages: &[ChatMessage],
+        options: GenerationOptions,
+        correlation_id: u64,
+    ) -> Result<RequestStream, Error> {
+        let prompt = messages
+            .iter()
+            .rev()
+            .find(|message| message.role == "user")
+            .map(|message| message.content.as_bytes())
+            .ok_or_else(|| Error::InvalidInput("chat requires a user message".into()))?;
+        self.submit_inner(prompt, messages, options, Some(correlation_id))
     }
 
     fn submit_inner(
@@ -1753,7 +1807,17 @@ impl Model {
         prompt: &[u8],
         messages: &[ChatMessage],
         options: GenerationOptions,
+        correlation_id: Option<u64>,
     ) -> Result<RequestStream, Error> {
+        if correlation_id == Some(0) {
+            return Err(Error::InvalidInput(
+                "request correlation id must be non-zero".into(),
+            ));
+        }
+        let state = Arc::new(RequestState {
+            request_correlation: correlation_id.map(Box::new),
+            ..RequestState::default()
+        });
         let stop_storage = options.stop_sequences;
         let stop_ffi: Vec<sys::Bytes> = stop_storage
             .iter()
@@ -1810,7 +1874,12 @@ impl Model {
             } else {
                 stop_ffi.as_ptr()
             },
-            request_user_data: std::ptr::null_mut(),
+            request_user_data: state
+                .request_correlation
+                .as_deref()
+                .map_or(std::ptr::null_mut(), |value| {
+                    (value as *const u64 as *mut u64).cast()
+                }),
             chat_messages: if chat_ffi.is_empty() {
                 std::ptr::null()
             } else {
@@ -1828,7 +1897,6 @@ impl Model {
             .expect("runtime call lock poisoned");
         let mut handle = 0;
         let mut error = sys::Error::default();
-        let state = Arc::new(RequestState::default());
         let (terminal_sender, terminal) = crossbeam_channel::bounded(1);
         check_result(
             unsafe {

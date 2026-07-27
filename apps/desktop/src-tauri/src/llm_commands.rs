@@ -1,5 +1,6 @@
 use tauri::State;
 
+use crate::agent_loop::AgentController;
 use crate::conversation_store::ConversationStore;
 use crate::llm_dto::{
     LlmMetricsDto, LlmStatusDto, LoadModelRequest, SubmitChatMessage, SubmitRequest, SubmitResponse,
@@ -50,6 +51,7 @@ pub async fn llm_unload_model(state: State<'_, RuntimeHost>) -> Result<LlmStatus
 pub async fn llm_submit(
     runtime_state: State<'_, RuntimeHost>,
     conversation_state: State<'_, ConversationStore>,
+    agent_state: State<'_, AgentController>,
     mut request: SubmitRequest,
 ) -> Result<SubmitResponse, String> {
     if request.conversation_id.trim().is_empty() {
@@ -61,8 +63,9 @@ pub async fn llm_submit(
         .await?
         .ok_or_else(|| "conversation system prompt snapshot was not initialized".to_string())?;
     inject_system_message(&mut request.messages, &snapshot.system_prompt)?;
-    let worker = runtime_state.inner().clone();
-    blocking(move || worker.submit(request)).await
+    let runtime = runtime_state.inner().clone();
+    let agent = agent_state.inner().clone();
+    blocking(move || agent.submit(&runtime, request)).await
 }
 
 fn inject_system_message(

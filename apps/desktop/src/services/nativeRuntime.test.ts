@@ -40,6 +40,8 @@ describe("NativeRuntimeService", () => {
     };
     const submit = {
       conversationId: "conversation-1",
+      agentRunId: "run-1",
+      agentStepId: "step-1",
       prompt: "안녕",
       messages: [{ role: "user" as const, content: "안녕" }],
       maxNewTokens: 256,
@@ -79,7 +81,7 @@ describe("NativeRuntimeService", () => {
 
     const cleanup = await service.subscribe(listener);
     const handler = fake.listen.mock.calls[0][1] as (event: { payload: LlmEventDto }) => void;
-    handler({ payload: { kind: "done", requestHandle: "7", sequenceNumber: "2", bytes: [], errorCode: 0, metrics: null } });
+    handler({ payload: { kind: "done", requestHandle: "7", correlationId: "9", sequenceNumber: "2", bytes: [], errorCode: 0, metrics: null } });
     cleanup();
 
     expect(fake.listen.mock.calls[0][0]).toBe("llm://event");

@@ -4,7 +4,7 @@ import { applyNativeEvent, createNativeState, nativeReducer, TokenDecoders } fro
 import type { LlmEventDto } from "./nativeRuntime";
 
 function event(kind: LlmEventDto["kind"], handle: string, bytes: number[] = []): LlmEventDto {
-  return { kind, requestHandle: handle, sequenceNumber: "1", bytes, errorCode: 0, metrics: null };
+  return { kind, requestHandle: handle, correlationId: null, sequenceNumber: "1", bytes, errorCode: 0, metrics: null };
 }
 
 function readyState() {

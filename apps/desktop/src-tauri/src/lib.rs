@@ -1,3 +1,4 @@
+mod agent_loop;
 mod conversation_commands;
 mod conversation_store;
 mod llm_commands;
@@ -21,6 +22,7 @@ mod runtime_transaction;
 
 use tauri::Manager;
 
+use crate::agent_loop::AgentController;
 use crate::conversation_store::ConversationStore;
 use crate::persona_prompt::PersonaPromptStore;
 use crate::runtime_bootstrap::BootstrapState;
@@ -59,13 +61,15 @@ pub fn run() {
                 .consume_pending(|backend| runtime_packs::backend_ready(&resolver, backend))
                 .map_err(std::io::Error::other)?;
             let app_handle = app.handle().clone();
+            let agent = AgentController::for_app(conversation_store.clone(), app_handle);
             let host = match bootstrap {
                 BootstrapState::Ready => RuntimeHost::ready(
-                    spawn_runtime_worker(app_handle, resolver).map_err(std::io::Error::other)?,
+                    spawn_runtime_worker(resolver, agent.clone()).map_err(std::io::Error::other)?,
                 ),
                 BootstrapState::RecoveryRequired(error) => RuntimeHost::recovery(error),
             };
             app.manage(conversation_store);
+            app.manage(agent);
             app.manage(persona_store);
             app.manage(selection_store);
             app.manage(host);

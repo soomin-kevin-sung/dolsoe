@@ -4,6 +4,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::{
+    agent_loop::AgentController,
     runtime_host::{spawn_runtime_worker, RuntimeHost},
     runtime_installer::{
         InstallPhase, RuntimeDistributionConfig, RuntimeInstallProgress, RuntimeInstaller,
@@ -104,6 +105,7 @@ pub async fn install_runtime_pack(
     state: State<'_, RuntimeInstallerState>,
     selection: State<'_, RuntimeSelectionStore>,
     host: State<'_, RuntimeHost>,
+    agent: State<'_, AgentController>,
     pack_id: String,
 ) -> Result<(), String> {
     let backend = downloadable_backend(&pack_id)?;
@@ -143,7 +145,7 @@ pub async fn install_runtime_pack(
         }
 
         if !worker_available && backend == RuntimeBackend::Cpu {
-            let worker = spawn_runtime_worker(app.clone(), resolver)?;
+            let worker = spawn_runtime_worker(resolver, agent.inner().clone())?;
             selection.set_active(RuntimeBackend::Cpu)?;
             host.activate(worker)?;
             app.emit("llm://host-ready", host.status()?)

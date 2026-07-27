@@ -183,7 +183,16 @@ export function useConversationWorkspace() {
         : await service.startNewTurn(prompt);
       apply({ type: "turn-started", value: turn });
       try {
-        const response = await runtime.submit(turn.conversation.id, prompt, chatMessages);
+        if (!turn.agentRunId || !turn.agentStepId) {
+          throw new Error("Agent run metadata was not prepared.");
+        }
+        const response = await runtime.submit(
+          turn.conversation.id,
+          turn.agentRunId,
+          turn.agentStepId,
+          prompt,
+          chatMessages,
+        );
         if (response) apply({ type: "request-bound", requestHandle: response.requestHandle });
       } catch (error) {
         const active = stateRef.current.activeTurn;

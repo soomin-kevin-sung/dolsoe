@@ -163,6 +163,8 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
 
   const submit = useCallback(async (
     conversationId: string,
+    agentRunId: string,
+    agentStepId: string,
     prompt: string,
     messages: SubmitRequest["messages"] = [{ role: "user", content: prompt }],
   ) => {
@@ -170,6 +172,8 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     setState((current) => nativeReducer(current, { type: "submit-started", prompt }));
     const request: SubmitRequest = {
       conversationId,
+      agentRunId,
+      agentStepId,
       prompt,
       messages,
       maxNewTokens: options.maxNewTokens,

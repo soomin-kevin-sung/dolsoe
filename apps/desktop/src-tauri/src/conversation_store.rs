@@ -37,6 +37,54 @@ ALTER TABLE conversations ADD COLUMN persona_revision TEXT;
 ALTER TABLE conversations ADD COLUMN system_prompt TEXT;
 "#;
 
+const MIGRATION_3: &str = r#"
+CREATE TABLE agent_runs (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    user_message_id TEXT NOT NULL,
+    assistant_message_id TEXT NOT NULL,
+    mode TEXT NOT NULL,
+    protocol_revision TEXT NOT NULL,
+    policy_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('prepared', 'running', 'complete', 'cancelled', 'interrupted', 'error')
+    ),
+    progress_step_count INTEGER NOT NULL DEFAULT 0,
+    total_step_count INTEGER NOT NULL DEFAULT 0,
+    started_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    terminal_reason TEXT,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_message_id) REFERENCES messages(id) ON DELETE CASCADE,
+    FOREIGN KEY (assistant_message_id) REFERENCES messages(id) ON DELETE CASCADE
+);
+CREATE INDEX agent_runs_conversation_started
+ON agent_runs(conversation_id, started_at, id);
+
+CREATE TABLE agent_steps (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    step_index INTEGER NOT NULL,
+    kind TEXT NOT NULL,
+    stage TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN ('prepared', 'running', 'complete', 'cancelled', 'interrupted', 'error')
+    ),
+    correlation_id INTEGER NOT NULL UNIQUE,
+    request_handle TEXT,
+    output_content TEXT NOT NULL DEFAULT '',
+    started_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    finished_at INTEGER,
+    terminal_reason TEXT,
+    FOREIGN KEY (run_id) REFERENCES agent_runs(id) ON DELETE CASCADE,
+    UNIQUE (run_id, step_index)
+);
+CREATE INDEX agent_steps_run_index
+ON agent_steps(run_id, step_index);
+"#;
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum MessageRole {
@@ -138,6 +186,10 @@ pub struct StartedTurn {
     pub conversation: ConversationSummary,
     pub user: StoredMessage,
     pub assistant: StoredMessage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_run_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_step_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -157,6 +209,14 @@ pub struct ModelPromptMessage {
 pub struct ConversationPromptContext {
     pub snapshot: Option<ConversationPromptSnapshot>,
     pub messages: Vec<ModelPromptMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSubmission {
+    pub run_id: String,
+    pub step_id: String,
+    pub correlation_id: u64,
+    pub mode: String,
 }
 
 #[derive(Clone)]
@@ -197,6 +257,24 @@ impl ConversationStore {
         transaction
             .execute(
                 "UPDATE messages SET status = 'interrupted', updated_at = ?1 WHERE status = 'streaming'",
+                [timestamp],
+            )
+            .map_err(store_error)?;
+        transaction
+            .execute(
+                "UPDATE agent_steps
+                 SET status = 'interrupted', updated_at = ?1, finished_at = ?1,
+                     terminal_reason = COALESCE(terminal_reason, 'application-restarted')
+                 WHERE status IN ('prepared', 'running')",
+                [timestamp],
+            )
+            .map_err(store_error)?;
+        transaction
+            .execute(
+                "UPDATE agent_runs
+                 SET status = 'interrupted', updated_at = ?1, finished_at = ?1,
+                     terminal_reason = COALESCE(terminal_reason, 'application-restarted')
+                 WHERE status IN ('prepared', 'running')",
                 [timestamp],
             )
             .map_err(store_error)?;
@@ -278,6 +356,7 @@ impl ConversationStore {
         self.start_turn_with_prompt(conversation_id, prompt, None)
     }
 
+    #[cfg(test)]
     pub fn start_turn_with_prompt(
         &self,
         conversation_id: &str,
@@ -300,11 +379,35 @@ impl ConversationStore {
         Ok(turn)
     }
 
+    pub fn start_agent_turn_with_prompt(
+        &self,
+        conversation_id: &str,
+        prompt: &str,
+        prompt_snapshot: Option<&ConversationPromptSnapshot>,
+    ) -> StoreResult<StartedTurn> {
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Err("prompt must not be empty".into());
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        let conversation = conversation_summary(&transaction, conversation_id)?;
+        if let Some(snapshot) = prompt_snapshot {
+            bind_prompt_snapshot(&transaction, conversation_id, snapshot)?;
+        }
+        let timestamp = now_millis()?;
+        let mut turn = insert_turn(&transaction, conversation, prompt, timestamp)?;
+        attach_chat_agent_run(&transaction, &mut turn, timestamp)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(turn)
+    }
+
     #[cfg(test)]
     pub fn start_new_turn(&self, prompt: &str) -> StoreResult<StartedTurn> {
         self.start_new_turn_with_prompt(prompt, None)
     }
 
+    #[cfg(test)]
     pub fn start_new_turn_with_prompt(
         &self,
         prompt: &str,
@@ -324,6 +427,204 @@ impl ConversationStore {
         let turn = insert_turn(&transaction, conversation, prompt, timestamp)?;
         transaction.commit().map_err(store_error)?;
         Ok(turn)
+    }
+
+    pub fn start_new_agent_turn_with_prompt(
+        &self,
+        prompt: &str,
+        prompt_snapshot: Option<&ConversationPromptSnapshot>,
+    ) -> StoreResult<StartedTurn> {
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Err("prompt must not be empty".into());
+        }
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        let timestamp = now_millis()?;
+        let conversation = insert_empty_conversation(&transaction, timestamp)?;
+        if let Some(snapshot) = prompt_snapshot {
+            bind_prompt_snapshot(&transaction, &conversation.id, snapshot)?;
+        }
+        let mut turn = insert_turn(&transaction, conversation, prompt, timestamp)?;
+        attach_chat_agent_run(&transaction, &mut turn, timestamp)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(turn)
+    }
+
+    pub fn agent_submission(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        conversation_id: &str,
+    ) -> StoreResult<AgentSubmission> {
+        let correlation = self
+            .lock()?
+            .query_row(
+                "SELECT r.id, s.id, s.correlation_id, r.mode
+                 FROM agent_runs r
+                 JOIN agent_steps s ON s.run_id = r.id
+                 WHERE r.id = ?1 AND s.id = ?2 AND r.conversation_id = ?3
+                   AND r.status = 'prepared' AND s.status = 'prepared'",
+                params![run_id, step_id, conversation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(store_error)?
+            .ok_or_else(|| "prepared agent run was not found".to_string())?;
+        Ok(AgentSubmission {
+            run_id: correlation.0,
+            step_id: correlation.1,
+            correlation_id: u64::try_from(correlation.2)
+                .map_err(|_| "stored agent correlation id is invalid".to_string())?,
+            mode: correlation.3,
+        })
+    }
+
+    pub fn bind_agent_request(
+        &self,
+        run_id: &str,
+        step_id: &str,
+        request_handle: &str,
+    ) -> StoreResult<()> {
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        let timestamp = now_millis()?;
+        let updated = transaction
+            .execute(
+                "UPDATE agent_steps
+                 SET status = 'running', request_handle = ?1, updated_at = ?2
+                 WHERE id = ?3 AND run_id = ?4 AND status = 'prepared'",
+                params![request_handle, timestamp, step_id, run_id],
+            )
+            .map_err(store_error)?;
+        if updated == 0 {
+            let status = transaction
+                .query_row(
+                    "SELECT status FROM agent_steps WHERE id = ?1 AND run_id = ?2",
+                    params![step_id, run_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(store_error)?;
+            if status
+                .as_deref()
+                .is_some_and(|value| matches!(value, "complete" | "cancelled" | "error"))
+            {
+                transaction.commit().map_err(store_error)?;
+                return Ok(());
+            }
+            return Err("prepared agent step was not found".into());
+        }
+        transaction
+            .execute(
+                "UPDATE agent_runs
+                 SET status = 'running', total_step_count = 1, updated_at = ?1
+                 WHERE id = ?2 AND status = 'prepared'",
+                params![timestamp, run_id],
+            )
+            .map_err(store_error)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(())
+    }
+
+    pub fn finish_agent_step(
+        &self,
+        correlation_id: u64,
+        content: &str,
+        status: MessageStatus,
+        terminal_reason: Option<&str>,
+    ) -> StoreResult<bool> {
+        if !matches!(
+            status,
+            MessageStatus::Complete
+                | MessageStatus::Cancelled
+                | MessageStatus::Interrupted
+                | MessageStatus::Error
+        ) {
+            return Err("agent step requires a terminal status".into());
+        }
+        let correlation_id = i64::try_from(correlation_id)
+            .map_err(|_| "agent correlation id exceeds SQLite integer range".to_string())?;
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        let current = transaction
+            .query_row(
+                "SELECT r.id, r.conversation_id, r.assistant_message_id, s.id, s.status
+                 FROM agent_steps s
+                 JOIN agent_runs r ON r.id = s.run_id
+                 WHERE s.correlation_id = ?1",
+                [correlation_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(store_error)?
+            .ok_or_else(|| "agent step correlation was not found".to_string())?;
+        if !matches!(current.4.as_str(), "prepared" | "running") {
+            transaction.commit().map_err(store_error)?;
+            return Ok(false);
+        }
+        let timestamp = now_millis()?;
+        transaction
+            .execute(
+                "UPDATE messages
+                 SET content = ?1, status = ?2, updated_at = ?3
+                 WHERE id = ?4 AND role = 'assistant' AND status = 'streaming'",
+                params![content, status.as_str(), timestamp, current.2],
+            )
+            .map_err(store_error)?;
+        transaction
+            .execute(
+                "UPDATE agent_steps
+                 SET output_content = ?1, status = ?2, updated_at = ?3,
+                     finished_at = ?3, terminal_reason = ?4
+                 WHERE id = ?5",
+                params![
+                    content,
+                    status.as_str(),
+                    timestamp,
+                    terminal_reason,
+                    current.3
+                ],
+            )
+            .map_err(store_error)?;
+        transaction
+            .execute(
+                "UPDATE agent_runs
+                 SET status = ?1, progress_step_count = ?2, total_step_count = 1,
+                     updated_at = ?3, finished_at = ?3, terminal_reason = ?4
+                 WHERE id = ?5",
+                params![
+                    status.as_str(),
+                    i64::from(status == MessageStatus::Complete),
+                    timestamp,
+                    terminal_reason,
+                    current.0
+                ],
+            )
+            .map_err(store_error)?;
+        transaction
+            .execute(
+                "UPDATE conversations SET updated_at = ?1 WHERE id = ?2",
+                params![timestamp, current.1],
+            )
+            .map_err(store_error)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(true)
     }
 
     pub fn prompt_snapshot(
@@ -467,6 +768,26 @@ fn apply_migrations(transaction: &Transaction<'_>) -> StoreResult<()> {
         transaction
             .execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (2, ?1)",
+                [now_millis()?],
+            )
+            .map_err(store_error)?;
+    }
+    let applied = transaction
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = 3",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(store_error)?
+        .is_some();
+    if !applied {
+        transaction
+            .execute_batch(MIGRATION_3)
+            .map_err(store_error)?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (3, ?1)",
                 [now_millis()?],
             )
             .map_err(store_error)?;
@@ -622,7 +943,58 @@ fn insert_turn(
         conversation,
         user,
         assistant,
+        agent_run_id: None,
+        agent_step_id: None,
     })
+}
+
+fn attach_chat_agent_run(
+    transaction: &Transaction<'_>,
+    turn: &mut StartedTurn,
+    timestamp: i64,
+) -> StoreResult<()> {
+    let run_id = Uuid::new_v4().to_string();
+    let step_id = Uuid::new_v4().to_string();
+    let correlation_id = correlation_id_for(&step_id)?;
+    transaction
+        .execute(
+            "INSERT INTO agent_runs(
+                id, conversation_id, user_message_id, assistant_message_id,
+                mode, protocol_revision, policy_json, status,
+                progress_step_count, total_step_count, started_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, 'chat', 'agent-loop-zero/v1',
+                       '{\"maxProgressSteps\":1,\"maxTotalSteps\":1}', 'prepared',
+                       0, 0, ?5, ?5)",
+            params![
+                run_id,
+                turn.conversation.id,
+                turn.user.id,
+                turn.assistant.id,
+                timestamp
+            ],
+        )
+        .map_err(store_error)?;
+    transaction
+        .execute(
+            "INSERT INTO agent_steps(
+                id, run_id, step_index, kind, stage, status, correlation_id,
+                output_content, started_at, updated_at
+             ) VALUES (?1, ?2, 0, 'model', 'chat-response', 'prepared', ?3, '', ?4, ?4)",
+            params![step_id, run_id, correlation_id, timestamp],
+        )
+        .map_err(store_error)?;
+    turn.agent_run_id = Some(run_id);
+    turn.agent_step_id = Some(step_id);
+    Ok(())
+}
+
+fn correlation_id_for(step_id: &str) -> StoreResult<i64> {
+    let uuid =
+        Uuid::parse_str(step_id).map_err(|error| format!("invalid agent step id: {error}"))?;
+    let mut bytes = [0_u8; 8];
+    bytes.copy_from_slice(&uuid.as_bytes()[..8]);
+    let value = u64::from_be_bytes(bytes) & i64::MAX as u64;
+    Ok(i64::try_from(value.max(1)).expect("masked correlation id fits i64"))
 }
 
 fn list_conversations(transaction: &Transaction<'_>) -> StoreResult<Vec<ConversationSummary>> {
@@ -805,7 +1177,52 @@ mod tests {
         store.bootstrap().unwrap();
         store.bootstrap().unwrap();
 
-        assert_eq!(store.migration_count().unwrap(), 2);
+        assert_eq!(store.migration_count().unwrap(), 3);
+    }
+
+    #[test]
+    fn agent_turn_preparation_and_terminal_commit_are_atomic() {
+        let store = ConversationStore::open_in_memory().unwrap();
+        store.bootstrap().unwrap();
+        let turn = store
+            .start_new_agent_turn_with_prompt("question", None)
+            .unwrap();
+        let submission = store
+            .agent_submission(
+                turn.agent_run_id.as_deref().unwrap(),
+                turn.agent_step_id.as_deref().unwrap(),
+                &turn.conversation.id,
+            )
+            .unwrap();
+
+        store
+            .bind_agent_request(&submission.run_id, &submission.step_id, "17")
+            .unwrap();
+        assert!(store
+            .finish_agent_step(
+                submission.correlation_id,
+                "answer",
+                MessageStatus::Complete,
+                Some("strategy-complete"),
+            )
+            .unwrap());
+        assert!(!store
+            .finish_agent_step(
+                submission.correlation_id,
+                "duplicate",
+                MessageStatus::Complete,
+                Some("strategy-complete"),
+            )
+            .unwrap());
+
+        let detail = store.load_conversation(&turn.conversation.id).unwrap();
+        let assistant = detail
+            .messages
+            .iter()
+            .find(|message| message.id == turn.assistant.id)
+            .unwrap();
+        assert_eq!(assistant.content, "answer");
+        assert_eq!(assistant.status, MessageStatus::Complete);
     }
 
     #[test]
