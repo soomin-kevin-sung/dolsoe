@@ -46,14 +46,14 @@ function RuntimeSummaryIcon({ readiness }: { readiness: HomeReadinessKind }) {
 function runtimeDetail(readiness: HomeReadinessKind, modelName: string): string {
   if (readiness === "ready") return modelName;
   if (readiness === "runtime-checking") return "설치 상태와 업데이트 확인 중";
-  if (readiness === "runtime-downloading") return "검증된 CPU 엔진을 받는 중";
+  if (readiness === "runtime-downloading") return "검증된 CPU 런타임을 받는 중";
   if (readiness === "runtime-verifying") return "다운로드 파일을 확인하는 중";
-  if (readiness === "runtime-installing") return "CPU 추론 엔진을 준비하는 중";
+    if (readiness === "runtime-installing") return "CPU 런타임을 준비하는 중";
   if (readiness === "runtime-installed") return "변경 적용을 위해 재시작하세요";
   if (readiness.includes("failed")) return "설정을 열어 문제를 해결하세요";
   if (readiness === "model-loading") return modelName;
   if (readiness === "model-missing") return "사용할 GGUF 모델을 선택하세요";
-  return "설정을 열어 CPU 엔진을 설치하세요";
+  return "설정을 열어 CPU 런타임을 설치하세요";
 }
 
 export function Sidebar({

@@ -536,7 +536,7 @@ body { font-size: 14px; }
 .home-view { width: min(100%, 720px); padding: 34px 34px 26px; }
 .home-ready { justify-content: flex-start; }
 .home-focus-main { width: min(100%, 620px); text-align: center; }
-.home-welcome-mark { display: inline-grid; width: 34px; height: 34px; place-items: center; border-radius: 8px; color: var(--accent); background: var(--accent-subtle); }
+.home-dolsoe-mark { display: block; width: 54px; height: 54px; margin: 0 auto; object-fit: cover; border: 1px solid var(--border); border-radius: 50%; background: var(--bg-inset); }
 .home-focus-main h1, .home-setup-intro h1 { margin: 12px 0 5px; font-size: 24px; font-weight: 600; letter-spacing: 0; line-height: 1.35; }
 .home-privacy-copy, .home-setup-intro p { display: flex; align-items: center; justify-content: center; gap: 5px; margin: 0; color: var(--text-3); font-size: 12px; line-height: 18px; }
 .home-prompt-composer { margin-top: 22px; padding: 12px 12px 9px; border: 1px solid var(--border-strong); border-radius: 8px; text-align: left; background: var(--bg-surface); box-shadow: var(--shadow-soft); }

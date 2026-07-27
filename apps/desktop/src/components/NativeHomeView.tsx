@@ -14,11 +14,11 @@ import {
   LoaderCircle,
   MessageSquare,
   RotateCw,
-  Sparkles,
   TriangleAlert,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
+import dolsoeIconUrl from "../assets/dolsoe-icon.svg";
 import { readinessStatus, type HomeReadinessKind } from "../services/homeReadiness";
 import { formatBytes, type AvailableRuntimePack, type RuntimeInstallState } from "../services/runtimePacks";
 import type { Session } from "../services/runtime";
@@ -179,11 +179,11 @@ export function NativeHomeView(props: Props) {
     <div className={`home-view home-focus-view ${ready ? "home-ready" : "home-setup"}`}>
       {ready ? <>
         <section className="home-focus-main">
-          <span className="home-welcome-mark" aria-hidden="true"><Sparkles size={18} /></span>
-          <h1>무엇을 함께 정리할까요?</h1>
+          <img className="home-dolsoe-mark" src={dolsoeIconUrl} alt="" aria-hidden="true" />
+          <h1>무슨 일부터 해볼까요?</h1>
           <p className="home-privacy-copy"><LockKeyhole size={13} />대화와 문서는 이 기기 안에만 저장됩니다.</p>
           <form className="home-prompt-composer" aria-label="새 대화 시작" onSubmit={(event) => { event.preventDefault(); void submitPrompt(); }}>
-            <textarea ref={promptRef} aria-label="첫 메시지" rows={3} placeholder="질문하거나, 생각을 정리하거나, 문서를 탐색해 보세요" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submitPrompt(); } }} />
+            <textarea ref={promptRef} aria-label="첫 메시지" rows={3} placeholder="해야 할 일이나 궁금한 내용을 편하게 적어보세요" value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void submitPrompt(); } }} />
             <div className="home-prompt-footer">
               <span className="home-model-label"><span className="status-dot ready" />{statusDetail}</span>
               <button className="home-prompt-send" type="submit" disabled={!draft.trim() || submitting} aria-label="대화 시작"><ArrowUp size={16} /></button>
@@ -198,13 +198,13 @@ export function NativeHomeView(props: Props) {
 
         <section className="home-recent" aria-labelledby="home-recent-title">
           <div className="home-section-heading"><h2 id="home-recent-title">최근 작업</h2></div>
-          {recent.length ? <ul>{recent.map((session) => <li key={session.id}><button type="button" className="home-recent-row" onClick={() => props.onSelectSession(session.id)}><span className="home-recent-icon"><MessageSquare size={14} /></span><span className="home-recent-copy"><strong>{session.title}</strong><small>로컬 대화</small></span><time>{session.meta}</time><ChevronRight size={14} aria-hidden="true" /></button></li>)}</ul> : <p className="home-recent-empty">첫 질문을 시작하면 최근 작업이 여기에 표시됩니다.</p>}
+          {recent.length ? <ul>{recent.map((session) => <li key={session.id}><button type="button" className="home-recent-row" onClick={() => props.onSelectSession(session.id)}><span className="home-recent-icon"><MessageSquare size={14} /></span><span className="home-recent-copy"><strong>{session.title}</strong><small>로컬 대화</small></span><time>{session.meta}</time><ChevronRight size={14} aria-hidden="true" /></button></li>)}</ul> : <p className="home-recent-empty">첫 일을 맡기면 최근 작업이 여기에 표시됩니다.</p>}
         </section>
       </> : <>
         <section className="home-setup-intro">
-          <span className="home-welcome-mark" aria-hidden="true"><Cpu size={18} /></span>
-          <h1>한 번만 준비하면 됩니다</h1>
-          <p>추론에 필요한 CPU 엔진과 사용할 모델을 이 기기에 준비합니다.</p>
+          <img className="home-dolsoe-mark" src={dolsoeIconUrl} alt="" aria-hidden="true" />
+          <h1>연장만 챙기면 바로 시작합니다</h1>
+          <p>대화에 필요한 실행 환경과 사용할 모델을 이 기기에 준비합니다.</p>
         </section>
         <ol className="home-setup-steps" aria-label="로컬 AI 준비 단계">
           <li className={setupStep === 1 ? "active" : "complete"}><span>{cpuReady ? <Check size={13} /> : "1"}</span><div><strong>CPU 런타임</strong><small>{cpuReady ? "설치됨" : status.text}</small></div></li>
