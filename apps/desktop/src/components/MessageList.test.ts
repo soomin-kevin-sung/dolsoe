@@ -27,3 +27,16 @@ describe("CPU runtime recovery", () => {
     expect(markup).not.toContain("모델 다시 선택");
   });
 });
+
+describe("assistant identity", () => {
+  it("uses the Dolsoe name and icon for assistant messages", () => {
+    const markup = renderToStaticMarkup(createElement(MessageList, {
+      state: "ready",
+      messages: [{ id: "assistant-1", role: "assistant", content: "안녕하세요.", status: "complete" }],
+    }));
+
+    expect(markup).toContain('<div class="message-author">돌쇠</div>');
+    expect(markup).toContain('<span class="assistant-mark" aria-hidden="true"><img src="data:image/svg+xml,');
+    expect(markup).not.toContain("로컬 AI");
+  });
+});

@@ -1,4 +1,5 @@
 import { Box, BookOpen, Copy, Download, FolderOpen, LoaderCircle, Square, TriangleAlert } from "lucide-react";
+import dolsoeIconUrl from "../assets/dolsoe-icon.svg";
 import type { Message, MockStateName } from "../services/runtime";
 
 interface EmptyContentProps {
@@ -46,9 +47,9 @@ export function MessageList({ state, messages, modelName, backend, loadingProgre
         <div className="message user" data-message-role="user" key={message.id}><div className="message-author">나</div><div className="user-bubble">{message.content}</div>{message.time && <div className="timestamp">{message.time}</div>}</div>
       ) : (
         <div className="message assistant assistant-rich" data-long-message={message.id === "long" || undefined} key={message.id}>
-          <span className="assistant-mark" aria-hidden="true"><BookOpen size={15} /></span>
+          <span className="assistant-mark" aria-hidden="true"><img src={dolsoeIconUrl} alt="" /></span>
           <div className="assistant-content">
-            <div className="message-author">로컬 AI</div>
+            <div className="message-author">돌쇠</div>
             <div className="message-text">{message.content}{message.status === "streaming" && <span className="streaming-cursor" />}</div>
             {message.status === "cancelled" && <div className="stopped-line"><Square size={12} fill="currentColor" />생성이 중지되었습니다 · {message.stopDetail ?? "토큰 87개 생성됨"}</div>}
             {message.status === "interrupted" && <div className="stopped-line"><Square size={12} fill="currentColor" />생성이 중단되었습니다 · {message.stopDetail ?? "토큰 87개 생성됨"}</div>}

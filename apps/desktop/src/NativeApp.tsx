@@ -326,6 +326,7 @@ function NativeWorkspace() {
               if (settingsOpen) setSettingsOpen(false);
               else openSettings();
             }}
+            onOpenAgentSettings={() => openSettings("agent")}
             onRename={!homeOpen && !diagnosticsOpen && current ? async (nextTitle) => { await workspace.rename(current.id, nextTitle); } : undefined}
           />
           <main className="conversation" aria-label={homeOpen ? "홈" : diagnosticsOpen ? "진단" : "대화"}>

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import type { StartPagePreference } from "../hooks/useGeneralPreferences";
 import type { RuntimePack, ThemePreference } from "../services/runtime";
+import { AgentModeSettings } from "./AgentModeSettings";
 import { GeneralSettingsControls } from "./GeneralSettingsControls";
 import { GenerationSettingsControls, PerformanceSettingsControls, type InferenceSettingsValues } from "./InferenceSettingsControls";
 import { PackRow } from "./PackRow";
@@ -90,6 +91,8 @@ export function SettingsPanel({ open, initialTab, packs, theme, startPage, autoL
         onAutoLoadLastModelChange={onAutoLoadLastModelChange}
       />
     </div>}
+
+    {activeTab === "agent" && <AgentModeSettings />}
 
     {activeTab === "runtime" && <div id="settings-panel-runtime" role="tabpanel">
       <section className="settings-section settings-section-first">

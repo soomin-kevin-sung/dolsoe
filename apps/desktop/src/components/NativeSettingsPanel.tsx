@@ -5,6 +5,7 @@ import type { NativeOptions } from "../hooks/useNativeRuntime";
 import type { ThemePreference } from "../services/runtime";
 import { formatBytes, type AvailableRuntimePack, type RuntimeBackend, type RuntimeInstallState, type RuntimePack, type RuntimeSelection } from "../services/runtimePacks";
 import { GenerationSettingsControls, PerformanceSettingsControls } from "./InferenceSettingsControls";
+import { AgentModeSettings } from "./AgentModeSettings";
 import { GeneralSettingsControls } from "./GeneralSettingsControls";
 import { PersonaPromptSettings } from "./PersonaPromptSettings";
 import { RuntimeBackendRow } from "./RuntimeBackendRow";
@@ -42,7 +43,7 @@ interface Props {
 const backends: RuntimeBackend[] = ["cpu", "cuda", "vulkan"];
 const labels: Record<RuntimeBackend, string> = { cpu: "CPU", cuda: "CUDA", vulkan: "Vulkan" };
 const performanceKeys = ["contextSize", "batchSize", "physicalBatchSize", "threads", "useMmap"] as const;
-const nativeSettingsTabs: SettingsTab[] = ["general", "persona", "generation", "performance", "runtime"];
+const nativeSettingsTabs: SettingsTab[] = ["general", "persona", "agent", "generation", "performance", "runtime"];
 
 function mergePerformanceOptions(active: NativeOptions, draft: NativeOptions): NativeOptions {
   return performanceKeys.reduce((next, key) => ({ ...next, [key]: draft[key] }), active);
@@ -113,6 +114,8 @@ export function NativeSettingsPanel(props: Props) {
       </div>}
 
       {activeTab === "persona" && <PersonaPromptSettings active={open && activeTab === "persona"} />}
+
+      {activeTab === "agent" && <AgentModeSettings />}
 
       {activeTab === "runtime" && <div id="settings-panel-runtime" role="tabpanel">
         <section className="settings-section settings-section-first">

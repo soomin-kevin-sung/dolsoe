@@ -1,5 +1,7 @@
 import { Eraser, Home, SlidersHorizontal } from "lucide-react";
 import { useState, type KeyboardEvent, type Ref } from "react";
+import { DEFAULT_AGENT_MODE, type AgentModeId } from "../services/agentModes";
+import { AgentModeMenu } from "./AgentModeMenu";
 import { IconButton } from "./IconButton";
 
 interface Props {
@@ -7,9 +9,24 @@ interface Props {
   view: "home" | "chat" | "diagnostics";
   settingsButtonRef: Ref<HTMLButtonElement>; resetButtonRef: Ref<HTMLButtonElement>; onSettings(): void; onReset?(): void;
   onRename?(title: string): void | Promise<void>;
+  agentMode?: AgentModeId;
+  onAgentModeChange?(mode: AgentModeId): void;
+  onOpenAgentSettings?(): void;
 }
 
-export function ChatHeader({ title, view, settingsOpen, settingsButtonRef, resetButtonRef, onSettings, onReset, onRename }: Props) {
+export function ChatHeader({
+  title,
+  view,
+  settingsOpen,
+  settingsButtonRef,
+  resetButtonRef,
+  onSettings,
+  onReset,
+  onRename,
+  agentMode = DEFAULT_AGENT_MODE,
+  onAgentModeChange,
+  onOpenAgentSettings,
+}: Props) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title);
 
@@ -37,6 +54,14 @@ export function ChatHeader({ title, view, settingsOpen, settingsButtonRef, reset
       </div>}
       </div>
       <div className="header-spacer" />
+      {view !== "diagnostics" && (
+        <AgentModeMenu
+          value={agentMode}
+          context={view === "home" ? "new-conversation" : "conversation"}
+          onChange={onAgentModeChange}
+          onOpenSettings={onOpenAgentSettings}
+        />
+      )}
       {view === "chat" && <><span className="header-divider" /><IconButton buttonRef={resetButtonRef} icon={Eraser} label="대화 초기화" onClick={onReset} disabled={!onReset} /></>}
       <IconButton buttonRef={settingsButtonRef} icon={SlidersHorizontal} label="설정" className={settingsOpen ? "active" : ""} aria-pressed={settingsOpen} onClick={onSettings} />
     </header>

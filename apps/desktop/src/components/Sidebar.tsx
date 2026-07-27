@@ -1,9 +1,7 @@
 import { Activity, Box, ChevronRight, Cpu, Home, Layers3, LoaderCircle, MoreHorizontal, RotateCw, Search, SquarePen, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from "react";
-import dolsoeIconUrl from "../assets/dolsoe-icon.svg";
 import type { Session } from "../services/runtime";
 import type { HomeReadinessKind } from "../services/homeReadiness";
-import { IconButton } from "./IconButton";
 
 interface SidebarProps {
   sessions: Session[];
@@ -162,11 +160,10 @@ export function Sidebar({
   return (
     <nav className="sidebar" aria-label="대화 목록">
       <div className="sidebar-header">
-        <button type="button" className={`app-name-button ${homeOpen ? "active" : ""}`} aria-label="홈으로 이동" aria-current={homeOpen ? "page" : undefined} onClick={onHome}>
-          <img className="app-mark" src={dolsoeIconUrl} alt="" aria-hidden="true" />
-          <span>돌쇠</span>
+        <button type="button" className="sidebar-new-chat" onClick={onNew}>
+          <SquarePen size={15} strokeWidth={2} aria-hidden="true" />
+          <span>새 대화</span>
         </button>
-        <IconButton icon={SquarePen} label="새 대화" onClick={onNew} />
       </div>
       <label className="search-wrap">
         <Search size={14} strokeWidth={2} aria-hidden="true" />

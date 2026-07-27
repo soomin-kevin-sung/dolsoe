@@ -29,8 +29,11 @@ export default function MockApp() {
   const [generalPreferences, updateGeneralPreferences] = useGeneralPreferences();
   const [state, setState] = useState<MockStateName>(initialState);
   const [homeOpen, setHomeOpen] = useState(queryValue("view") === "home");
+  const requestedSettingsTab = queryValue("tab");
   const [settingsOpen, setSettingsOpen] = useState(["settings", "reload-confirm", "pack-install"].includes(initialState));
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>(initialState === "pack-install" ? "runtime" : "general");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>(
+    initialState === "pack-install" ? "runtime" : requestedSettingsTab === "agent" ? "agent" : "general",
+  );
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [activeModelName, setActiveModelName] = useState(initialState === "no-model" ? "" : DEFAULT_MODEL);
   const [extraMessages, setExtraMessages] = useState<Message[]>([]);
@@ -156,6 +159,7 @@ export default function MockApp() {
               if (settingsOpen) setSettingsOpen(false);
               else openSettings();
             }}
+            onOpenAgentSettings={() => openSettings("agent")}
           />
           <main className="conversation" aria-label={homeOpen ? "홈" : "대화"}>
             {homeOpen ? <NativeHomeView

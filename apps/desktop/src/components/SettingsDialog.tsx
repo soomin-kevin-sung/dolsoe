@@ -1,13 +1,14 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { AppWindow, Cpu, Gauge, SlidersHorizontal, UserRoundCog, X, type LucideIcon } from "lucide-react";
+import { AppWindow, Bot, Cpu, Gauge, SlidersHorizontal, UserRoundCog, X, type LucideIcon } from "lucide-react";
 
 import { IconButton } from "./IconButton";
 
-export type SettingsTab = "general" | "persona" | "generation" | "performance" | "runtime";
+export type SettingsTab = "general" | "persona" | "agent" | "generation" | "performance" | "runtime";
 
 const tabs: { value: SettingsTab; label: string; icon: LucideIcon }[] = [
   { value: "general", label: "일반", icon: AppWindow },
   { value: "persona", label: "페르소나", icon: UserRoundCog },
+  { value: "agent", label: "에이전트", icon: Bot },
   { value: "generation", label: "생성", icon: SlidersHorizontal },
   { value: "performance", label: "성능", icon: Gauge },
   { value: "runtime", label: "런타임", icon: Cpu },
@@ -24,7 +25,7 @@ interface Props {
   onClose(): void;
 }
 
-const defaultTabs: SettingsTab[] = ["general", "generation", "performance", "runtime"];
+const defaultTabs: SettingsTab[] = ["general", "agent", "generation", "performance", "runtime"];
 
 export function SettingsDialog({ open, activeTab, closeOnEscape = true, children, footer, availableTabs = defaultTabs, onTabChange, onClose }: Props) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
