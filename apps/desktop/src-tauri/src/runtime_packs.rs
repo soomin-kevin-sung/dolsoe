@@ -7,7 +7,7 @@ use std::{
 
 use llm_runtime::{Backend, RuntimeLibrary};
 use serde::{Deserialize, Serialize};
-use tauri::Manager;
+use tauri::State;
 
 use crate::{
     runtime_archive::validate_installed_pack, runtime_manifest::bundled_manifest_policy,
@@ -328,14 +328,12 @@ pub(crate) fn run_runtime_probe_cli(args: &[String]) -> Option<Result<String, St
 }
 
 #[tauri::command]
-pub async fn list_runtime_packs(app: tauri::AppHandle) -> Result<RuntimePackInventoryDto, String> {
-    let app_data = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?;
-    let runtime_root = app_data.join("runtime-packs");
+pub async fn list_runtime_packs(
+    resolver: State<'_, RuntimePackResolver>,
+) -> Result<RuntimePackInventoryDto, String> {
+    let resolver = resolver.inner().clone();
+    let runtime_root = resolver.runtime_root().to_path_buf();
     tauri::async_runtime::spawn_blocking(move || {
-        let resolver = RuntimePackResolver::trusted(&app_data, runtime_root.clone())?;
         scan_runtime_packs(&runtime_root, |id, _| probe_runtime_pack(&resolver, id))
     })
     .await
@@ -495,7 +493,7 @@ mod tests {
     fn probed_runtime_identity_must_match_current_baseline() {
         let mut probe = probed_cpu("CPU 0");
         probe.llama_cpp_commit = "571d0d540df04f25298d0e159e520d9fc62ed121".into();
-        probe.abi_minor = 2;
+        probe.abi_minor = 3;
         assert!(validate_probed_pack("cpu", &probe).is_ok());
 
         probe.llama_cpp_commit = "stale-commit".into();

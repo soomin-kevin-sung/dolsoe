@@ -1,7 +1,7 @@
 use std::{collections::HashSet, fs, path::PathBuf, sync::Arc};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 use crate::{
     agent_loop::AgentController,
@@ -106,6 +106,7 @@ pub async fn install_runtime_pack(
     selection: State<'_, RuntimeSelectionStore>,
     host: State<'_, RuntimeHost>,
     agent: State<'_, AgentController>,
+    resolver: State<'_, RuntimePackResolver>,
     pack_id: String,
 ) -> Result<(), String> {
     let backend = downloadable_backend(&pack_id)?;
@@ -127,12 +128,7 @@ pub async fn install_runtime_pack(
         .map_err(|error| error.to_string())?;
 
     let finalize = (|| -> Result<bool, String> {
-        let app_data = app
-            .path()
-            .app_local_data_dir()
-            .map_err(|error| error.to_string())?;
-        let resolver = RuntimePackResolver::trusted(&app_data, state.runtime_root.clone())?;
-        if !backend_ready(&resolver, backend) {
+        if !backend_ready(resolver.inner(), backend) {
             return Err(format!(
                 "installed {} runtime failed its final readiness probe",
                 backend.as_str()
@@ -145,7 +141,7 @@ pub async fn install_runtime_pack(
         }
 
         if !worker_available && backend == RuntimeBackend::Cpu {
-            let worker = spawn_runtime_worker(resolver, agent.inner().clone())?;
+            let worker = spawn_runtime_worker(resolver.inner().clone(), agent.inner().clone())?;
             selection.set_active(RuntimeBackend::Cpu)?;
             host.activate(worker)?;
             app.emit("llm://host-ready", host.status()?)
@@ -233,7 +229,7 @@ mod tests {
             llama_cpp_release: "b10068".into(),
             llama_cpp_commit: "571d0d540df04f25298d0e159e520d9fc62ed121".into(),
             abi_major: 1,
-            abi_minor: 2,
+            abi_minor: 3,
             asset_name: "pack.zip".into(),
             size: 1024,
             sha256: "0".repeat(64),

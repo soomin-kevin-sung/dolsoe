@@ -45,6 +45,7 @@ export default function MockApp() {
   const snapshot = useMemo(() => mockRuntime.getSnapshot(state), [state]);
   const longModel = queryValue("longModel") === "1";
   const longMessage = queryValue("longMessage") === "1";
+  const agentPreview = queryValue("agent");
   const modelName = longModel ? "Q".repeat(80) : activeModelName || snapshot.modelName;
   const readiness: HomeReadinessKind = state === "no-model"
     ? "model-missing"
@@ -58,8 +59,34 @@ export default function MockApp() {
     if (longMessage) {
       value.push({ id: "long", role: "assistant", content: "긴메시지".repeat(120), status: "complete" });
     }
+    if (agentPreview === "running" || agentPreview === "complete") {
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        if (value[index].role !== "assistant") continue;
+        value[index] = {
+          ...value[index],
+          agentRun: {
+            runId: "preview-react-run",
+            assistantMessageId: value[index].id,
+            mode: "react",
+            status: agentPreview,
+            startedAt: 1,
+            finishedAt: agentPreview === "complete" ? 2 : null,
+            phase: agentPreview === "running" ? "writing" : undefined,
+            tools: [{
+              activityId: "preview-calculator",
+              toolName: "calculator",
+              status: "complete",
+              input: "(4096 * 2) / 1024",
+              output: "8",
+              durationMs: 3,
+            }],
+          },
+        };
+        break;
+      }
+    }
     return value;
-  }, [extraMessages, longMessage, snapshot.messages]);
+  }, [agentPreview, extraMessages, longMessage, snapshot.messages]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {

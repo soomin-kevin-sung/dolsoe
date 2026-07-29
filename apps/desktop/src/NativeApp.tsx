@@ -18,7 +18,7 @@ import { useConversationWorkspace } from "./hooks/useConversationWorkspace";
 import { readLastModelPath, rememberLastModelPath, useGeneralPreferences } from "./hooks/useGeneralPreferences";
 import { useRuntimePackInstaller } from "./hooks/useRuntimePackInstaller";
 import { useThemePreference } from "./hooks/useThemePreference";
-import type { StoredMessage } from "./services/conversationService";
+import type { AgentRunTrace, StoredMessage } from "./services/conversationService";
 import { isCpuReady, readinessStatus, resolveHomeReadiness } from "./services/homeReadiness";
 import type { Message, MockStateName, RuntimeSnapshot, RuntimeStatus, Session } from "./services/runtime";
 
@@ -60,13 +60,14 @@ function formatUpdatedAt(timestamp: number): string {
   return new Intl.DateTimeFormat("ko-KR", { month: "numeric", day: "numeric" }).format(timestamp);
 }
 
-function toMessage(message: StoredMessage): Message {
+function toMessage(message: StoredMessage, agentRun?: AgentRunTrace): Message {
   return {
     id: message.id,
     role: message.role,
     content: message.content,
     status: message.role === "assistant" ? message.status : undefined,
     time: message.role === "user" ? formatUpdatedAt(message.createdAt) : undefined,
+    agentRun,
   };
 }
 
@@ -118,7 +119,10 @@ function NativeWorkspace() {
   }, [runtime.appliedRuntime, runtime.applyConfiguration, runtime.options, state.phase]);
 
   const current = workspace.current;
-  const messages = current?.messages.map(toMessage) ?? [];
+  const messages = current?.messages.map((message) => toMessage(
+    message,
+    current.agentRuns.find((run) => run.assistantMessageId === message.id),
+  )) ?? [];
   const storageFailed = Boolean(workspace.state.storageError);
   const cpuRuntimeRecovery = state.phase === "error" && isCpuRuntimeRecoveryError(state.error);
   const cpuRuntimePack = runtime.runtimePacks.find((pack) => pack.id === "cpu");
@@ -359,7 +363,7 @@ function NativeWorkspace() {
                 />
               : diagnosticsOpen
                 ? <NativeDiagnosticsView state={state} runtimePack={selectedRuntimePack} />
-                : <MessageList state={viewState} messages={messages} modelName={state.modelName} backend={state.backend} loadingProgress={state.loadingProgress} error={workspace.state.storageError ?? state.error} onChooseModel={() => void runtime.chooseModel()} onOpenSettings={() => openSettings("runtime")} />}
+                : <MessageList conversationId={current?.id} state={viewState} messages={messages} modelName={state.modelName} backend={state.backend} loadingProgress={state.loadingProgress} error={workspace.state.storageError ?? state.error} onChooseModel={() => void runtime.chooseModel()} onOpenSettings={() => openSettings("runtime")} />}
           </main>
           {!homeOpen && !diagnosticsOpen && (
             <Composer

@@ -6,7 +6,8 @@ compile_error!("llm-runtime-sys supports only 64-bit targets");
 use std::ffi::{c_char, c_void};
 
 pub const ABI_MAJOR: u32 = 1;
-pub const ABI_MINOR: u32 = 2;
+pub const ABI_MINOR: u32 = 3;
+pub const MAX_GRAMMAR_BYTES: u64 = 65_536;
 pub const OK: i32 = 0;
 pub const ERR_INVALID_ARGUMENT: i32 = 1;
 pub const ERR_ABI_MISMATCH: i32 = 2;
@@ -361,7 +362,9 @@ pub struct RequestParams {
     pub chat_messages: *const ChatMessage,
     pub chat_message_count: u32,
     pub reserved1: u32,
-    pub reserved: [u64; 10],
+    pub output_grammar: *const u8,
+    pub output_grammar_len: u64,
+    pub reserved: [u64; 8],
 }
 
 #[repr(C)]
@@ -491,7 +494,9 @@ zero_default!(
         chat_messages: std::ptr::null(),
         chat_message_count: 0,
         reserved1: 0,
-        reserved: [0; 10],
+        output_grammar: std::ptr::null(),
+        output_grammar_len: 0,
+        reserved: [0; 8],
     }
 );
 zero_default!(
@@ -765,7 +770,7 @@ mod tests {
 
     #[test]
     fn ffi_struct_layouts_match_x64_c_contract() {
-        assert_eq!(ABI_MINOR, 2);
+        assert_eq!(ABI_MINOR, 3);
         assert_layout!(Error, 592);
         assert_offset!(Error, struct_size, 0);
         assert_offset!(Error, code, 4);
@@ -879,7 +884,9 @@ mod tests {
         assert_offset!(RequestParams, request_user_data, 88);
         assert_offset!(RequestParams, chat_messages, 96);
         assert_offset!(RequestParams, chat_message_count, 104);
-        assert_offset!(RequestParams, reserved, 112);
+        assert_offset!(RequestParams, output_grammar, 112);
+        assert_offset!(RequestParams, output_grammar_len, 120);
+        assert_offset!(RequestParams, reserved, 128);
         assert_offset!(SchedulerSnapshot, accepted_requests, 24);
         assert_offset!(SchedulerSnapshot, reserved, 40);
         assert_offset!(Metrics, prompt_tokens, 8);

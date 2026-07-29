@@ -31,7 +31,7 @@
 #endif
 
 #define LLW_ABI_MAJOR 1u
-#define LLW_ABI_MINOR 2u
+#define LLW_ABI_MINOR 3u
 
 typedef uint64_t llw_handle_t;
 typedef int32_t llw_result_t;
@@ -67,6 +67,8 @@ typedef int32_t llw_result_t;
 #define LLW_EVENT_DATA_BYTES ((uint32_t)1)
 #define LLW_EVENT_DATA_UTF8 ((uint32_t)2)
 #define LLW_EVENT_DATA_JSON_UTF8 ((uint32_t)3)
+
+#define LLW_MAX_GRAMMAR_BYTES ((uint64_t)65536)
 
 #define LLW_REQUEST_STATE_QUEUED ((int32_t)1)
 #define LLW_REQUEST_STATE_PREPROCESSING ((int32_t)2)
@@ -285,7 +287,9 @@ typedef struct llw_request_params_t {
     const llw_chat_message_t* chat_messages; /* optional ordered conversation history */
     uint32_t chat_message_count; /* 0..128 */
     uint32_t reserved1;
-    uint64_t reserved[10];
+    const uint8_t* output_grammar; /* optional UTF-8 GBNF with root rule */
+    uint64_t output_grammar_len; /* 0 or 1..LLW_MAX_GRAMMAR_BYTES */
+    uint64_t reserved[8];
 } llw_request_params_t;
 
 typedef struct llw_scheduler_snapshot_t {

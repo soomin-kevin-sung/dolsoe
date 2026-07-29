@@ -501,6 +501,7 @@ impl NativeState {
                     .into_iter()
                     .map(String::into_bytes)
                     .collect(),
+                output_grammar: request.output_grammar,
             };
             let model = self
                 .model

@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { NativeRuntimeService, type LlmEventDto, type LoadModelRequest, type SubmitRequest } from "../services/nativeRuntime";
+import {
+  NativeRuntimeService,
+  type AgentActivityEventDto,
+  type LlmEventDto,
+  type LoadModelRequest,
+  type SubmitRequest,
+} from "../services/nativeRuntime";
 import { applyNativeEvent, createNativeState, nativeReducer, TokenDecoders } from "../services/nativeState";
 import {
   RuntimePackService,
@@ -52,12 +58,16 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
+export function useNativeRuntime(
+  onEvent?: (event: LlmEventDto) => void,
+  onAgentActivity?: (event: AgentActivityEventDto) => void,
+) {
   const service = useMemo(() => new NativeRuntimeService(), []);
   const runtimePackService = useMemo(() => new RuntimePackService(), []);
   const decoders = useRef(new TokenDecoders());
   const cancelWhenAccepted = useRef(false);
   const eventObserver = useRef(onEvent);
+  const activityObserver = useRef(onAgentActivity);
   const [state, setState] = useState(createNativeState);
   const [options, setOptions] = useState(defaultNativeOptions);
   const [runtimePacks, setRuntimePacks] = useState<RuntimePack[]>([]);
@@ -70,8 +80,13 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
   }, [onEvent]);
 
   useEffect(() => {
+    activityObserver.current = onAgentActivity;
+  }, [onAgentActivity]);
+
+  useEffect(() => {
     let disposed = false;
     let cleanupEvents: (() => void) | undefined;
+    let cleanupActivity: (() => void) | undefined;
     let cleanupHost: (() => void) | undefined;
     void (async () => {
       try {
@@ -85,6 +100,9 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
               .catch(() => undefined);
           }
         });
+        cleanupActivity = await service.subscribeAgentActivity((event) => {
+          if (!disposed) activityObserver.current?.(event);
+        });
         cleanupHost = await service.subscribeHostReady((status) => {
           if (!disposed) setState((current) => nativeReducer(current, { type: "status", status }));
         });
@@ -97,6 +115,7 @@ export function useNativeRuntime(onEvent?: (event: LlmEventDto) => void) {
     return () => {
       disposed = true;
       cleanupEvents?.();
+      cleanupActivity?.();
       cleanupHost?.();
       decoders.current.clear();
     };

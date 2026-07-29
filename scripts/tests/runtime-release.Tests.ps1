@@ -47,7 +47,7 @@ try {
   $baseline = Get-Content -Raw -Encoding UTF8 $baselinePath | ConvertFrom-Json
   Assert-True ($baseline.releaseTag -eq 'b10068') 'Unexpected llama.cpp baseline tag.'
   Assert-True ($baseline.commit -eq '571d0d540df04f25298d0e159e520d9fc62ed121') 'Unexpected llama.cpp baseline commit.'
-  Assert-True ($baseline.abiMajor -eq 1 -and $baseline.abiMinor -eq 2) 'Unexpected bridge ABI baseline.'
+  Assert-True ($baseline.abiMajor -eq 1 -and $baseline.abiMinor -eq 3) 'Unexpected bridge ABI baseline.'
   Assert-True (@($baseline.headers).Count -eq 7) 'Pinned llama.cpp header SDK must contain seven public headers.'
   foreach ($header in @($baseline.headers)) {
     Assert-True ([string]$header.sha256 -match '^[0-9a-f]{64}$') "Pinned header hash is malformed: $($header.path)"
@@ -180,6 +180,7 @@ try {
   [Management.Automation.Language.Parser]::ParseFile($devLauncherPath, [ref]$parseTokens, [ref]$parseErrors) | Out-Null
   Assert-True ($parseErrors.Count -eq 0) 'Desktop development launcher has PowerShell syntax errors.'
   Assert-True ($devPreparerSource -match '\$packId\s*=\s*''cpu''' -and $devPreparerSource -notmatch '\[string\]\$PackId') 'Development must install only the stable CPU pack ID.'
+  Assert-True ($devPreparerSource -match 'Dolsoe/data/runtime-packs' -and $devPreparerSource -notmatch 'ai\.dolsoe\.desktop') 'Development runtime packs must use the unified Dolsoe data root.'
   Assert-True ($devPreparerSource -match 'build-runtime-release\.ps1' -and $devPreparerSource -match 'runtime-pack\.json') 'Development CPU preparation must reuse the release manifest contract.'
   Assert-True ($devPreparerSource -notmatch 'FetchContent|llama\.cpp\.git') 'Development CPU preparation must not clone or compile llama.cpp.'
   Assert-True ($builderSource -match 'prepare-llama-headers\.ps1' -and $builderSource -match 'LLW_LLAMA_INCLUDE_DIR') 'Runtime builds must use the checksum-pinned header SDK.'

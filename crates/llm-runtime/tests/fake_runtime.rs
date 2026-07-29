@@ -9,7 +9,7 @@ fn probes_native_runtime_contract() {
     let runtime = unsafe { RuntimeLibrary::load(&path) }.expect("load native runtime");
     let info = runtime.info();
     assert_eq!(info.abi_major, 1);
-    assert_eq!(info.runtime_version, "0.2.0");
+    assert_eq!(info.runtime_version, "0.3.0");
     assert_eq!(
         info.llama_cpp_commit,
         "571d0d540df04f25298d0e159e520d9fc62ed121"

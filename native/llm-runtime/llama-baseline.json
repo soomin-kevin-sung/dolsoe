@@ -3,7 +3,7 @@
   "releaseTag": "b10068",
   "commit": "571d0d540df04f25298d0e159e520d9fc62ed121",
   "abiMajor": 1,
-  "abiMinor": 2,
+  "abiMinor": 3,
   "platform": "windows",
   "arch": "x86_64",
   "headers": [

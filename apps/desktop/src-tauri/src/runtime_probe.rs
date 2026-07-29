@@ -1,5 +1,5 @@
 use serde::Serialize;
-use tauri::Manager;
+use tauri::State;
 
 use crate::runtime_path::RuntimePackResolver;
 #[cfg(test)]
@@ -29,18 +29,13 @@ fn runtime_info_dto(info: &llm_runtime::RuntimeInfo) -> RuntimeInfoDto {
 
 #[tauri::command]
 pub async fn probe_runtime(
-    app: tauri::AppHandle,
+    resolver: State<'_, RuntimePackResolver>,
     runtime_pack_id: String,
 ) -> Result<RuntimeInfoDto, String> {
-    let app_data = app
-        .path()
-        .app_local_data_dir()
-        .map_err(|error| error.to_string())?;
-    let runtime_root = app_data.join("runtime-packs");
+    let resolver = resolver.inner().clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        let path =
-            RuntimePackResolver::trusted(&app_data, runtime_root)?.resolve(&runtime_pack_id)?;
+        let path = resolver.resolve(&runtime_pack_id)?;
         // The backend/runtime installer exclusively owns writes to this trusted root.
         // SAFETY: `path` is the canonical path of a project-managed, ABI-conforming runtime pack.
         let runtime = unsafe { llm_runtime::RuntimeLibrary::load(&path) }
@@ -215,7 +210,7 @@ mod tests {
     fn maps_runtime_info_to_dto() {
         let info = RuntimeInfo {
             abi_major: 1,
-            abi_minor: 2,
+            abi_minor: 3,
             runtime_version: "0.1.0-fake".into(),
             llama_cpp_commit: "not-linked".into(),
             capabilities: Capabilities {
@@ -231,7 +226,7 @@ mod tests {
         let dto = runtime_info_dto(&info);
 
         assert_eq!(dto.abi_major, 1);
-        assert_eq!(dto.abi_minor, 2);
+        assert_eq!(dto.abi_minor, 3);
         assert_eq!(dto.runtime_version, "0.1.0-fake");
         assert_eq!(dto.llama_cpp_commit, "not-linked");
         assert_eq!(dto.max_parallel_slots, 4);

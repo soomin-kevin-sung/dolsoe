@@ -1,6 +1,7 @@
 mod agent_loop;
 mod agent_mode;
 mod agent_tools;
+mod app_data;
 mod conversation_commands;
 mod conversation_store;
 mod llm_commands;
@@ -33,14 +34,16 @@ use crate::runtime_install_commands::RuntimeInstallerState;
 use crate::runtime_path::RuntimePackResolver;
 use crate::runtime_selection::RuntimeSelectionStore;
 
+const WEBVIEW_DATA_DIRECTORY: &str = "EBWebView";
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let app_data = app.path().app_local_data_dir()?;
-            std::fs::create_dir_all(&app_data)?;
+            let tauri_app_data = app.path().app_local_data_dir()?;
+            let app_data = app_data::resolve(&tauri_app_data)?;
             let runtime_root = app_data.join("runtime-packs");
             std::fs::create_dir_all(&runtime_root)?;
             runtime_transaction::recover_transactions(
@@ -59,6 +62,7 @@ pub fn run() {
                     .map_err(std::io::Error::other)?;
             let resolver = RuntimePackResolver::trusted(&app_data, runtime_root.clone())
                 .map_err(std::io::Error::other)?;
+            let managed_resolver = resolver.clone();
             selection_store
                 .consume_pending(|backend| runtime_packs::backend_ready(&resolver, backend))
                 .map_err(std::io::Error::other)?;
@@ -74,11 +78,21 @@ pub fn run() {
             app.manage(agent);
             app.manage(persona_store);
             app.manage(selection_store);
+            app.manage(managed_resolver);
             app.manage(host);
             app.manage(RuntimeInstallerState::from_app_data(
                 &app_data,
                 runtime_root,
             ));
+            let window_config = app
+                .config()
+                .app
+                .windows
+                .first()
+                .ok_or_else(|| std::io::Error::other("main window configuration is missing"))?;
+            tauri::WebviewWindowBuilder::from_config(app, window_config)?
+                .data_directory(app_data.join(WEBVIEW_DATA_DIRECTORY))
+                .build()?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

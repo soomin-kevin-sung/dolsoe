@@ -2,13 +2,16 @@ import type {
   ConversationBootstrap,
   ConversationDetail,
   ConversationSummary,
+  AgentRunTrace,
   StartedTurn,
   TerminalMessageStatus,
 } from "./conversationService";
+import type { AgentActivityEventDto } from "./nativeRuntime";
 
 export interface ActiveTurn {
   conversationId: string;
   assistantMessageId: string;
+  agentRunId: string | null;
   requestHandle: string | null;
 }
 
@@ -34,6 +37,7 @@ export type ConversationAction =
   | { type: "turn-failed"; error: string }
   | { type: "token"; requestHandle: string; text: string }
   | { type: "terminal"; requestHandle: string; status: TerminalMessageStatus; tail: string }
+  | { type: "agent-activity"; value: AgentActivityEventDto }
   | { type: "search"; value: string }
   | { type: "storage-error"; error: string | null };
 
@@ -105,6 +109,77 @@ function updateAssistant(
   };
 }
 
+function applyAgentActivity(
+  detail: ConversationDetail,
+  event: AgentActivityEventDto,
+): ConversationDetail {
+  if (event.kind === "answer-reset") {
+    return {
+      ...detail,
+      messages: detail.messages.map((message) =>
+        message.id === event.assistantMessageId ? { ...message, content: "" } : message),
+    };
+  }
+
+  const existing = detail.agentRuns.find((run) => run.runId === event.runId);
+  const run: AgentRunTrace = existing ?? {
+    runId: event.runId,
+    assistantMessageId: event.assistantMessageId,
+    mode: "react",
+    status: "running",
+    startedAt: detail.updatedAt,
+    finishedAt: null,
+    phase: "thinking",
+    tools: [],
+  };
+  let next = run;
+
+  if (event.kind === "thinking" || event.kind === "choosing-tool" || event.kind === "writing") {
+    next = { ...run, status: "running", phase: event.kind };
+  } else if (event.kind === "tool-started" && event.activityId) {
+    const tool = {
+      activityId: event.activityId,
+      toolName: event.toolName ?? "tool",
+      status: "running" as const,
+      input: event.input ?? "",
+      output: "",
+      durationMs: 0,
+    };
+    next = {
+      ...run,
+      phase: "choosing-tool",
+      tools: [...run.tools.filter((item) => item.activityId !== tool.activityId), tool],
+    };
+  } else if (
+    (event.kind === "tool-completed" || event.kind === "tool-failed")
+    && event.activityId
+  ) {
+    next = {
+      ...run,
+      tools: run.tools.map((tool) => tool.activityId === event.activityId ? {
+        ...tool,
+        status: event.kind === "tool-completed" ? "complete" : "error",
+        output: event.output ?? "",
+        durationMs: event.durationMs ?? 0,
+      } : tool),
+    };
+  } else if (event.kind === "completed") {
+    next = { ...run, status: "complete", finishedAt: detail.updatedAt };
+  } else if (event.kind === "cancelled") {
+    next = { ...run, status: "cancelled", finishedAt: detail.updatedAt };
+  } else if (event.kind === "failed") {
+    next = { ...run, status: "error", finishedAt: detail.updatedAt };
+  }
+
+  return {
+    ...detail,
+    agentRuns: [
+      ...detail.agentRuns.filter((candidate) => candidate.runId !== event.runId),
+      next,
+    ],
+  };
+}
+
 export function workspaceReducer(
   state: ConversationState,
   action: ConversationAction,
@@ -156,17 +231,35 @@ export function workspaceReducer(
       const current = state.details[action.value.conversation.id] ?? {
         ...action.value.conversation,
         messages: [],
+        agentRuns: [],
       };
+      const agentRuns = action.value.agentRunId && action.value.conversation.agentMode === "react"
+        ? [
+            ...current.agentRuns,
+            {
+              runId: action.value.agentRunId,
+              assistantMessageId: action.value.assistant.id,
+              mode: "react" as const,
+              status: "running" as const,
+              startedAt: action.value.assistant.createdAt,
+              finishedAt: null,
+              phase: "thinking" as const,
+              tools: [],
+            },
+          ]
+        : current.agentRuns;
       const detail = {
         ...current,
         ...action.value.conversation,
         messages: [...current.messages, action.value.user, action.value.assistant],
+        agentRuns,
       };
       return {
         ...withDetail(state, detail, state.selectedConversationId === null),
         activeTurn: {
           conversationId: detail.id,
           assistantMessageId: action.value.assistant.id,
+          agentRunId: action.value.agentRunId ?? null,
           requestHandle: null,
         },
       };
@@ -207,6 +300,17 @@ export function workspaceReducer(
         status: action.status,
       }));
       return { ...updated, activeTurn: null };
+    }
+    case "agent-activity": {
+      const detail = state.details[action.value.conversationId];
+      if (!detail) return state;
+      return {
+        ...state,
+        details: {
+          ...state.details,
+          [detail.id]: applyAgentActivity(detail, action.value),
+        },
+      };
     }
     case "search":
       return { ...state, search: action.value };

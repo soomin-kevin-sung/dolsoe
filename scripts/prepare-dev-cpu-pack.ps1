@@ -1,5 +1,5 @@
 param(
-  [string]$DestinationRoot = (Join-Path $env:LOCALAPPDATA 'ai.dolsoe.desktop/runtime-packs'),
+  [string]$DestinationRoot = (Join-Path $env:LOCALAPPDATA 'Dolsoe/data/runtime-packs'),
   [ValidateSet('Debug', 'Release')][string]$Configuration = 'Debug',
   [switch]$Force
 )

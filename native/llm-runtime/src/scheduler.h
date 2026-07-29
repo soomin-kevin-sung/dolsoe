@@ -44,6 +44,7 @@ private:
         std::vector<uint8_t> prompt;
         std::vector<ChatMessage> chat_messages;
         std::vector<std::vector<uint8_t>> stops;
+        std::string output_grammar;
         SamplingConfig sampling{};
         uint32_t max_new_tokens{};
         uint32_t generated_tokens{};

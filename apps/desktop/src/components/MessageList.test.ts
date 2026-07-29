@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 
-import { isCpuRuntimeRecoveryError, MessageList, shouldShowEmptyContent } from "./MessageList";
+import type { Message } from "../services/runtime";
+import {
+  getLatestUserMessageId,
+  isCpuRuntimeRecoveryError,
+  isNearScrollBottom,
+  MessageList,
+  shouldShowEmptyContent,
+} from "./MessageList";
 
 describe("shouldShowEmptyContent", () => {
   it("keeps persisted messages visible when no model is loaded", () => {
@@ -38,5 +45,34 @@ describe("assistant identity", () => {
     expect(markup).toContain('<div class="message-author">돌쇠</div>');
     expect(markup).toContain('<span class="assistant-mark" aria-hidden="true"><img src="data:image/svg+xml,');
     expect(markup).not.toContain("로컬 AI");
+  });
+
+  it("uses the Dolsoe identity for an empty conversation", () => {
+    const markup = renderToStaticMarkup(createElement(MessageList, {
+      state: "empty",
+      messages: [],
+    }));
+
+    expect(markup).toContain("empty-dolsoe-mark");
+    expect(markup).toContain("돌쇠에게 일을 맡겨보세요");
+    expect(markup).not.toContain("새 대화를 시작하세요");
+  });
+});
+
+describe("message auto-scroll", () => {
+  it("treats a small remaining distance as the bottom", () => {
+    expect(isNearScrollBottom({ scrollHeight: 1_000, scrollTop: 620, clientHeight: 300 })).toBe(true);
+    expect(isNearScrollBottom({ scrollHeight: 1_000, scrollTop: 500, clientHeight: 300 })).toBe(false);
+  });
+
+  it("detects a newly appended user prompt", () => {
+    const messages: Message[] = [
+      { id: "assistant-1", role: "assistant", content: "첫 응답" },
+      { id: "user-2", role: "user", content: "다음 질문" },
+      { id: "assistant-2", role: "assistant", content: "", status: "streaming" },
+    ];
+
+    expect(getLatestUserMessageId(messages)).toBe("user-2");
+    expect(getLatestUserMessageId(messages.filter((message) => message.role === "assistant"))).toBeNull();
   });
 });

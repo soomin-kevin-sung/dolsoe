@@ -77,6 +77,8 @@ pub struct SubmitRequest {
     pub agent_step_id: Option<String>,
     #[serde(skip)]
     pub correlation_id: u64,
+    #[serde(skip)]
+    pub output_grammar: Option<String>,
     pub prompt: String,
     #[serde(default)]
     pub messages: Vec<SubmitChatMessage>,
@@ -262,6 +264,7 @@ mod tests {
             "conversationId": "conversation-1",
             "prompt": "hello",
             "messages": [{ "role": "user", "content": "hello" }],
+            "outputGrammar": "root ::= \"injected\"",
             "maxNewTokens": 128,
             "temperature": 0.8,
             "topP": 0.95,
@@ -276,6 +279,7 @@ mod tests {
         assert_eq!(request.frequency_penalty, 0.0);
         assert_eq!(request.presence_penalty, 0.0);
         assert!(request.stop_sequences.is_empty());
+        assert_eq!(request.output_grammar, None);
     }
 
     #[test]

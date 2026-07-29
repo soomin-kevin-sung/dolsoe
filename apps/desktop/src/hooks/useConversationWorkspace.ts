@@ -17,7 +17,7 @@ import {
   DEFAULT_AGENT_MODE,
   type AgentModeId,
 } from "../services/agentModes";
-import type { LlmEventDto } from "../services/nativeRuntime";
+import type { AgentActivityEventDto, LlmEventDto } from "../services/nativeRuntime";
 import { TokenDecoders } from "../services/nativeState";
 import { restartAfterTerminalPersistence, TerminalWaiters } from "../services/terminalWaiters";
 import { useNativeRuntime } from "./useNativeRuntime";
@@ -83,7 +83,11 @@ export function useConversationWorkspace() {
       });
   }, [apply, service]);
 
-  const runtime = useNativeRuntime(onNativeEvent);
+  const onAgentActivity = useCallback((event: AgentActivityEventDto) => {
+    apply({ type: "agent-activity", value: event });
+  }, [apply]);
+
+  const runtime = useNativeRuntime(onNativeEvent, onAgentActivity);
 
   useEffect(() => {
     let disposed = false;

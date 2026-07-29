@@ -18,6 +18,7 @@ const conversationA: ConversationDetail = {
   createdAt: 1,
   updatedAt: 2,
   messages: [],
+  agentRuns: [],
 };
 
 const conversationB: ConversationDetail = {
@@ -27,6 +28,7 @@ const conversationB: ConversationDetail = {
   createdAt: 1,
   updatedAt: 1,
   messages: [],
+  agentRuns: [],
 };
 
 const bootstrap: ConversationBootstrap = {
@@ -141,5 +143,61 @@ describe("conversationState", () => {
       status: "error",
     });
     expect(state.activeTurn).toBeNull();
+  });
+
+  it("tracks ReAct activity and resets a repaired public answer", () => {
+    const reactTurn: StartedTurn = {
+      ...turn,
+      conversation: { ...turn.conversation, agentMode: "react" },
+      agentRunId: "run-react",
+      agentStepId: "step-react",
+    };
+    let state = workspaceReducer(bootstrappedState(), {
+      type: "turn-started",
+      value: reactTurn,
+    });
+    state = workspaceReducer(state, {
+      type: "agent-activity",
+      value: {
+        kind: "tool-started",
+        runId: "run-react",
+        conversationId: "a",
+        assistantMessageId: "assistant-1",
+        activityId: "tool-1",
+        toolName: "calculator",
+        input: "2 + 2",
+      },
+    });
+    state = workspaceReducer(state, {
+      type: "agent-activity",
+      value: {
+        kind: "tool-completed",
+        runId: "run-react",
+        conversationId: "a",
+        assistantMessageId: "assistant-1",
+        activityId: "tool-1",
+        toolName: "calculator",
+        output: "4",
+        durationMs: 1,
+      },
+    });
+    state = workspaceReducer(state, { type: "token", requestHandle: "8", text: "partial" });
+    state = workspaceReducer(state, {
+      type: "agent-activity",
+      value: {
+        kind: "answer-reset",
+        runId: "run-react",
+        conversationId: "a",
+        assistantMessageId: "assistant-1",
+      },
+    });
+
+    expect(state.details.a.agentRuns[0].tools[0]).toMatchObject({
+      status: "complete",
+      input: "2 + 2",
+      output: "4",
+      durationMs: 1,
+    });
+    expect(state.details.a.messages[state.details.a.messages.length - 1]?.content).toBe("");
   });
 });

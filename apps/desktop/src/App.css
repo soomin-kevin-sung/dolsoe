@@ -84,6 +84,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .streaming-cursor { display: inline-block; width: 7px; height: 15px; margin-left: 2px; vertical-align: -2px; background: var(--accent); animation: blink 1s steps(1) infinite; }
 .stopped-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; color: var(--text-2); font-size: 12px; }
 .empty-state { display: flex; min-height: 100%; align-items: center; justify-content: center; flex-direction: column; text-align: center; color: var(--text-2); }
+.empty-dolsoe-mark { display: block; width: 48px; height: 48px; object-fit: cover; border: 1px solid var(--border); border-radius: 50%; background: var(--bg-inset); }
 .empty-state h2 { margin: 14px 0 6px; color: var(--text-1); font-size: 16px; }
 .empty-state p { max-width: 430px; margin: 0; line-height: 1.6; }
 .ready-line { display: flex; align-items: center; gap: 6px; margin-top: 16px; font-size: 12px; }
@@ -586,6 +587,27 @@ body { font-size: 14px; }
 .assistant-mark { display: block; width: 30px; height: 30px; overflow: hidden; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-inset); }
 .assistant-mark img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .assistant-content { min-width: 0; }
+.agent-activity { margin: 1px 0 10px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); color: var(--text-2); font-size: 12px; line-height: 1.5; }
+.agent-activity-toggle { display: flex; width: 100%; min-height: 34px; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 2px; border: 0; color: inherit; background: transparent; text-align: left; }
+button.agent-activity-toggle { cursor: pointer; }
+button.agent-activity-toggle:hover { color: var(--text-1); }
+.agent-activity-toggle > svg { flex: none; transition: transform 160ms ease; }
+.agent-activity-toggle > svg.is-open { transform: rotate(180deg); }
+.agent-activity-state { display: inline-flex; min-width: 0; align-items: center; gap: 7px; font-weight: 600; }
+.agent-activity-state > svg { flex: none; }
+.agent-activity-label { min-width: 0; overflow-wrap: anywhere; }
+.agent-activity.is-running .agent-activity-state { color: var(--accent); }
+.agent-tool-list { padding: 0 2px 8px; border-top: 1px solid var(--border); }
+.agent-tool-row { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 7px; padding: 9px 0 3px; }
+.agent-tool-row > svg { margin-top: 2px; color: var(--text-3); }
+.agent-tool-copy { min-width: 0; }
+.agent-tool-heading { display: flex; min-width: 0; align-items: baseline; justify-content: space-between; gap: 12px; }
+.agent-tool-heading > span { flex: none; font-weight: 600; }
+.agent-tool-heading code { min-width: 0; overflow: hidden; color: var(--text-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.agent-tool-result { display: flex; min-width: 0; align-items: center; gap: 6px; margin-top: 3px; color: var(--text-2); }
+.agent-tool-result > span:not(.agent-tool-duration) { min-width: 0; overflow-wrap: anywhere; }
+.agent-tool-duration { flex: none; margin-left: auto; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.agent-tool-row.is-error .agent-tool-result { color: var(--danger); }
 .message-text { white-space: pre-wrap; }
 .message-actions { display: flex; gap: 3px; margin-top: 8px; }
 .message-actions .icon-button { width: 28px; height: 28px; }

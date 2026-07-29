@@ -994,6 +994,7 @@ pub struct GenerationOptions {
     pub frequency_penalty: f32,
     pub presence_penalty: f32,
     pub stop_sequences: Vec<Vec<u8>>,
+    pub output_grammar: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1016,6 +1017,7 @@ impl Default for GenerationOptions {
             frequency_penalty: 0.0,
             presence_penalty: 0.0,
             stop_sequences: Vec::new(),
+            output_grammar: None,
         }
     }
 }
@@ -1444,6 +1446,7 @@ fn run_cancellation_worker<F>(
 struct RuntimeInner {
     api: sys::Api,
     runtime: *mut sys::Runtime,
+    abi_minor: u32,
     callback_state: Box<CallbackState>,
     call_lock: Mutex<()>,
     cancel_worker: Option<std::thread::JoinHandle<()>>,
@@ -1656,6 +1659,7 @@ impl InferenceRuntime {
             inner: Arc::new(RuntimeInner {
                 api,
                 runtime,
+                abi_minor: info.abi_minor,
                 callback_state,
                 call_lock: Mutex::new(()),
                 cancel_worker: Some(cancel_worker),
@@ -1814,11 +1818,27 @@ impl Model {
                 "request correlation id must be non-zero".into(),
             ));
         }
+        if options.output_grammar.is_some() && self.state.runtime.abi_minor < 3 {
+            return Err(Error::Runtime {
+                code: sys::ERR_UNSUPPORTED,
+                message: "structured output requires runtime ABI 1.3 or newer".into(),
+            });
+        }
+        if options.output_grammar.as_ref().is_some_and(|grammar| {
+            grammar.is_empty()
+                || grammar.len() as u64 > sys::MAX_GRAMMAR_BYTES
+                || grammar.as_bytes().contains(&0)
+        }) {
+            return Err(Error::InvalidInput(
+                "output grammar must be 1..65536 UTF-8 bytes without NUL".into(),
+            ));
+        }
         let state = Arc::new(RequestState {
             request_correlation: correlation_id.map(Box::new),
             ..RequestState::default()
         });
         let stop_storage = options.stop_sequences;
+        let output_grammar = options.output_grammar;
         let stop_ffi: Vec<sys::Bytes> = stop_storage
             .iter()
             .map(|stop| sys::Bytes {
@@ -1887,7 +1907,13 @@ impl Model {
             },
             chat_message_count: chat_ffi.len() as u32,
             reserved1: 0,
-            reserved: [0; 10],
+            output_grammar: output_grammar
+                .as_ref()
+                .map_or(std::ptr::null(), |grammar| grammar.as_ptr()),
+            output_grammar_len: output_grammar
+                .as_ref()
+                .map_or(0, |grammar| grammar.len() as u64),
+            reserved: [0; 8],
         };
         let _guard = self
             .state

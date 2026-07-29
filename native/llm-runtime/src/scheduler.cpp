@@ -96,6 +96,11 @@ llw_result_t Scheduler::submit(const llw_request_params_t& params, llw_handle_t&
         params.presence_penalty};
     request.user_data = params.request_user_data;
     request.enqueued_at = now_();
+    if (params.output_grammar_len != 0) {
+        request.output_grammar.assign(
+            reinterpret_cast<const char*>(params.output_grammar),
+            static_cast<size_t>(params.output_grammar_len));
+    }
     request.stops.reserve(params.stop_count);
     for (uint32_t index = 0; index < params.stop_count; ++index) {
         const llw_bytes_t& stop = params.stop_sequences[index];
@@ -270,7 +275,7 @@ void Scheduler::promote_locked() {
                     request.started_at - request.enqueued_at).count());
             request.prompt_tokens = engine_.start(EngineRequest{request.handle, slot.id,
                 request.prompt, request.chat_messages, request.max_new_tokens,
-                request.sampling, request.stops});
+                request.sampling, request.stops, request.output_grammar});
             request.engine_started = true;
             metrics_.prompt_tokens += request.prompt_tokens;
             request.state = RequestState::Running;

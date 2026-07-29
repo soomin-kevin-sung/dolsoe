@@ -253,7 +253,7 @@ mod tests {
         ManifestPolicy {
             app_version: "0.1.0".into(),
             abi_major: 1,
-            abi_minor: 2,
+            abi_minor: 3,
             platform: "windows".into(),
             arch: "x86_64".into(),
             llama_cpp_release: "b10068".into(),
@@ -262,7 +262,7 @@ mod tests {
     }
 
     fn catalog(overrides: &str) -> Vec<u8> {
-        format!(r#"{{"schemaVersion":1,"releaseVersion":"2026.07.1","minimumAppVersion":"0.1.0","maximumAppVersion":"0.1.x","packs":[{{"id":"cuda","backend":"cuda","packVersion":"2026.07.1","platform":"windows","arch":"x86_64","llamaCppRelease":"b10068","llamaCppCommit":"571d0d540df04f25298d0e159e520d9fc62ed121","abiMajor":1,"abiMinor":2,"assetName":"cuda.zip","size":123,"sha256":"{HASH}"{overrides}}}]}}"#).into_bytes()
+        format!(r#"{{"schemaVersion":1,"releaseVersion":"2026.07.1","minimumAppVersion":"0.1.0","maximumAppVersion":"0.1.x","packs":[{{"id":"cuda","backend":"cuda","packVersion":"2026.07.1","platform":"windows","arch":"x86_64","llamaCppRelease":"b10068","llamaCppCommit":"571d0d540df04f25298d0e159e520d9fc62ed121","abiMajor":1,"abiMinor":3,"assetName":"cuda.zip","size":123,"sha256":"{HASH}"{overrides}}}]}}"#).into_bytes()
     }
 
     #[test]
@@ -275,7 +275,7 @@ mod tests {
     fn rejects_identity_digest_asset_and_version_mismatches() {
         for (from, to) in [
             ("\"id\":\"cuda\"", "\"id\":\"cuda-v1\""),
-            ("\"abiMinor\":2", "\"abiMinor\":3"),
+            ("\"abiMinor\":3", "\"abiMinor\":4"),
             ("b10068", "b99999"),
             (HASH, "ABCDEF"),
             ("cuda.zip", "../cuda.zip"),
@@ -309,11 +309,11 @@ mod tests {
             llama_cpp_release: "b10068".into(),
             llama_cpp_commit: policy().llama_cpp_commit,
             abi_major: 1,
-            abi_minor: 2,
+            abi_minor: 3,
             files: vec![],
         };
         assert!(external.matches_internal(&internal));
-        internal.abi_minor = 3;
+        internal.abi_minor = 4;
         assert!(!external.matches_internal(&internal));
     }
 }

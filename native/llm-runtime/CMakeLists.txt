@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(local_llm_runtime VERSION 0.2.0 LANGUAGES C CXX)
+project(local_llm_runtime VERSION 0.3.0 LANGUAGES C CXX)
 
 if(MSVC)
   add_compile_options(/utf-8)

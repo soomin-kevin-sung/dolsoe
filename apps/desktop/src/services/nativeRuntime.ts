@@ -71,6 +71,30 @@ export interface LlmEventDto {
   metrics: LlmMetricsDto | null;
 }
 
+export type AgentActivityKind =
+  | "thinking"
+  | "choosing-tool"
+  | "tool-started"
+  | "tool-completed"
+  | "tool-failed"
+  | "writing"
+  | "answer-reset"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export interface AgentActivityEventDto {
+  kind: AgentActivityKind;
+  runId: string;
+  conversationId: string;
+  assistantMessageId: string;
+  activityId?: string;
+  toolName?: string;
+  input?: string;
+  output?: string;
+  durationMs?: number;
+}
+
 export interface NativeBindings {
   invoke<T>(command: string, args?: Record<string, unknown>): Promise<T>;
   listen<T>(event: string, handler: (event: { payload: T }) => void): Promise<() => void>;
@@ -119,6 +143,13 @@ export class NativeRuntimeService {
 
   subscribe(listener: (event: LlmEventDto) => void): Promise<() => void> {
     return this.bindings.listen<LlmEventDto>("llm://event", (event) => listener(event.payload));
+  }
+
+  subscribeAgentActivity(listener: (event: AgentActivityEventDto) => void): Promise<() => void> {
+    return this.bindings.listen<AgentActivityEventDto>(
+      "agent://activity",
+      (event) => listener(event.payload),
+    );
   }
 
   subscribeHostReady(listener: (status: LlmStatusDto) => void): Promise<() => void> {

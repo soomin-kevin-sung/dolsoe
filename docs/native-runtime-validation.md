@@ -46,7 +46,32 @@ Validate the native workflow in this order:
 4. Confirm both conversation titles and the first conversation's user/assistant messages are restored.
 5. Confirm stored messages remain visible before a model is selected after restart.
 
-The SQLite database is stored at `app_local_data_dir/dolsoe.db`. Startup migrations are repeatable, and assistant messages left in `streaming` state are recovered as `interrupted`.
+## ReAct structured output
+
+Runtime ABI 1.3 adds an optional bounded GBNF grammar to each generation request.
+The desktop app sets this internal-only field for ReAct decisions and leaves it
+unset for ordinary Chat generation. The grammar permits exactly one JSON object:
+either a final response or a `calculator` tool call with an expression string.
+It is applied by llama.cpp's grammar sampler before probability truncation, so
+invalid keys, tool names, surrounding prose, and malformed JSON cannot be
+sampled. The application still parses and validates the completed object because
+generation can end early at the token budget or be cancelled.
+
+Rebuild the development CPU pack after changing the ABI or grammar bridge:
+
+```powershell
+& scripts/prepare-dev-cpu-pack.ps1 -Force
+```
+
+Installed and development copies store the SQLite database at
+`%LOCALAPPDATA%/Dolsoe/data/dolsoe.db`. On the first launch after this layout
+change, the legacy Tauri app-local directory is moved into `Dolsoe/data`
+atomically when both locations are on the same volume. A cross-volume install
+copies into a staging directory and promotes the complete tree before removing
+the legacy source. The main window is created only after migration and uses
+`<data-root>/EBWebView`, preserving local storage without locking the legacy
+directory. Startup database migrations remain repeatable, and assistant messages
+left in `streaming` state are recovered as `interrupted`.
 
 ## Installed runtime selection smoke
 

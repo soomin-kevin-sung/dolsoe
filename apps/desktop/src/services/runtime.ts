@@ -1,3 +1,5 @@
+import type { AgentRunTrace } from "./conversationService";
+
 export const mockStates = [
   "no-model", "loading", "empty", "ready", "streaming", "cancelled", "error",
   "multi", "settings", "reset-confirm", "reload-confirm", "pack-install",
@@ -25,6 +27,7 @@ export interface Message {
   status?: "complete" | "streaming" | "cancelled" | "interrupted" | "error";
   metrics?: string;
   stopDetail?: string;
+  agentRun?: AgentRunTrace;
 }
 
 export interface RuntimeTelemetry {

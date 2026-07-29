@@ -26,8 +26,29 @@ export interface StoredMessage {
   updatedAt: number;
 }
 
+export interface AgentToolTrace {
+  activityId: string;
+  toolName: string;
+  status: "prepared" | "running" | "complete" | "cancelled" | "interrupted" | "error";
+  input: string;
+  output: string;
+  durationMs: number;
+}
+
+export interface AgentRunTrace {
+  runId: string;
+  assistantMessageId: string;
+  mode: AgentModeId;
+  status: "prepared" | "running" | "complete" | "cancelled" | "interrupted" | "error";
+  startedAt: number;
+  finishedAt: number | null;
+  phase?: "thinking" | "choosing-tool" | "writing";
+  tools: AgentToolTrace[];
+}
+
 export interface ConversationDetail extends ConversationSummary {
   messages: StoredMessage[];
+  agentRuns: AgentRunTrace[];
 }
 
 export interface ConversationBootstrap {

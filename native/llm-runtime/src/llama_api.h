@@ -28,6 +28,7 @@
     X(llama_sampler_free) \
     X(llama_sampler_init_dist) \
     X(llama_sampler_init_greedy) \
+    X(llama_sampler_init_grammar) \
     X(llama_sampler_init_min_p) \
     X(llama_sampler_init_penalties) \
     X(llama_sampler_init_temp) \

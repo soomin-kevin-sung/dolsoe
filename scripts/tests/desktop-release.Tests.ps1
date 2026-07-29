@@ -9,6 +9,8 @@ $ciWorkflowPath = Join-Path $repositoryRoot '.github/workflows/ci.yml'
 $tauriConfigPath = Join-Path $repositoryRoot 'apps/desktop/src-tauri/tauri.conf.json'
 $cargoManifestPath = Join-Path $repositoryRoot 'apps/desktop/src-tauri/Cargo.toml'
 $mainSourcePath = Join-Path $repositoryRoot 'apps/desktop/src-tauri/src/main.rs'
+$libSourcePath = Join-Path $repositoryRoot 'apps/desktop/src-tauri/src/lib.rs'
+$appDataSourcePath = Join-Path $repositoryRoot 'apps/desktop/src-tauri/src/app_data.rs'
 $versionScript = Join-Path $repositoryRoot 'scripts/assert-desktop-release-version.ps1'
 $runtimeScript = Join-Path $repositoryRoot 'scripts/prepare-desktop-runtime.ps1'
 $stageScript = Join-Path $repositoryRoot 'scripts/stage-desktop-velopack.ps1'
@@ -151,11 +153,16 @@ try {
   $tauriConfig = Get-Content -Raw -Encoding UTF8 $tauriConfigPath | ConvertFrom-Json
   $cargoManifest = Get-Content -Raw -Encoding UTF8 $cargoManifestPath
   $mainSource = Get-Content -Raw -Encoding UTF8 $mainSourcePath
+  $libSource = Get-Content -Raw -Encoding UTF8 $libSourcePath
+  $appDataSource = Get-Content -Raw -Encoding UTF8 $appDataSourcePath
   Assert-True ('active' -notin $tauriConfig.bundle.PSObject.Properties.Name) 'Ordinary Tauri builds must use the non-bundling Tauri default.'
   Assert-True ('targets' -notin $tauriConfig.bundle.PSObject.Properties.Name) 'Tauri bundle targets must not drive desktop releases.'
   Assert-True ('resources' -notin $tauriConfig.bundle.PSObject.Properties.Name) 'Velopack staging must own release resources.'
+  Assert-True ($tauriConfig.app.windows[0].create -eq $false) 'The main window must wait until app data migration is complete.'
   Assert-True ($cargoManifest -match 'velopack\s*=\s*"=1\.2\.0"') 'The Velopack Rust SDK must be version-pinned.'
   Assert-True ($mainSource -match 'fn main\(\)\s*\{\s*velopack::VelopackApp::build\(\)\.run\(\);') 'Velopack startup hooks must run first.'
+  Assert-True ($appDataSource -match 'auto_locate_app_manifest' -and $appDataSource -match 'get_root_dir\(\)' -and $appDataSource -match 'DATA_DIRECTORY_NAME') 'Installed app data must resolve below the Velopack root.'
+  Assert-True ($libSource -match 'WebviewWindowBuilder::from_config' -and $libSource -match '\.data_directory\(app_data\.join\(WEBVIEW_DATA_DIRECTORY\)\)') 'WebView data must use the unified app data root.'
   Assert-True ($workflow -match "tags:\s*[\r\n]+\s*-\s*'desktop-v\*'") 'Desktop tags must trigger releases.'
   Assert-True ($workflow -match 'workflow_dispatch' -and $workflow -match 'runtime_tag') 'Manual releases must select a runtime tag.'
   Assert-True ($workflow -match 'assert-desktop-release-version\.ps1') 'Release metadata must validate app versions.'

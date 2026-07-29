@@ -14,6 +14,7 @@ struct EngineRequest {
     llw_handle_t handle{}; uint32_t seq_id{}; std::vector<uint8_t> prompt;
     std::vector<ChatMessage> chat_messages; uint32_t max_new_tokens{};
     SamplingConfig sampling; std::vector<std::vector<uint8_t>> stops;
+    std::string output_grammar;
 };
 struct EngineStep {
     llw_handle_t handle{}; std::vector<uint8_t> token_bytes; uint32_t sampled_tokens{};

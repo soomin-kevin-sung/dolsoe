@@ -189,6 +189,29 @@ pub struct StoredMessage {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentToolTrace {
+    pub activity_id: String,
+    pub tool_name: String,
+    pub status: String,
+    pub input: String,
+    pub output: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRunTrace {
+    pub run_id: String,
+    pub assistant_message_id: String,
+    pub mode: String,
+    pub status: String,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub tools: Vec<AgentToolTrace>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct ConversationDetail {
     pub id: String,
     pub title: String,
@@ -196,6 +219,7 @@ pub struct ConversationDetail {
     pub created_at: i64,
     pub updated_at: i64,
     pub messages: Vec<StoredMessage>,
+    pub agent_runs: Vec<AgentRunTrace>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -243,6 +267,8 @@ pub struct AgentSubmission {
     pub step_id: String,
     pub correlation_id: u64,
     pub mode: String,
+    pub conversation_id: String,
+    pub assistant_message_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -596,7 +622,8 @@ impl ConversationStore {
         let correlation = self
             .lock()?
             .query_row(
-                "SELECT r.id, s.id, s.correlation_id, r.mode
+                "SELECT r.id, s.id, s.correlation_id, r.mode,
+                        r.conversation_id, r.assistant_message_id
                  FROM agent_runs r
                  JOIN agent_steps s ON s.run_id = r.id
                  WHERE r.id = ?1 AND s.id = ?2 AND r.conversation_id = ?3
@@ -608,6 +635,8 @@ impl ConversationStore {
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)?,
                         row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
                     ))
                 },
             )
@@ -620,6 +649,8 @@ impl ConversationStore {
             correlation_id: u64::try_from(correlation.2)
                 .map_err(|_| "stored agent correlation id is invalid".to_string())?,
             mode: correlation.3,
+            conversation_id: correlation.4,
+            assistant_message_id: correlation.5,
         })
     }
 
@@ -949,6 +980,7 @@ impl ConversationStore {
         output: &str,
         successful: bool,
         reset_progress: bool,
+        duration_ms: u64,
     ) -> StoreResult<()> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(store_error)?;
@@ -974,13 +1006,15 @@ impl ConversationStore {
         let step_id = Uuid::new_v4().to_string();
         let correlation_id = correlation_id_for(&step_id)?;
         let timestamp = now_millis()?;
+        let duration_ms = i64::try_from(duration_ms).unwrap_or(i64::MAX);
+        let started_at = timestamp.saturating_sub(duration_ms);
         transaction
             .execute(
                 "INSERT INTO agent_steps(
                     id, run_id, step_index, kind, stage, status, correlation_id,
                     output_content, started_at, updated_at, finished_at,
                     terminal_reason, decision_json
-                 ) VALUES (?1, ?2, ?3, 'tool', ?4, ?5, ?6, ?7, ?8, ?8, ?8, ?9, ?10)",
+                 ) VALUES (?1, ?2, ?3, 'tool', ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11)",
                 params![
                     step_id,
                     run_id,
@@ -989,6 +1023,7 @@ impl ConversationStore {
                     if successful { "complete" } else { "error" },
                     correlation_id,
                     output,
+                    started_at,
                     timestamp,
                     if successful {
                         "tool-complete"
@@ -1601,6 +1636,7 @@ fn load_conversation(transaction: &Transaction<'_>, id: &str) -> StoreResult<Con
             })
         })
         .collect::<StoreResult<Vec<_>>>()?;
+    let agent_runs = load_agent_runs(transaction, id)?;
     Ok(ConversationDetail {
         id: summary.id,
         title: summary.title,
@@ -1608,7 +1644,97 @@ fn load_conversation(transaction: &Transaction<'_>, id: &str) -> StoreResult<Con
         created_at: summary.created_at,
         updated_at: summary.updated_at,
         messages,
+        agent_runs,
     })
+}
+
+fn load_agent_runs(
+    transaction: &Transaction<'_>,
+    conversation_id: &str,
+) -> StoreResult<Vec<AgentRunTrace>> {
+    let mut run_statement = transaction
+        .prepare(
+            "SELECT id, assistant_message_id, mode, status, started_at, finished_at
+             FROM agent_runs
+             WHERE conversation_id = ?1 AND mode = 'react'
+             ORDER BY started_at, rowid",
+        )
+        .map_err(store_error)?;
+    let run_rows = run_statement
+        .query_map([conversation_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })
+        .map_err(store_error)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(store_error)?;
+
+    run_rows
+        .into_iter()
+        .map(
+            |(run_id, assistant_message_id, mode, status, started_at, finished_at)| {
+                let mut tool_statement = transaction
+                    .prepare(
+                        "SELECT id, stage, status, decision_json, output_content,
+                                started_at, finished_at
+                         FROM agent_steps
+                         WHERE run_id = ?1 AND kind = 'tool'
+                         ORDER BY step_index",
+                    )
+                    .map_err(store_error)?;
+                let tools = tool_statement
+                    .query_map([run_id.as_str()], |row| {
+                        let stage = row.get::<_, String>(1)?;
+                        let arguments_json = row
+                            .get::<_, Option<String>>(3)?
+                            .unwrap_or_else(|| "{}".into());
+                        let input = serde_json::from_str::<serde_json::Value>(&arguments_json)
+                            .ok()
+                            .and_then(|value| {
+                                value
+                                    .get("expression")
+                                    .and_then(serde_json::Value::as_str)
+                                    .map(str::to_string)
+                            })
+                            .unwrap_or(arguments_json);
+                        let tool_started_at = row.get::<_, i64>(5)?;
+                        let tool_finished_at = row.get::<_, Option<i64>>(6)?;
+                        let duration_ms = tool_finished_at
+                            .unwrap_or(tool_started_at)
+                            .saturating_sub(tool_started_at);
+                        Ok(AgentToolTrace {
+                            activity_id: row.get(0)?,
+                            tool_name: stage
+                                .strip_prefix("tool:")
+                                .unwrap_or(stage.as_str())
+                                .to_string(),
+                            status: row.get(2)?,
+                            input,
+                            output: row.get(4)?,
+                            duration_ms: u64::try_from(duration_ms).unwrap_or_default(),
+                        })
+                    })
+                    .map_err(store_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(store_error)?;
+                Ok(AgentRunTrace {
+                    run_id,
+                    assistant_message_id,
+                    mode,
+                    status,
+                    started_at,
+                    finished_at,
+                    tools,
+                })
+            },
+        )
+        .collect()
 }
 
 fn insert_message(

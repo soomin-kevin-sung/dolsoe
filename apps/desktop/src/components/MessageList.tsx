@@ -1,6 +1,8 @@
-import { Box, BookOpen, Copy, Download, FolderOpen, LoaderCircle, Square, TriangleAlert } from "lucide-react";
+import { Box, Copy, Download, FolderOpen, LoaderCircle, Square, TriangleAlert } from "lucide-react";
+import { useLayoutEffect, useRef } from "react";
 import dolsoeIconUrl from "../assets/dolsoe-icon.svg";
 import type { Message, MockStateName } from "../services/runtime";
+import { AgentActivityPanel } from "./AgentActivityPanel";
 
 interface EmptyContentProps {
   state: MockStateName;
@@ -14,19 +16,36 @@ interface EmptyContentProps {
 function EmptyContent({ state, modelName, backend, loadingProgress, onChooseModel, onCancelLoad }: EmptyContentProps) {
   if (state === "no-model") return <div className="empty-state"><Box size={28} strokeWidth={1.5} /><h2>선택된 모델이 없습니다</h2><p>로컬 GGUF 파일을 선택하면 대화를 시작할 수 있습니다. 모든 추론은 이 PC에서만 실행됩니다.</p><button className="button-primary" type="button" onClick={onChooseModel}><FolderOpen size={14} /> GGUF 모델 선택…</button><span className="caption">지원 형식: .gguf</span></div>;
   if (state === "loading") { const progress = Math.round((loadingProgress ?? 0.64) * 100); return <div className="empty-state"><div className="loading-card"><p className="loading-file">{modelName ?? "Qwen2.5-7B-Instruct-Q4_K_M.gguf"}</p><div className="progress-track"><div className="progress-fill" style={{ width: `${progress}%` }} /></div><div className="loading-meta"><span>모델 로딩 중 · {backend ?? "CUDA"}</span><span>{progress}%</span></div>{(onCancelLoad || loadingProgress === undefined) && <button className="button-secondary" type="button" onClick={onCancelLoad}>로드 취소</button>}</div></div>; }
-  return <div className="empty-state"><BookOpen size={28} strokeWidth={1.5} /><h2>새 대화를 시작하세요</h2><p>메시지를 입력하면 이 PC에서 바로 추론이 실행됩니다. 대화 내용은 외부로 전송되지 않습니다.</p><span className="ready-line"><span className="status-dot ready" />{modelName ?? "Qwen2.5-7B-Instruct"} · {backend ?? "CUDA"} · 준비됨</span></div>;
+  return <div className="empty-state"><img className="empty-dolsoe-mark" src={dolsoeIconUrl} alt="" aria-hidden="true" /><h2>돌쇠에게 일을 맡겨보세요</h2><p>할 일이나 궁금한 내용을 편하게 적어주세요. 대화는 이 기기 안에서만 오갑니다.</p><span className="ready-line"><span className="status-dot ready" />{modelName ?? "Qwen2.5-7B-Instruct"} · {backend ?? "CUDA"} · 준비됨</span></div>;
 }
 
 interface MessageListProps extends EmptyContentProps {
+  conversationId?: string;
   messages: Message[];
   error?: string | null;
   onOpenSettings?(): void;
 }
 
+const AUTO_SCROLL_THRESHOLD = 96;
+
 export function shouldShowEmptyContent(state: MockStateName, messageCount: number): boolean {
   if (state === "loading") return true;
   if (state === "no-model") return messageCount === 0;
   return state === "empty" && messageCount === 0;
+}
+
+export function isNearScrollBottom(
+  metrics: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">,
+  threshold = AUTO_SCROLL_THRESHOLD,
+): boolean {
+  return metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight <= threshold;
+}
+
+export function getLatestUserMessageId(messages: Message[]): string | null {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "user") return messages[index].id;
+  }
+  return null;
 }
 
 export function isCpuRuntimeRecoveryError(error?: string | null): boolean {
@@ -36,13 +55,53 @@ export function isCpuRuntimeRecoveryError(error?: string | null): boolean {
   ));
 }
 
-export function MessageList({ state, messages, modelName, backend, loadingProgress, onChooseModel, onCancelLoad, onOpenSettings, error }: MessageListProps) {
+export function MessageList({ conversationId, state, messages, modelName, backend, loadingProgress, onChooseModel, onCancelLoad, onOpenSettings, error }: MessageListProps) {
+  const messageColumnRef = useRef<HTMLDivElement>(null);
+  const followLatestRef = useRef(true);
+  const previousConversationIdRef = useRef(conversationId);
+  const previousMessageCountRef = useRef(0);
+  const previousUserMessageIdRef = useRef<string | null>(null);
+  const showsMessages = !shouldShowEmptyContent(state, messages.length) && state !== "error";
+  const lastMessage = messages[messages.length - 1];
+  const latestUserMessageId = getLatestUserMessageId(messages);
+
+  useLayoutEffect(() => {
+    const scrollContainer = messageColumnRef.current?.parentElement;
+    if (!scrollContainer) return;
+
+    const updateFollowState = () => {
+      followLatestRef.current = isNearScrollBottom(scrollContainer);
+    };
+
+    scrollContainer.addEventListener("scroll", updateFollowState, { passive: true });
+    updateFollowState();
+    return () => scrollContainer.removeEventListener("scroll", updateFollowState);
+  }, [conversationId, showsMessages]);
+
+  useLayoutEffect(() => {
+    const scrollContainer = messageColumnRef.current?.parentElement;
+    if (!scrollContainer) return;
+
+    const conversationChanged = previousConversationIdRef.current !== conversationId;
+    const firstMessageRender = previousMessageCountRef.current === 0 && messages.length > 0;
+    const userSubmitted = latestUserMessageId !== null && latestUserMessageId !== previousUserMessageIdRef.current;
+
+    if (conversationChanged || firstMessageRender || userSubmitted || followLatestRef.current) {
+      scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      followLatestRef.current = true;
+    }
+
+    previousConversationIdRef.current = conversationId;
+    previousMessageCountRef.current = messages.length;
+    previousUserMessageIdRef.current = latestUserMessageId;
+  }, [conversationId, lastMessage?.content, lastMessage?.id, lastMessage?.status, latestUserMessageId, messages.length, showsMessages]);
+
   if (shouldShowEmptyContent(state, messages.length)) return <div className="message-column"><EmptyContent state={state} modelName={modelName} backend={backend} loadingProgress={loadingProgress} onChooseModel={onChooseModel} onCancelLoad={onCancelLoad} /></div>;
   if (state === "error" && isCpuRuntimeRecoveryError(error)) return <div className="message-column"><div className="message assistant"><div className="error-block"><h3 className="error-title"><TriangleAlert size={14} />런타임이 필요합니다</h3><p>검증된 런타임을 설치하면 앱을 닫지 않고 바로 모델을 선택할 수 있습니다.</p><div className="error-actions"><button className="button-primary" type="button" onClick={onOpenSettings}><Download size={14} /> 런타임 설치</button></div></div></div></div>;
   if (state === "error" && error) return <div className="message-column"><div className="message assistant"><div className="error-block"><h3 className="error-title"><TriangleAlert size={14} />로컬 추론을 완료하지 못했습니다</h3><p>{error}</p><div className="error-actions"><button className="button-secondary" type="button" onClick={onChooseModel}>모델 다시 선택</button></div></div></div></div>;
   if (state === "error") return <div className="message-column"><div className="message user"><div className="user-bubble">GGUF 양자화 방식 중 Q4_K_M과 Q5_K_M의 차이를 설명해줘. 7B 모델을 12GB VRAM에서 돌릴 건데 어느 쪽이 나아?</div><div className="timestamp">14:02</div></div><div className="message assistant"><div className="error-block"><h3 className="error-title"><TriangleAlert size={14} />CUDA 백엔드를 초기화하지 못했습니다</h3><p>NVIDIA 드라이버에서 CUDA 12 런타임을 찾을 수 없습니다 (오류 코드 LLW_E_BACKEND_INIT). 드라이버를 업데이트하거나 CPU로 전환한 뒤 다시 시도하세요.</p><div className="error-actions"><button className="button-secondary" type="button">CPU로 전환 후 다시 로드</button><button className="button-secondary" type="button">다시 시도</button></div></div></div></div>;
   return (
-    <div className="message-column">
+    <div className="message-column" ref={messageColumnRef}>
       {messages.map((message) => message.role === "user" ? (
         <div className="message user" data-message-role="user" key={message.id}><div className="message-author">나</div><div className="user-bubble">{message.content}</div>{message.time && <div className="timestamp">{message.time}</div>}</div>
       ) : (
@@ -50,6 +109,7 @@ export function MessageList({ state, messages, modelName, backend, loadingProgre
           <span className="assistant-mark" aria-hidden="true"><img src={dolsoeIconUrl} alt="" /></span>
           <div className="assistant-content">
             <div className="message-author">돌쇠</div>
+            {message.agentRun && <AgentActivityPanel run={message.agentRun} />}
             <div className="message-text">{message.content}{message.status === "streaming" && <span className="streaming-cursor" />}</div>
             {message.status === "cancelled" && <div className="stopped-line"><Square size={12} fill="currentColor" />생성이 중지되었습니다 · {message.stopDetail ?? "토큰 87개 생성됨"}</div>}
             {message.status === "interrupted" && <div className="stopped-line"><Square size={12} fill="currentColor" />생성이 중단되었습니다 · {message.stopDetail ?? "토큰 87개 생성됨"}</div>}

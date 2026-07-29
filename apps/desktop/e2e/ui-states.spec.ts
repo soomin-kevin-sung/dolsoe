@@ -157,6 +157,29 @@ test("long content stays inside the application shell", async ({ page }) => {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1024);
 });
 
+test("conversation follows the latest message after a new prompt", async ({ page }) => {
+  await page.setViewportSize({ width: 1024, height: 700 });
+  await page.goto("/?state=ready&longMessage=1");
+  const conversation = page.getByRole("main", { name: "대화" });
+  const remainingScroll = () => conversation.evaluate(
+    (element) => element.scrollHeight - element.scrollTop - element.clientHeight,
+  );
+
+  await expect.poll(remainingScroll).toBeLessThanOrEqual(1);
+  await conversation.evaluate((element) => { element.scrollTop = 0; });
+  expect(await remainingScroll()).toBeGreaterThan(96);
+
+  await page.getByRole("textbox", { name: "메시지" }).fill("자동 스크롤 확인");
+  await page.keyboard.press("Enter");
+
+  await expect.poll(remainingScroll).toBeLessThanOrEqual(1);
+  await expect(page.locator('[data-message-role="user"]').last()).toContainText("자동 스크롤 확인");
+
+  await conversation.evaluate((element) => { element.scrollTop = 0; });
+  await page.getByRole("button", { name: "생성 중지" }).click();
+  await expect(conversation).toHaveJSProperty("scrollTop", 0);
+});
+
 test("settings opens from keyboard and changes theme", async ({ page }) => {
   await page.goto("/?state=ready");
   await page.keyboard.press("Control+,");

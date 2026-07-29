@@ -2,20 +2,57 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     thread,
+    time::Instant,
 };
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
 use crate::{
     agent_mode::{compile_agent_system_prompt, parse_react_decision, AgentDecision, AgentMode},
-    agent_tools::{execute_read_only_tool, tool_action_digest, ToolResult},
+    agent_tools::{ToolGateway, ToolPreparation, ToolResult},
     conversation_store::{ConversationStore, MessageStatus, PreparedAgentStep},
     llm_dto::{LlmEventDto, LlmEventKind, SubmitChatMessage, SubmitRequest, SubmitResponse},
     runtime_host::RuntimeHost,
 };
 
 type EventSink = Arc<dyn Fn(LlmEventDto) -> Result<(), String> + Send + Sync>;
+type ActivitySink = Arc<dyn Fn(AgentActivityEventDto) -> Result<(), String> + Send + Sync>;
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AgentActivityKind {
+    Thinking,
+    ChoosingTool,
+    ToolStarted,
+    ToolCompleted,
+    ToolFailed,
+    Writing,
+    AnswerReset,
+    Completed,
+    Cancelled,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentActivityEventDto {
+    pub kind: AgentActivityKind,
+    pub run_id: String,
+    pub conversation_id: String,
+    pub assistant_message_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub activity_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+}
 
 trait AgentStrategy: Send {
     fn mode(&self) -> AgentMode;
@@ -137,8 +174,12 @@ impl AgentRunLoop {
 
 struct ActiveRun {
     run_id: String,
+    conversation_id: String,
+    assistant_message_id: String,
     step_id: String,
     output: Vec<u8>,
+    public_answer: String,
+    public_phase: Option<AgentActivityKind>,
     run_loop: AgentRunLoop,
     request_template: SubmitRequest,
     messages: Vec<SubmitChatMessage>,
@@ -157,9 +198,175 @@ impl ActiveRun {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum ReactProjection {
+    Pending,
+    ToolCall,
+    Final(String),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PrefixMatch {
+    Complete,
+    Pending,
+    Invalid,
+}
+
+fn match_literal(bytes: &[u8], cursor: usize, literal: &[u8]) -> PrefixMatch {
+    let remaining = &bytes[cursor..];
+    if remaining.len() >= literal.len() {
+        if &remaining[..literal.len()] == literal {
+            PrefixMatch::Complete
+        } else {
+            PrefixMatch::Invalid
+        }
+    } else if literal.starts_with(remaining) {
+        PrefixMatch::Pending
+    } else {
+        PrefixMatch::Invalid
+    }
+}
+
+fn consume_literal(bytes: &[u8], cursor: &mut usize, literal: &[u8]) -> PrefixMatch {
+    let result = match_literal(bytes, *cursor, literal);
+    if result == PrefixMatch::Complete {
+        *cursor += literal.len();
+    }
+    result
+}
+
+fn skip_json_whitespace(bytes: &[u8], cursor: &mut usize) {
+    while bytes
+        .get(*cursor)
+        .is_some_and(|byte| matches!(byte, b' ' | b'\n' | b'\r' | b'\t'))
+    {
+        *cursor += 1;
+    }
+}
+
+fn decode_hex_quad(bytes: &[u8]) -> Option<u16> {
+    if bytes.len() < 4 {
+        return None;
+    }
+    bytes[..4].iter().try_fold(0u16, |value, byte| {
+        let digit = match byte {
+            b'0'..=b'9' => u16::from(*byte - b'0'),
+            b'a'..=b'f' => u16::from(*byte - b'a' + 10),
+            b'A'..=b'F' => u16::from(*byte - b'A' + 10),
+            _ => return None,
+        };
+        Some(value * 16 + digit)
+    })
+}
+
+fn decode_json_string_prefix(bytes: &[u8]) -> Option<String> {
+    let mut decoded = String::new();
+    let mut cursor = 0;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'"' => return Some(decoded),
+            b'\\' => {
+                let escaped = *bytes.get(cursor + 1)?;
+                match escaped {
+                    b'"' => decoded.push('"'),
+                    b'\\' => decoded.push('\\'),
+                    b'/' => decoded.push('/'),
+                    b'b' => decoded.push('\u{0008}'),
+                    b'f' => decoded.push('\u{000c}'),
+                    b'n' => decoded.push('\n'),
+                    b'r' => decoded.push('\r'),
+                    b't' => decoded.push('\t'),
+                    b'u' => {
+                        let first = decode_hex_quad(bytes.get(cursor + 2..)?)?;
+                        cursor += 6;
+                        let codepoint = if (0xd800..=0xdbff).contains(&first) {
+                            if bytes.get(cursor..cursor + 2) != Some(b"\\u") {
+                                return None;
+                            }
+                            let second = decode_hex_quad(bytes.get(cursor + 2..)?)?;
+                            if !(0xdc00..=0xdfff).contains(&second) {
+                                return None;
+                            }
+                            cursor += 6;
+                            0x10000
+                                + ((u32::from(first) - 0xd800) << 10)
+                                + (u32::from(second) - 0xdc00)
+                        } else {
+                            u32::from(first)
+                        };
+                        decoded.push(char::from_u32(codepoint)?);
+                        continue;
+                    }
+                    _ => return None,
+                }
+                cursor += 2;
+            }
+            byte if byte < 0x20 => return None,
+            _ => {
+                let start = cursor;
+                while cursor < bytes.len()
+                    && !matches!(bytes[cursor], b'"' | b'\\')
+                    && bytes[cursor] >= 0x20
+                {
+                    cursor += 1;
+                }
+                match std::str::from_utf8(&bytes[start..cursor]) {
+                    Ok(value) => decoded.push_str(value),
+                    Err(error) if error.error_len().is_none() => {
+                        let valid = &bytes[start..start + error.valid_up_to()];
+                        decoded.push_str(std::str::from_utf8(valid).ok()?);
+                        return Some(decoded);
+                    }
+                    Err(_) => return None,
+                }
+            }
+        }
+    }
+    Some(decoded)
+}
+
+fn project_react_output(bytes: &[u8]) -> ReactProjection {
+    let mut cursor = 0;
+    let required = [b"{".as_slice(), br#""type""#.as_slice(), b":".as_slice()];
+    for literal in required {
+        skip_json_whitespace(bytes, &mut cursor);
+        match consume_literal(bytes, &mut cursor, literal) {
+            PrefixMatch::Complete => {}
+            PrefixMatch::Pending | PrefixMatch::Invalid => return ReactProjection::Pending,
+        }
+    }
+    skip_json_whitespace(bytes, &mut cursor);
+    match match_literal(bytes, cursor, br#""tool_call""#) {
+        PrefixMatch::Complete => return ReactProjection::ToolCall,
+        PrefixMatch::Pending => return ReactProjection::Pending,
+        PrefixMatch::Invalid => {}
+    }
+    match consume_literal(bytes, &mut cursor, br#""final""#) {
+        PrefixMatch::Complete => {}
+        PrefixMatch::Pending | PrefixMatch::Invalid => return ReactProjection::Pending,
+    }
+    for literal in [
+        b",".as_slice(),
+        br#""content""#.as_slice(),
+        b":".as_slice(),
+        b"\"".as_slice(),
+    ] {
+        skip_json_whitespace(bytes, &mut cursor);
+        match consume_literal(bytes, &mut cursor, literal) {
+            PrefixMatch::Complete => {}
+            PrefixMatch::Pending | PrefixMatch::Invalid => return ReactProjection::Pending,
+        }
+    }
+    decode_json_string_prefix(&bytes[cursor..])
+        .map(ReactProjection::Final)
+        .unwrap_or(ReactProjection::Pending)
+}
+
 struct AgentControllerInner {
     store: ConversationStore,
+    tool_gateway: ToolGateway,
     sink: EventSink,
+    activity_sink: ActivitySink,
     active: Mutex<HashMap<u64, ActiveRun>>,
 }
 
@@ -170,22 +377,64 @@ pub struct AgentController {
 
 impl AgentController {
     pub fn for_app(store: ConversationStore, app: AppHandle) -> Self {
-        Self::new(store, move |event| {
-            app.emit("llm://event", event)
-                .map_err(|error| error.to_string())
-        })
+        let event_app = app.clone();
+        Self::new_with_activity(
+            store,
+            move |event| {
+                event_app
+                    .emit("llm://event", event)
+                    .map_err(|error| error.to_string())
+            },
+            move |event| {
+                app.emit("agent://activity", event)
+                    .map_err(|error| error.to_string())
+            },
+        )
     }
 
+    #[cfg(test)]
     fn new<F>(store: ConversationStore, sink: F) -> Self
     where
         F: Fn(LlmEventDto) -> Result<(), String> + Send + Sync + 'static,
     {
+        Self::new_with_activity(store, sink, |_| Ok(()))
+    }
+
+    fn new_with_activity<F, A>(store: ConversationStore, sink: F, activity_sink: A) -> Self
+    where
+        F: Fn(LlmEventDto) -> Result<(), String> + Send + Sync + 'static,
+        A: Fn(AgentActivityEventDto) -> Result<(), String> + Send + Sync + 'static,
+    {
         Self {
             inner: Arc::new(AgentControllerInner {
                 store,
+                tool_gateway: ToolGateway::builtin(),
                 sink: Arc::new(sink),
+                activity_sink: Arc::new(activity_sink),
                 active: Mutex::new(HashMap::new()),
             }),
+        }
+    }
+
+    fn activity(
+        run: &ActiveRun,
+        kind: AgentActivityKind,
+        activity_id: Option<String>,
+        tool_name: Option<String>,
+        input: Option<String>,
+        output: Option<String>,
+        duration_ms: Option<u64>,
+    ) -> AgentActivityEventDto {
+        AgentActivityEventDto {
+            kind,
+            run_id: run.run_id.clone(),
+            conversation_id: run.conversation_id.clone(),
+            assistant_message_id: run.assistant_message_id.clone(),
+            activity_id,
+            tool_name,
+            input,
+            output,
+            duration_ms,
         }
     }
 
@@ -212,6 +461,7 @@ impl AgentController {
         if mode == AgentMode::React {
             apply_agent_protocol(mode, &mut request.messages);
         }
+        apply_agent_output_constraint(mode, &mut request);
         request.correlation_id = submission.correlation_id;
 
         {
@@ -227,8 +477,12 @@ impl AgentController {
                 submission.correlation_id,
                 ActiveRun {
                     run_id: submission.run_id.clone(),
+                    conversation_id: submission.conversation_id.clone(),
+                    assistant_message_id: submission.assistant_message_id.clone(),
                     step_id: submission.step_id.clone(),
                     output: Vec::new(),
+                    public_answer: String::new(),
+                    public_phase: None,
                     run_loop,
                     request_template: request.clone(),
                     messages: request.messages.clone(),
@@ -239,6 +493,30 @@ impl AgentController {
                     cancel_requested: false,
                 },
             );
+        }
+        if mode == AgentMode::React {
+            let activity = {
+                let mut active = self
+                    .inner
+                    .active
+                    .lock()
+                    .map_err(|_| "agent controller lock is poisoned")?;
+                active.get_mut(&submission.correlation_id).map(|run| {
+                    run.public_phase = Some(AgentActivityKind::Thinking);
+                    Self::activity(
+                        run,
+                        AgentActivityKind::Thinking,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                })
+            };
+            if let Some(activity) = activity {
+                (self.inner.activity_sink)(activity)?;
+            }
         }
 
         let response = match runtime.submit(request) {
@@ -385,6 +663,8 @@ impl AgentController {
         let terminal = is_terminal(event.kind);
         let mut finished = None;
         let mut emit_queued = false;
+        let mut activities = Vec::new();
+        let mut projected_token = None;
         {
             let mut active = self
                 .inner
@@ -404,14 +684,76 @@ impl AgentController {
             }
             if event.kind == LlmEventKind::Token {
                 run.output.extend_from_slice(&event.bytes);
+                match project_react_output(&run.output) {
+                    ReactProjection::Pending => {}
+                    ReactProjection::ToolCall => {
+                        if run.public_phase != Some(AgentActivityKind::ChoosingTool) {
+                            run.public_phase = Some(AgentActivityKind::ChoosingTool);
+                            activities.push(Self::activity(
+                                run,
+                                AgentActivityKind::ChoosingTool,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                            ));
+                        }
+                    }
+                    ReactProjection::Final(content) => {
+                        if run.public_phase != Some(AgentActivityKind::Writing) {
+                            run.public_phase = Some(AgentActivityKind::Writing);
+                            activities.push(Self::activity(
+                                run,
+                                AgentActivityKind::Writing,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                            ));
+                        }
+                        if !content.starts_with(&run.public_answer) {
+                            run.public_answer.clear();
+                            activities.push(Self::activity(
+                                run,
+                                AgentActivityKind::AnswerReset,
+                                None,
+                                None,
+                                None,
+                                None,
+                                None,
+                            ));
+                        }
+                        let delta = content[run.public_answer.len()..].to_string();
+                        if !delta.is_empty() {
+                            run.public_answer.push_str(&delta);
+                            projected_token = Some(LlmEventDto {
+                                kind: LlmEventKind::Token,
+                                request_handle: run.public_handle(event.request_handle.as_deref()),
+                                correlation_id: event.correlation_id.clone(),
+                                sequence_number: event.sequence_number.clone(),
+                                bytes: delta.into_bytes(),
+                                error_code: 0,
+                                metrics: None,
+                            });
+                        }
+                    }
+                }
             }
             if terminal {
                 finished = active.remove(&correlation_id);
             }
         }
 
+        for activity in activities {
+            (self.inner.activity_sink)(activity)?;
+        }
         if emit_queued {
             return (self.inner.sink)(event);
+        }
+        if let Some(token) = projected_token {
+            (self.inner.sink)(token)?;
         }
         if !terminal {
             return Ok(());
@@ -454,7 +796,7 @@ impl AgentController {
         let public_handle = run.public_handle(terminal.request_handle.as_deref());
         let decision_json = json!({
             "type": "final",
-            "content": content,
+            "content": content.clone(),
         })
         .to_string();
         if let Err(error) = self.inner.store.finish_agent_final_decision(
@@ -467,18 +809,53 @@ impl AgentController {
             terminal.request_handle = public_handle;
             terminal.error_code = -1;
             terminal.bytes = format!("agent persistence failed: {error}").into_bytes();
+            let _ = (self.inner.activity_sink)(Self::activity(
+                &run,
+                AgentActivityKind::Failed,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ));
             return (self.inner.sink)(terminal);
         }
-        let token = LlmEventDto {
-            kind: LlmEventKind::Token,
-            request_handle: public_handle.clone(),
-            correlation_id: terminal.correlation_id.clone(),
-            sequence_number: terminal.sequence_number.clone(),
-            bytes: content.into_bytes(),
-            error_code: 0,
-            metrics: None,
+        let (reset, tail) = if content.starts_with(&run.public_answer) {
+            (false, content[run.public_answer.len()..].to_string())
+        } else {
+            (true, content)
         };
-        (self.inner.sink)(token)?;
+        if reset {
+            (self.inner.activity_sink)(Self::activity(
+                &run,
+                AgentActivityKind::AnswerReset,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ))?;
+        }
+        if !tail.is_empty() {
+            (self.inner.sink)(LlmEventDto {
+                kind: LlmEventKind::Token,
+                request_handle: public_handle.clone(),
+                correlation_id: terminal.correlation_id.clone(),
+                sequence_number: terminal.sequence_number.clone(),
+                bytes: tail.into_bytes(),
+                error_code: 0,
+                metrics: None,
+            })?;
+        }
+        (self.inner.activity_sink)(Self::activity(
+            &run,
+            AgentActivityKind::Completed,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ))?;
         terminal.request_handle = public_handle;
         terminal.bytes.clear();
         (self.inner.sink)(terminal)
@@ -495,7 +872,7 @@ impl AgentController {
         let content = if status == MessageStatus::Error {
             String::from_utf8_lossy(&event.bytes).into_owned()
         } else {
-            String::new()
+            run.public_answer.clone()
         };
         if let Err(error) = self.inner.store.finish_agent_step(
             correlation_id,
@@ -507,6 +884,20 @@ impl AgentController {
             event.error_code = -1;
             event.bytes = format!("agent persistence failed: {error}").into_bytes();
         }
+        let activity_kind = match status {
+            MessageStatus::Cancelled => AgentActivityKind::Cancelled,
+            MessageStatus::Error => AgentActivityKind::Failed,
+            _ => AgentActivityKind::Completed,
+        };
+        (self.inner.activity_sink)(Self::activity(
+            &run,
+            activity_kind,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ))?;
         event.request_handle = public_handle;
         (self.inner.sink)(event)
     }
@@ -532,11 +923,40 @@ impl AgentController {
         ) {
             return self.fail_between_steps(run, error);
         }
-        let action_digest = tool_action_digest(&name, &arguments);
+        let preparation = self.inner.tool_gateway.prepare(&name, &arguments);
+        let action_digest = match &preparation {
+            ToolPreparation::Ready(call) => call.action_digest(),
+            ToolPreparation::ApprovalRequired(request) => &request.action_digest,
+            ToolPreparation::Rejected(result) => &result.action_digest,
+        }
+        .to_string();
         if let Err(error) = run.run_loop.before_tool(&action_digest) {
             return self.fail_between_steps(run, error);
         }
-        let result = execute_read_only_tool(&name, &arguments);
+        let activity_id = format!("{}:tool:{}", run.run_id, run.run_loop.total_tool_calls);
+        let input = arguments
+            .get("expression")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| arguments.to_string());
+        if let Err(error) = (self.inner.activity_sink)(Self::activity(
+            &run,
+            AgentActivityKind::ToolStarted,
+            Some(activity_id.clone()),
+            Some(name.clone()),
+            Some(input),
+            None,
+            None,
+        )) {
+            return self.fail_between_steps(run, error);
+        }
+        let started = Instant::now();
+        let result = match preparation {
+            ToolPreparation::Ready(call) => self.inner.tool_gateway.execute(call),
+            ToolPreparation::ApprovalRequired(request) => request.into_blocked_result(),
+            ToolPreparation::Rejected(result) => result,
+        };
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let novel_success = run.run_loop.record_tool_result(&result);
         if let Err(error) = self.inner.store.record_agent_tool_step(
             &run.run_id,
@@ -545,7 +965,30 @@ impl AgentController {
             &result.model_content,
             result.successful,
             novel_success,
+            duration_ms,
         ) {
+            return self.fail_between_steps(run, error);
+        }
+        let display_output = result
+            .model_content
+            .strip_prefix("Calculator result: ")
+            .or_else(|| result.model_content.strip_prefix("Calculator error: "))
+            .unwrap_or(&result.model_content)
+            .to_string();
+        let tool_kind = if result.successful {
+            AgentActivityKind::ToolCompleted
+        } else {
+            AgentActivityKind::ToolFailed
+        };
+        if let Err(error) = (self.inner.activity_sink)(Self::activity(
+            &run,
+            tool_kind,
+            Some(activity_id),
+            Some(name.clone()),
+            None,
+            Some(display_output),
+            Some(duration_ms),
+        )) {
             return self.fail_between_steps(run, error);
         }
         run.messages.push(SubmitChatMessage {
@@ -577,6 +1020,19 @@ impl AgentController {
         ) {
             return self.fail_between_steps(run, persistence_error);
         }
+        if !run.public_answer.is_empty() {
+            if let Err(activity_error) = (self.inner.activity_sink)(Self::activity(
+                &run,
+                AgentActivityKind::AnswerReset,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )) {
+                return self.fail_between_steps(run, activity_error);
+            }
+        }
         run.parse_repairs += 1;
         run.messages.push(SubmitChatMessage {
             role: "assistant".into(),
@@ -605,7 +1061,18 @@ impl AgentController {
         };
         run.step_id = prepared.step_id.clone();
         run.output.clear();
+        run.public_answer.clear();
         run.current_request_handle = None;
+        run.public_phase = Some(AgentActivityKind::Thinking);
+        (self.inner.activity_sink)(Self::activity(
+            &run,
+            AgentActivityKind::Thinking,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ))?;
         let mut request = run.request_template.clone();
         request.agent_run_id = Some(prepared.run_id.clone());
         request.agent_step_id = Some(prepared.step_id.clone());
@@ -684,6 +1151,15 @@ impl AgentController {
             Some("model-submit-failed"),
         );
         if let Some(run) = run {
+            let _ = (self.inner.activity_sink)(Self::activity(
+                &run,
+                AgentActivityKind::Failed,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ));
             let _ = (self.inner.sink)(LlmEventDto {
                 kind: LlmEventKind::Error,
                 request_handle: run.public_request_handle,
@@ -705,6 +1181,15 @@ impl AgentController {
         let error = persistence_error
             .map(|persistence| format!("{error}\nagent persistence failed: {persistence}"))
             .unwrap_or(error);
+        (self.inner.activity_sink)(Self::activity(
+            &run,
+            AgentActivityKind::Failed,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ))?;
         (self.inner.sink)(LlmEventDto {
             kind: LlmEventKind::Error,
             request_handle: run.public_request_handle,
@@ -743,6 +1228,10 @@ fn apply_agent_protocol(mode: AgentMode, messages: &mut Vec<SubmitChatMessage>) 
     }
 }
 
+fn apply_agent_output_constraint(mode: AgentMode, request: &mut SubmitRequest) {
+    request.output_grammar = mode.output_grammar().map(str::to_owned);
+}
+
 fn is_terminal(kind: LlmEventKind) -> bool {
     matches!(
         kind,
@@ -775,11 +1264,13 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        apply_agent_protocol, AgentController, AgentMode, AgentRunLoop, AgentStrategy, ChatStrategy,
+        apply_agent_output_constraint, apply_agent_protocol, project_react_output,
+        AgentActivityKind, AgentController, AgentMode, AgentRunLoop, AgentStrategy, ChatStrategy,
+        ReactProjection,
     };
     use crate::{
         agent_mode::AgentDecision,
-        agent_tools::execute_read_only_tool,
+        agent_tools::{ToolGateway, ToolPreparation},
         conversation_store::{ConversationStore, MessageStatus},
         llm_dto::{LlmEventDto, LlmEventKind, SubmitChatMessage},
     };
@@ -801,7 +1292,13 @@ mod tests {
     fn react_success_resets_only_novel_progress() {
         let mut run_loop = AgentRunLoop::for_mode(AgentMode::React);
         run_loop.before_model().unwrap();
-        let result = execute_read_only_tool("calculator", &json!({ "expression": "2 + 2" }));
+        let gateway = ToolGateway::builtin();
+        let ToolPreparation::Ready(call) =
+            gateway.prepare("calculator", &json!({ "expression": "2 + 2" }))
+        else {
+            panic!("calculator must be prepared");
+        };
+        let result = gateway.execute(call);
         run_loop.before_tool(&result.action_digest).unwrap();
         assert!(run_loop.record_tool_result(&result));
         assert_eq!(run_loop.progress_steps, 0);
@@ -822,6 +1319,55 @@ mod tests {
         assert_eq!(messages[0].role, "system");
         assert!(messages[0].content.contains("\"type\":\"tool_call\""));
         assert!(messages[0].content.contains("calculator"));
+    }
+
+    #[test]
+    fn structured_output_is_applied_only_to_react_requests() {
+        let mut request = serde_json::from_value(json!({
+            "conversationId": "conversation",
+            "prompt": "question",
+            "messages": [],
+            "maxNewTokens": 64,
+            "temperature": 0.7,
+            "seed": -1
+        }))
+        .unwrap();
+
+        apply_agent_output_constraint(AgentMode::React, &mut request);
+        assert!(request
+            .output_grammar
+            .as_deref()
+            .is_some_and(|grammar| grammar.contains(r#"\"tool_call\""#)));
+
+        apply_agent_output_constraint(AgentMode::Chat, &mut request);
+        assert_eq!(request.output_grammar, None);
+    }
+
+    #[test]
+    fn react_projection_reveals_only_final_content() {
+        assert_eq!(
+            project_react_output(br#"{"type":"tool_call","name":"calculator""#),
+            ReactProjection::ToolCall
+        );
+        assert_eq!(
+            project_react_output(br#"{"type":"final","content":"line\n"#),
+            ReactProjection::Final("line\n".into())
+        );
+
+        let korean = r#"{"type":"final","content":"돌쇠입니다."}"#.as_bytes();
+        let split = korean
+            .windows("돌".len())
+            .position(|window| window == "돌".as_bytes())
+            .unwrap()
+            + 1;
+        assert_eq!(
+            project_react_output(&korean[..split]),
+            ReactProjection::Final(String::new())
+        );
+        assert_eq!(
+            project_react_output(korean),
+            ReactProjection::Final("돌쇠입니다.".into())
+        );
     }
 
     #[test]
@@ -859,8 +1405,12 @@ mod tests {
             submission.correlation_id,
             super::ActiveRun {
                 run_id: submission.run_id,
+                conversation_id: submission.conversation_id,
+                assistant_message_id: submission.assistant_message_id,
                 step_id: submission.step_id,
                 output: b"answer".to_vec(),
+                public_answer: String::new(),
+                public_phase: None,
                 run_loop: AgentRunLoop::for_mode(AgentMode::Chat),
                 request_template: serde_json::from_value(json!({
                     "conversationId": "conversation",
@@ -919,18 +1469,31 @@ mod tests {
             .unwrap();
         let emitted = Arc::new(Mutex::new(Vec::new()));
         let emitted_for_sink = emitted.clone();
-        let controller = AgentController::new(store.clone(), move |event| {
-            emitted_for_sink.lock().unwrap().push(event);
-            Ok(())
-        });
+        let activities = Arc::new(Mutex::new(Vec::new()));
+        let activities_for_sink = activities.clone();
+        let controller = AgentController::new_with_activity(
+            store.clone(),
+            move |event| {
+                emitted_for_sink.lock().unwrap().push(event);
+                Ok(())
+            },
+            move |event| {
+                activities_for_sink.lock().unwrap().push(event);
+                Ok(())
+            },
+        );
         let mut run_loop = AgentRunLoop::for_mode(AgentMode::React);
         run_loop.before_model().unwrap();
         controller.inner.active.lock().unwrap().insert(
             submission.correlation_id,
             super::ActiveRun {
                 run_id: submission.run_id,
+                conversation_id: submission.conversation_id,
+                assistant_message_id: submission.assistant_message_id,
                 step_id: submission.step_id,
-                output: r#"{"type":"final","content":"4입니다."}"#.as_bytes().to_vec(),
+                output: Vec::new(),
+                public_answer: String::new(),
+                public_phase: None,
                 run_loop,
                 request_template: serde_json::from_value(json!({
                     "conversationId": turn.conversation.id,
@@ -952,6 +1515,25 @@ mod tests {
             },
         );
 
+        for (sequence, bytes) in [
+            br#"{"type":"final","content":"4"#.as_slice(),
+            "입니다.\"}".as_bytes(),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            controller
+                .route_event(LlmEventDto {
+                    kind: LlmEventKind::Token,
+                    request_handle: Some("11".into()),
+                    correlation_id: Some(submission.correlation_id.to_string()),
+                    sequence_number: sequence.to_string(),
+                    bytes: bytes.to_vec(),
+                    error_code: 0,
+                    metrics: None,
+                })
+                .unwrap();
+        }
         controller
             .route_event(LlmEventDto {
                 kind: LlmEventKind::Done,
@@ -965,10 +1547,20 @@ mod tests {
             .unwrap();
 
         let events = emitted.lock().unwrap();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
         assert_eq!(events[0].kind, LlmEventKind::Token);
-        assert_eq!(String::from_utf8_lossy(&events[0].bytes), "4입니다.");
-        assert_eq!(events[1].kind, LlmEventKind::Done);
+        assert_eq!(String::from_utf8_lossy(&events[0].bytes), "4");
+        assert_eq!(String::from_utf8_lossy(&events[1].bytes), "입니다.");
+        assert_eq!(events[2].kind, LlmEventKind::Done);
+        assert_eq!(
+            activities
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            vec![AgentActivityKind::Writing, AgentActivityKind::Completed]
+        );
         let detail = store.load_conversation(&turn.conversation.id).unwrap();
         assert_eq!(detail.messages.last().unwrap().content, "4입니다.");
     }

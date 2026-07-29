@@ -1,9 +1,10 @@
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::agent_tools::REACT_TOOL_DEFINITIONS;
+use crate::agent_tools::react_tool_definitions;
 
 const REACT_PROTOCOL: &str = include_str!("../resources/agent-modes/react/decision.md");
+const REACT_DECISION_GRAMMAR: &str = include_str!("../resources/agent-modes/react/decision.gbnf");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentMode {
@@ -58,6 +59,13 @@ impl AgentMode {
             }
         }
     }
+
+    pub fn output_grammar(self) -> Option<&'static str> {
+        match self {
+            Self::Chat => None,
+            Self::React => Some(REACT_DECISION_GRAMMAR),
+        }
+    }
 }
 
 pub fn compile_agent_system_prompt(mode: AgentMode, persona_prompt: &str) -> String {
@@ -65,8 +73,9 @@ pub fn compile_agent_system_prompt(mode: AgentMode, persona_prompt: &str) -> Str
         return persona_prompt.into();
     }
 
+    let tool_definitions = react_tool_definitions();
     let protocol =
-        format!("{REACT_PROTOCOL}\n\n{REACT_TOOL_DEFINITIONS}\n\nDo not expose hidden reasoning.");
+        format!("{REACT_PROTOCOL}\n\n{tool_definitions}\n\nDo not expose hidden reasoning.");
     if persona_prompt.is_empty() {
         protocol
     } else {
@@ -93,13 +102,10 @@ pub fn parse_react_decision(output: &str) -> Result<AgentDecision, String> {
         .map_err(|error| format!("ReAct decision must be one valid JSON object: {error}"))?;
     match decision {
         ReactDecisionWire::Final { content } => {
-            let content = content.trim();
-            if content.is_empty() {
+            if content.trim().is_empty() {
                 return Err("ReAct final content must not be empty".into());
             }
-            Ok(AgentDecision::Final {
-                content: content.into(),
-            })
+            Ok(AgentDecision::Final { content })
         }
         ReactDecisionWire::ToolCall { name, arguments } => {
             let name = name.trim();
@@ -179,5 +185,14 @@ mod tests {
         assert!(react.starts_with("persona\n\n"));
         assert!(react.contains("\"type\":\"tool_call\""));
         assert!(react.contains("calculator"));
+    }
+
+    #[test]
+    fn constrains_only_react_output() {
+        assert_eq!(AgentMode::Chat.output_grammar(), None);
+        let grammar = AgentMode::React.output_grammar().unwrap();
+        assert!(grammar.contains(r#"\"type\""#));
+        assert!(grammar.contains(r#"\"calculator\""#));
+        assert!(!grammar.contains("missing"));
     }
 }

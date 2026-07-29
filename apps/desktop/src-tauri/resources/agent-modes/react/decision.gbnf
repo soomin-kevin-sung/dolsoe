@@ -1,0 +1,9 @@
+root ::= final | tool-call
+
+final ::= "{" ws "\"type\"" ws ":" ws "\"final\"" ws "," ws "\"content\"" ws ":" ws string ws "}"
+tool-call ::= "{" ws "\"type\"" ws ":" ws "\"tool_call\"" ws "," ws "\"name\"" ws ":" ws "\"calculator\"" ws "," ws "\"arguments\"" ws ":" ws "{" ws "\"expression\"" ws ":" ws string ws "}" ws "}"
+
+string ::= "\"" char* "\""
+char ::= [^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" hex hex hex hex)
+hex ::= [0-9a-fA-F]
+ws ::= [ \t\n\r]*

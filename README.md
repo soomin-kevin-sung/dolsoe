@@ -19,6 +19,18 @@ Desktop releases are immutable Windows x64 GitHub Releases built with Velopack. 
 
 Tauri only builds `dolsoe-desktop.exe`; it does not create an NSIS or MSI bundle. The release job stages the executable and bundled runtime, then uses the version-pinned Velopack CLI to run the `download -> pack -> upload` sequence. .NET 8 is required only in the build environment to run `vpk`. Installed copies of Dolsoe do not require .NET, and the installer bootstraps WebView2 when it is missing.
 
+Installed copies keep application-owned data under Velopack's detected root at
+`<RootAppDir>/data`, alongside but outside the versioned `current` directory.
+Updates replace `current` without touching `data`; uninstalling Dolsoe removes
+the entire Velopack root, including this application-owned data. User-selected
+GGUF files stay at their original paths and are never migrated into the install
+root. The WebView2 profile is created at `<RootAppDir>/data/EBWebView` after
+legacy data migration completes, so local storage moves with the rest of the
+application-owned data without being locked by an already-running webview.
+Development runs use the same `%LOCALAPPDATA%/Dolsoe/data` layout. On the first
+launch after this change, the legacy Tauri `app_local_data_dir` is migrated into
+that unified location before the main window opens.
+
 Publish the runtime packs first, then dispatch the desktop workflow:
 
 ```powershell

@@ -74,7 +74,9 @@ std::vector<DeviceRecord> enumerate_pack_devices_unlocked(
     return result;
 }
 
-llama_sampler* make_sampler(LlamaApi& api, const SamplingConfig& config) {
+llama_sampler* make_sampler(
+    LlamaApi& api, const llama_vocab* vocab, const SamplingConfig& config,
+    const std::string& output_grammar, const std::vector<llama_token>& history) {
     llama_sampler* chain = api.llama_sampler_chain_init(
         api.llama_sampler_chain_default_params());
     if (!chain) throw std::bad_alloc();
@@ -82,8 +84,26 @@ llama_sampler* make_sampler(LlamaApi& api, const SamplingConfig& config) {
         if (!sampler) { api.llama_sampler_free(chain); throw std::bad_alloc(); }
         api.llama_sampler_chain_add(chain, sampler);
     };
-    add(api.llama_sampler_init_penalties(config.repeat_last_n, config.repeat_penalty,
-                                         config.frequency_penalty, config.presence_penalty));
+    llama_sampler* penalties = api.llama_sampler_init_penalties(
+        config.repeat_last_n, config.repeat_penalty,
+        config.frequency_penalty, config.presence_penalty);
+    if (!penalties) {
+        api.llama_sampler_free(chain);
+        throw std::bad_alloc();
+    }
+    accept_history_tokens(history, [&api, penalties](llama_token token) {
+        api.llama_sampler_accept(penalties, token);
+    });
+    add(penalties);
+    if (!output_grammar.empty()) {
+        llama_sampler* grammar = api.llama_sampler_init_grammar(
+            vocab, output_grammar.c_str(), "root");
+        if (!grammar) {
+            api.llama_sampler_free(chain);
+            throw std::invalid_argument("invalid output grammar");
+        }
+        add(grammar);
+    }
     if (config.top_k > 0) add(api.llama_sampler_init_top_k(config.top_k));
     if (config.top_p < 1.0f) add(api.llama_sampler_init_top_p(config.top_p, 1));
     if (config.min_p > 0.0f) add(api.llama_sampler_init_min_p(config.min_p, 1));
@@ -494,11 +514,9 @@ uint64_t LlamaEngine::start(EngineRequest request) {
     sequence->prompt_token_count = static_cast<uint32_t>(sequence->prompt_tokens.size());
     sequence->effective_generation_budget = budget;
     sequence->stops = std::move(request.stops);
-    sequence->sampler = make_sampler(*api_, request.sampling);
-    accept_history_tokens(sequence->prompt_tokens,
-                          [this, sampler = sequence->sampler](llama_token token) {
-        api_->llama_sampler_accept(sampler, token);
-    });
+    sequence->sampler = make_sampler(
+        *api_, vocab_, request.sampling, request.output_grammar,
+        sequence->prompt_tokens);
     const uint64_t prompt_tokens = sequence->prompt_tokens.size();
     sequences_.emplace(request.handle, std::move(sequence));
     return prompt_tokens;

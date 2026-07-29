@@ -62,6 +62,7 @@ int test_v11_exports() {
     CHECK(schema_text.find("\"eventQueueCapacity\"") != std::string::npos);
     CHECK(schema_text.find("\"nThreadsBatch\"") != std::string::npos);
     CHECK(schema_text.find("\"maxTotalBytes\":2048") != std::string::npos);
+    CHECK(schema_text.find("\"outputGrammar\"") != std::string::npos);
 
     llw_request_params_t request{};
     request.struct_size = sizeof(request);
@@ -76,6 +77,17 @@ int test_v11_exports() {
     llw_handle_t request_handle{99};
     CHECK(llw_request_submit(runtime, &request, &request_handle, &error) == LLW_ERR_INVALID_STATE);
     CHECK(request_handle == 0);
+    const uint8_t grammar[] = {'r', 'o', 'o', 't', ' ', ':', ':', '=', ' ', '\"', 'x', '\"'};
+    request.output_grammar = grammar;
+    request.output_grammar_len = sizeof(grammar);
+    CHECK(llw_request_submit(runtime, &request, &request_handle, &error) == LLW_ERR_INVALID_STATE);
+    request.output_grammar_len = 0;
+    CHECK(llw_request_submit(runtime, &request, &request_handle, &error) ==
+          LLW_ERR_INVALID_ARGUMENT);
+    request.output_grammar = nullptr;
+    request.output_grammar_len = LLW_MAX_GRAMMAR_BYTES + 1;
+    CHECK(llw_request_submit(runtime, &request, &request_handle, &error) ==
+          LLW_ERR_INVALID_ARGUMENT);
     CHECK(llw_model_unload(runtime, 1, &error) == LLW_ERR_NOT_FOUND);
 
     const std::string missing_model = "llw-test-bad-alloc.gguf";
@@ -620,7 +632,7 @@ int test_callback_reentrant_unload_is_rejected_before_transition() {
 int main() {
     static_assert(sizeof(void*) == 8);
     static_assert(LLW_ABI_MAJOR == 1u);
-    static_assert(LLW_ABI_MINOR == 2u);
+    static_assert(LLW_ABI_MINOR == 3u);
     static_assert(sizeof(llw_handle_t) == sizeof(std::uint64_t));
     static_assert(sizeof(llw_result_t) == sizeof(std::int32_t));
     static_assert(LLW_OK == 0);
@@ -755,7 +767,9 @@ int main() {
     LLW_ASSERT_FIELD(llw_request_params_t, request_user_data, void*, 88u);
     LLW_ASSERT_FIELD(llw_request_params_t, chat_messages, const llw_chat_message_t*, 96u);
     LLW_ASSERT_FIELD(llw_request_params_t, chat_message_count, std::uint32_t, 104u);
-    LLW_ASSERT_FIELD(llw_request_params_t, reserved, std::uint64_t[10], 112u);
+    LLW_ASSERT_FIELD(llw_request_params_t, output_grammar, const std::uint8_t*, 112u);
+    LLW_ASSERT_FIELD(llw_request_params_t, output_grammar_len, std::uint64_t, 120u);
+    LLW_ASSERT_FIELD(llw_request_params_t, reserved, std::uint64_t[8], 128u);
     LLW_ASSERT_FIELD(llw_scheduler_snapshot_t, accepted_requests, std::uint64_t, 24u);
     LLW_ASSERT_FIELD(llw_scheduler_snapshot_t, reserved, std::uint64_t[8], 40u);
     LLW_ASSERT_FIELD(llw_metrics_t, prompt_tokens, std::uint64_t, 8u);
@@ -776,7 +790,7 @@ int main() {
         error.struct_size = sizeof(error);
     };
 
-    CHECK(std::strcmp(llw_runtime_version(), "0.2.0") == 0);
+    CHECK(std::strcmp(llw_runtime_version(), "0.3.0") == 0);
     CHECK(std::strcmp(llw_llama_cpp_commit(), "571d0d540df04f25298d0e159e520d9fc62ed121") == 0);
     CHECK(llw_get_abi_info(&query, &info, &error) == LLW_OK);
     CHECK(info.abi_major == LLW_ABI_MAJOR);

@@ -257,8 +257,16 @@ void validate_request(const llw_request_params_t& params) {
         params.stop_count > LLW_MAX_STOP_SEQUENCES ||
         (params.stop_count != 0 && !params.stop_sequences) ||
         params.chat_message_count > LLW_MAX_CHAT_MESSAGES ||
-        (params.chat_message_count != 0 && !params.chat_messages))
+        (params.chat_message_count != 0 && !params.chat_messages) ||
+        (params.output_grammar_len == 0) != (params.output_grammar == nullptr) ||
+        params.output_grammar_len > LLW_MAX_GRAMMAR_BYTES)
         throw std::invalid_argument("request option is outside its declared bounds");
+    if (params.output_grammar_len != 0 &&
+        (!valid_utf8(params.output_grammar, params.output_grammar_len) ||
+         std::find(params.output_grammar,
+                   params.output_grammar + params.output_grammar_len,
+                   uint8_t{0}) != params.output_grammar + params.output_grammar_len))
+        throw std::invalid_argument("invalid output grammar");
     uint64_t chat_total = 0;
     for (uint32_t index = 0; index < params.chat_message_count; ++index) {
         const llw_chat_message_t& message = params.chat_messages[index];
@@ -295,8 +303,8 @@ void validate_request(const llw_request_params_t& params) {
 }
 
 std::string option_schema() {
-    std::string schema = std::string(R"json({"abiMinor":2,"backendPack":")json") + pack_name() +
-        R"json(","model":{"modelPath":{"type":"utf8Bytes","minBytes":1,"maxBytes":32768,"default":null,"apply":"modelReload"},"backend":{"type":"enum","values":{"auto":0,"cpu":1,"cuda":2,"vulkan":3},"default":0,"apply":"modelReload"},"deviceIndex":{"type":"uint32","min":0,"max":255,"default":0,"apply":"modelReload"},"contextTokensPerSlot":{"type":"uint32","min":512,"max":262144,"default":4096,"apply":"modelReload"},"logicalBatchTokens":{"type":"uint32","min":1,"max":8192,"default":512,"apply":"modelReload"},"physicalBatchTokens":{"type":"uint32","min":1,"maxField":"logicalBatchTokens","default":128,"apply":"modelReload"},"nThreads":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nThreadsBatch":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nGpuLayers":{"type":"int32","min":-1,"max":65535,"default":0,"apply":"modelReload"},"useMmap":{"type":"boolean","default":true,"apply":"modelReload"},"useMlock":{"type":"boolean","default":false,"apply":"modelReload"},"checkTensors":{"type":"boolean","default":false,"apply":"modelReload"}},"scheduler":{"slotCount":{"type":"uint32","min":1,"max":4,"default":1,"apply":"runtimeRestart"},"requestQueueCapacity":{"type":"uint32","min":1,"max":1024,"default":16,"apply":"runtimeRestart"},"eventQueueCapacity":{"type":"uint32","min":16,"max":65536,"default":1024,"apply":"runtimeRestart"}},"request":{"promptBytes":{"type":"bytes","minBytes":1,"maxBytes":16777216,"default":null,"apply":"nextRequest"},"chatMessages":{"type":"messageArray","minCount":0,"maxCount":128,"roles":["system","user","assistant"],"maxTotalBytes":16777216,"default":[],"apply":"nextRequest"},"maxNewTokens":{"type":"uint32","min":1,"max":1048576,"default":256,"apply":"nextRequest"},"seed":{"type":"uint32","min":0,"max":4294967295,"default":4294967295,"apply":"nextRequest"},"temperature":{"type":"float32","min":0.0,"max":10.0,"default":0.8,"apply":"nextRequest"},"topK":{"type":"int32","min":0,"max":100000,"default":40,"apply":"nextRequest"},"topP":{"type":"float32","min":0.0,"max":1.0,"default":0.95,"apply":"nextRequest"},"minP":{"type":"float32","min":0.0,"max":1.0,"default":0.05,"apply":"nextRequest"},"repeatLastN":{"type":"int32","min":0,"max":262144,"default":64,"apply":"nextRequest"},"repeatPenalty":{"type":"float32","min":0.0,"max":10.0,"default":1.1,"apply":"nextRequest"},"frequencyPenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"presencePenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"stopSequences":{"type":"bytesArray","minCount":0,"maxCount":8,"minBytesEach":1,"maxBytesEach":256,"maxTotalBytes":2048,"default":[],"apply":"nextRequest"}}})json";
+    std::string schema = std::string(R"json({"abiMinor":3,"backendPack":")json") + pack_name() +
+        R"json(","model":{"modelPath":{"type":"utf8Bytes","minBytes":1,"maxBytes":32768,"default":null,"apply":"modelReload"},"backend":{"type":"enum","values":{"auto":0,"cpu":1,"cuda":2,"vulkan":3},"default":0,"apply":"modelReload"},"deviceIndex":{"type":"uint32","min":0,"max":255,"default":0,"apply":"modelReload"},"contextTokensPerSlot":{"type":"uint32","min":512,"max":262144,"default":4096,"apply":"modelReload"},"logicalBatchTokens":{"type":"uint32","min":1,"max":8192,"default":512,"apply":"modelReload"},"physicalBatchTokens":{"type":"uint32","min":1,"maxField":"logicalBatchTokens","default":128,"apply":"modelReload"},"nThreads":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nThreadsBatch":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nGpuLayers":{"type":"int32","min":-1,"max":65535,"default":0,"apply":"modelReload"},"useMmap":{"type":"boolean","default":true,"apply":"modelReload"},"useMlock":{"type":"boolean","default":false,"apply":"modelReload"},"checkTensors":{"type":"boolean","default":false,"apply":"modelReload"}},"scheduler":{"slotCount":{"type":"uint32","min":1,"max":4,"default":1,"apply":"runtimeRestart"},"requestQueueCapacity":{"type":"uint32","min":1,"max":1024,"default":16,"apply":"runtimeRestart"},"eventQueueCapacity":{"type":"uint32","min":16,"max":65536,"default":1024,"apply":"runtimeRestart"}},"request":{"promptBytes":{"type":"bytes","minBytes":1,"maxBytes":16777216,"default":null,"apply":"nextRequest"},"chatMessages":{"type":"messageArray","minCount":0,"maxCount":128,"roles":["system","user","assistant"],"maxTotalBytes":16777216,"default":[],"apply":"nextRequest"},"maxNewTokens":{"type":"uint32","min":1,"max":1048576,"default":256,"apply":"nextRequest"},"seed":{"type":"uint32","min":0,"max":4294967295,"default":4294967295,"apply":"nextRequest"},"temperature":{"type":"float32","min":0.0,"max":10.0,"default":0.8,"apply":"nextRequest"},"topK":{"type":"int32","min":0,"max":100000,"default":40,"apply":"nextRequest"},"topP":{"type":"float32","min":0.0,"max":1.0,"default":0.95,"apply":"nextRequest"},"minP":{"type":"float32","min":0.0,"max":1.0,"default":0.05,"apply":"nextRequest"},"repeatLastN":{"type":"int32","min":0,"max":262144,"default":64,"apply":"nextRequest"},"repeatPenalty":{"type":"float32","min":0.0,"max":10.0,"default":1.1,"apply":"nextRequest"},"frequencyPenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"presencePenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"stopSequences":{"type":"bytesArray","minCount":0,"maxCount":8,"minBytesEach":1,"maxBytesEach":256,"maxTotalBytes":2048,"default":[],"apply":"nextRequest"},"outputGrammar":{"type":"utf8Bytes","minBytes":0,"maxBytes":65536,"default":null,"apply":"nextRequest"}}})json";
     return schema;
 }
 } // namespace
@@ -319,7 +327,7 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_get_abi_info(
     });
 }
 
-LLW_EXTERN_C LLW_EXPORT const char* LLW_CALL llw_runtime_version(void) { return "0.2.0"; }
+LLW_EXTERN_C LLW_EXPORT const char* LLW_CALL llw_runtime_version(void) { return "0.3.0"; }
 LLW_EXTERN_C LLW_EXPORT const char* LLW_CALL llw_llama_cpp_commit(void) {
     return LLW_LLAMA_CPP_COMMIT;
 }
