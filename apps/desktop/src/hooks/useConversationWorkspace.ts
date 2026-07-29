@@ -34,10 +34,16 @@ export function useConversationWorkspace() {
   const defaultAgentModeRef = useRef<AgentModeId>(DEFAULT_AGENT_MODE);
   const draftAgentModeRef = useRef<AgentModeId>(DEFAULT_AGENT_MODE);
   const draftModeOverriddenRef = useRef(false);
+  const defaultWorkspacePathRef = useRef("");
+  const draftWorkspacePathRef = useRef("");
+  const draftWorkspaceOverriddenRef = useRef(false);
   const [state, setState] = useState(stateRef.current);
   const [defaultAgentMode, setDefaultAgentModeState] = useState<AgentModeId>(DEFAULT_AGENT_MODE);
   const [draftAgentMode, setDraftAgentModeState] = useState<AgentModeId>(DEFAULT_AGENT_MODE);
   const [agentModeLoading, setAgentModeLoading] = useState(true);
+  const [defaultWorkspacePath, setDefaultWorkspacePathState] = useState("");
+  const [draftWorkspacePath, setDraftWorkspacePathState] = useState("");
+  const [workspaceLoading, setWorkspaceLoading] = useState(true);
 
   const apply = useCallback((action: ConversationAction) => {
     setState((current) => {
@@ -92,14 +98,25 @@ export function useConversationWorkspace() {
   useEffect(() => {
     let disposed = false;
     void service.bootstrap()
-      .then(async (value) => ({ value, preferences: await service.getAgentPreferences() }))
-      .then(({ value, preferences }) => {
+      .then(async (value) => {
+        const [agentPreferences, workspacePreferences] = await Promise.all([
+          service.getAgentPreferences(),
+          service.getWorkspacePreferences(),
+        ]);
+        return { value, agentPreferences, workspacePreferences };
+      })
+      .then(({ value, agentPreferences, workspacePreferences }) => {
         if (disposed) return;
-        defaultAgentModeRef.current = preferences.defaultMode;
-        draftAgentModeRef.current = preferences.defaultMode;
-        setDefaultAgentModeState(preferences.defaultMode);
-        setDraftAgentModeState(preferences.defaultMode);
+        defaultAgentModeRef.current = agentPreferences.defaultMode;
+        draftAgentModeRef.current = agentPreferences.defaultMode;
+        setDefaultAgentModeState(agentPreferences.defaultMode);
+        setDraftAgentModeState(agentPreferences.defaultMode);
+        defaultWorkspacePathRef.current = workspacePreferences.defaultWorkspacePath;
+        draftWorkspacePathRef.current = workspacePreferences.defaultWorkspacePath;
+        setDefaultWorkspacePathState(workspacePreferences.defaultWorkspacePath);
+        setDraftWorkspacePathState(workspacePreferences.defaultWorkspacePath);
         setAgentModeLoading(false);
+        setWorkspaceLoading(false);
         apply({ type: "bootstrapped", value });
       })
       .catch((error) => { if (!disposed) apply({ type: "storage-error", error: errorText(error) }); });
@@ -116,10 +133,21 @@ export function useConversationWorkspace() {
     setDraftAgentModeState(defaultAgentModeRef.current);
   }, []);
 
-  const openDraft = useCallback(() => {
+  const resetDraftWorkspace = useCallback(() => {
+    draftWorkspaceOverriddenRef.current = false;
+    draftWorkspacePathRef.current = defaultWorkspacePathRef.current;
+    setDraftWorkspacePathState(defaultWorkspacePathRef.current);
+  }, []);
+
+  const resetDraftProfile = useCallback(() => {
     resetDraftMode();
+    resetDraftWorkspace();
+  }, [resetDraftMode, resetDraftWorkspace]);
+
+  const openDraft = useCallback(() => {
+    resetDraftProfile();
     apply({ type: "draft-opened" });
-  }, [apply, resetDraftMode]);
+  }, [apply, resetDraftProfile]);
 
   const select = useCallback(async (conversationId: string) => {
     const cached = stateRef.current.details[conversationId];
@@ -212,7 +240,11 @@ export function useConversationWorkspace() {
     try {
       const turn = current
         ? await service.startTurn(current.id, prompt)
-        : await service.startNewTurn(prompt, newConversationMode ?? draftAgentModeRef.current);
+        : await service.startNewTurn(
+          prompt,
+          newConversationMode ?? draftAgentModeRef.current,
+          draftWorkspacePathRef.current,
+        );
       apply({ type: "turn-started", value: turn });
       try {
         if (!turn.agentRunId || !turn.agentStepId) {
@@ -278,6 +310,43 @@ export function useConversationWorkspace() {
     setDraftAgentModeState(mode);
   }, []);
 
+  const updateDefaultWorkspace = useCallback(async (workspacePath: string) => {
+    try {
+      const preferences = await service.setDefaultWorkspace(workspacePath);
+      defaultWorkspacePathRef.current = preferences.defaultWorkspacePath;
+      setDefaultWorkspacePathState(preferences.defaultWorkspacePath);
+      if (!draftWorkspaceOverriddenRef.current) {
+        draftWorkspacePathRef.current = preferences.defaultWorkspacePath;
+        setDraftWorkspacePathState(preferences.defaultWorkspacePath);
+      }
+      return true;
+    } catch (error) {
+      apply({ type: "storage-error", error: errorText(error) });
+      return false;
+    }
+  }, [apply, service]);
+
+  const updateDraftWorkspace = useCallback((workspacePath: string) => {
+    draftWorkspaceOverriddenRef.current = true;
+    draftWorkspacePathRef.current = workspacePath;
+    setDraftWorkspacePathState(workspacePath);
+  }, []);
+
+  const updateConversationWorkspace = useCallback(async (workspacePath: string) => {
+    const current = selectCurrentConversation(stateRef.current);
+    if (!current || stateRef.current.activeTurn) return false;
+    try {
+      apply({
+        type: "selected",
+        detail: await service.setConversationWorkspace(current.id, workspacePath),
+      });
+      return true;
+    } catch (error) {
+      apply({ type: "storage-error", error: errorText(error) });
+      return false;
+    }
+  }, [apply, service]);
+
   const updateConversationAgentMode = useCallback(async (mode: AgentModeId) => {
     const current = selectCurrentConversation(stateRef.current);
     if (!current || stateRef.current.activeTurn) return false;
@@ -314,10 +383,17 @@ export function useConversationWorkspace() {
     defaultAgentMode,
     draftAgentMode,
     agentModeLoading,
+    defaultWorkspacePath,
+    draftWorkspacePath,
+    workspaceLoading,
     updateDefaultAgentMode,
     updateDraftAgentMode,
     updateConversationAgentMode,
+    updateDefaultWorkspace,
+    updateDraftWorkspace,
+    updateConversationWorkspace,
     resetDraftMode,
+    resetDraftProfile,
   };
 }
 

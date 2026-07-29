@@ -21,6 +21,7 @@ import { useThemePreference } from "./hooks/useThemePreference";
 import type { AgentRunTrace, StoredMessage } from "./services/conversationService";
 import { isCpuReady, readinessStatus, resolveHomeReadiness } from "./services/homeReadiness";
 import type { Message, MockStateName, RuntimeSnapshot, RuntimeStatus, Session } from "./services/runtime";
+import { chooseWorkspaceDirectory } from "./services/workspacePaths";
 
 type DialogType = "reset" | "reload" | "delete";
 
@@ -97,8 +98,16 @@ function NativeWorkspace() {
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    if (settingsOpen || homeOpen) void packInstaller.refresh();
-  }, [homeOpen, packInstaller.refresh, settingsOpen]);
+    const cpuInstalled = runtime.runtimePacks.some((pack) => pack.id === "cpu" && pack.status === "ready");
+    const homeNeedsCatalog = homeOpen && runtime.runtimePacksInitialized && !cpuInstalled;
+    if (settingsOpen || homeNeedsCatalog) void packInstaller.refresh();
+  }, [
+    homeOpen,
+    packInstaller.refresh,
+    runtime.runtimePacks,
+    runtime.runtimePacksInitialized,
+    settingsOpen,
+  ]);
 
   useEffect(() => {
     if (packInstaller.installState?.phase === "installed") void runtime.refreshRuntimePacks();
@@ -130,6 +139,7 @@ function NativeWorkspace() {
   const readiness = resolveHomeReadiness({
     runtimePhase: state.phase,
     cpuPackStatus: cpuRuntimePack?.status,
+    runtimePacksInitialized: runtime.runtimePacksInitialized,
     installState: packInstaller.installState,
     distributionLoading: packInstaller.loading,
     distributionError: packInstaller.error,
@@ -186,7 +196,7 @@ function NativeWorkspace() {
   }
 
   function goHome() {
-    workspace.resetDraftMode();
+    workspace.resetDraftProfile();
     setHomeOpen(true);
     setDiagnosticsOpen(false);
   }
@@ -227,6 +237,18 @@ function NativeWorkspace() {
     setHomeOpen(false);
     setDiagnosticsOpen(false);
     requestAnimationFrame(() => composerInputRef.current?.focus());
+  }
+
+  async function chooseHeaderWorkspace() {
+    const selected = await chooseWorkspaceDirectory();
+    if (!selected) return;
+    if (homeOpen || !current) workspace.updateDraftWorkspace(selected);
+    else await workspace.updateConversationWorkspace(selected);
+  }
+
+  async function chooseDefaultWorkspace() {
+    const selected = await chooseWorkspaceDirectory();
+    if (selected) await workspace.updateDefaultWorkspace(selected);
   }
 
   useEffect(() => {
@@ -328,6 +350,9 @@ function NativeWorkspace() {
             resetButtonRef={resetButtonRef}
             agentMode={homeOpen || !current ? workspace.draftAgentMode : current.agentMode}
             agentModeDisabled={workspace.agentModeLoading || Boolean(workspace.state.activeTurn)}
+            workspacePath={homeOpen || !current ? workspace.draftWorkspacePath : current.workspacePath}
+            workspaceDisabled={workspace.workspaceLoading || Boolean(workspace.state.activeTurn)}
+            onWorkspaceChange={() => void chooseHeaderWorkspace()}
             onAgentModeChange={(mode) => {
               if (homeOpen || !current) workspace.updateDraftAgentMode(mode);
               else void workspace.updateConversationAgentMode(mode);
@@ -385,6 +410,7 @@ function NativeWorkspace() {
           startPage={generalPreferences.startPage}
           autoLoadLastModel={generalPreferences.autoLoadLastModel}
           defaultAgentMode={workspace.defaultAgentMode}
+          defaultWorkspacePath={workspace.defaultWorkspacePath}
           options={runtime.options}
           runtimePacks={runtime.runtimePacks}
           runtimePackError={runtime.runtimePackError}
@@ -398,6 +424,7 @@ function NativeWorkspace() {
           onStartPageChange={(startPage) => updateGeneralPreferences({ startPage })}
           onAutoLoadLastModelChange={(autoLoadLastModel) => updateGeneralPreferences({ autoLoadLastModel })}
           onDefaultAgentModeChange={(mode) => void workspace.updateDefaultAgentMode(mode)}
+          onDefaultWorkspaceChange={() => void chooseDefaultWorkspace()}
           onOptionsChange={runtime.setOptions}
           onApplyConfiguration={runtime.applyConfiguration}
           onClose={() => { setSettingsOpen(false); settingsButtonRef.current?.focus(); }}

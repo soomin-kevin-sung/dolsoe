@@ -21,6 +21,7 @@ interface Props {
   startPage: StartPagePreference;
   autoLoadLastModel: boolean;
   defaultAgentMode: AgentModeId;
+  defaultWorkspacePath: string;
   options: NativeOptions;
   runtimePacks: RuntimePack[];
   runtimePackError: string | null;
@@ -34,6 +35,7 @@ interface Props {
   onStartPageChange(startPage: StartPagePreference): void;
   onAutoLoadLastModelChange(enabled: boolean): void;
   onDefaultAgentModeChange(mode: AgentModeId): void;
+  onDefaultWorkspaceChange(): void;
   onOptionsChange(options: NativeOptions): void;
   onApplyConfiguration(options: NativeOptions, backend: RuntimeBackend): Promise<boolean>;
   onClose(): void;
@@ -110,9 +112,11 @@ export function NativeSettingsPanel(props: Props) {
           theme={props.theme}
           startPage={props.startPage}
           autoLoadLastModel={props.autoLoadLastModel}
+          defaultWorkspacePath={props.defaultWorkspacePath}
           onThemeChange={props.onThemeChange}
           onStartPageChange={props.onStartPageChange}
           onAutoLoadLastModelChange={props.onAutoLoadLastModelChange}
+          onDefaultWorkspaceChange={props.onDefaultWorkspaceChange}
         />
       </div>}
 

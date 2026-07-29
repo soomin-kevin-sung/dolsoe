@@ -2,6 +2,7 @@ export type AgentCopyState =
   | "thinking"
   | "choosing-tool"
   | "calculator"
+  | "files"
   | "writing"
   | "completed"
   | "cancelled"
@@ -11,6 +12,7 @@ const COPY: Record<AgentCopyState, readonly string[]> = {
   thinking: ["마당 쓰는 중…", "일머리 잡는 중…", "잠깐 궁리하는 중…"],
   "choosing-tool": ["연장 고르는 중…", "쓸 연장 챙기는 중…", "도구함 살펴보는 중…"],
   calculator: ["주판 튕기는 중…", "셈 맞춰보는 중…", "수를 헤아리는 중…"],
+  files: ["서류 살피는 중…", "문서 뒤지는 중…", "장부 펼쳐보는 중…"],
   writing: ["글 다듬는 중…", "답을 갈무리하는 중…", "마무리 손질 중…"],
   completed: [
     "말끔히 마쳤습니다",

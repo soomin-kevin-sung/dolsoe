@@ -4,6 +4,7 @@ import { resolveHomeReadiness } from "./homeReadiness";
 
 const base = {
   runtimePhase: "no-model" as const,
+  runtimePacksInitialized: true,
   installState: null,
   distributionLoading: false,
   distributionError: null,
@@ -25,6 +26,14 @@ describe("resolveHomeReadiness", () => {
     expect(resolveHomeReadiness({ ...base, distributionError: "network timeout" })).toBe("runtime-failed-network");
     expect(resolveHomeReadiness({ ...base, cpuPackStatus: "ready" })).toBe("model-missing");
     expect(resolveHomeReadiness({ ...base, cpuPackStatus: "ready", runtimePhase: "ready" })).toBe("ready");
+  });
+
+  it("keeps startup in checking state until the local runtime inventory is known", () => {
+    expect(resolveHomeReadiness({
+      ...base,
+      runtimePacksInitialized: false,
+      distributionError: "runtime distribution request failed",
+    })).toBe("runtime-checking");
   });
 
   it("treats a missing CPU pack as onboarding even when the host reports recovery", () => {

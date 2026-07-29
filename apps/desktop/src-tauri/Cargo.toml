@@ -21,6 +21,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 crossbeam-channel.workspace = true
 futures-util = "0.3"
+ignore = "0.4"
 llm-runtime = { path = "../../../crates/llm-runtime" }
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
 fasteval = "0.2.4"

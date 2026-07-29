@@ -71,6 +71,7 @@ export function useNativeRuntime(
   const [state, setState] = useState(createNativeState);
   const [options, setOptions] = useState(defaultNativeOptions);
   const [runtimePacks, setRuntimePacks] = useState<RuntimePack[]>([]);
+  const [runtimePacksInitialized, setRuntimePacksInitialized] = useState(false);
   const [runtimePackError, setRuntimePackError] = useState<string | null>(null);
   const [appliedRuntime, setAppliedRuntime] = useState<RuntimeSelection | null>(null);
   const [pendingRuntime, setPendingRuntime] = useState<RuntimeSelection | null>(null);
@@ -135,6 +136,8 @@ export function useNativeRuntime(
       setRuntimePackError(null);
     } catch (error) {
       setRuntimePackError(errorText(error));
+    } finally {
+      setRuntimePacksInitialized(true);
     }
   }, [runtimePackService]);
 
@@ -336,6 +339,7 @@ export function useNativeRuntime(
     options,
     setOptions,
     runtimePacks,
+    runtimePacksInitialized,
     runtimePackError,
     appliedRuntime,
     pendingRuntime,

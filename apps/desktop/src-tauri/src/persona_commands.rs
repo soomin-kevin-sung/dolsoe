@@ -1,7 +1,7 @@
 use serde::Serialize;
 use tauri::State;
 
-use crate::agent_mode::{compile_agent_system_prompt, AgentMode};
+use crate::agent_mode::{compile_agent_runtime_system_prompt, AgentMode};
 use crate::conversation_store::{ConversationPromptSnapshot, ConversationStore};
 use crate::persona_prompt::{PersonaPromptDraft, PersonaPromptStateDto, PersonaPromptStore};
 
@@ -94,7 +94,11 @@ pub async fn persona_preview_conversation(
             }
         };
         let mut messages = Vec::with_capacity(context.messages.len() + 1);
-        let system_prompt = compile_agent_system_prompt(agent_mode, &snapshot.system_prompt);
+        let system_prompt = compile_agent_runtime_system_prompt(
+            agent_mode,
+            &snapshot.system_prompt,
+            &context.workspace_path,
+        );
         if !system_prompt.is_empty() {
             messages.push(PromptPreviewMessageDto {
                 role: "system".into(),

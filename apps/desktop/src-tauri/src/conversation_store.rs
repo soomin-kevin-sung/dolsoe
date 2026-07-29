@@ -105,6 +105,16 @@ ALTER TABLE agent_runs ADD COLUMN total_tool_calls INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE agent_steps ADD COLUMN decision_json TEXT;
 "#;
 
+const MIGRATION_5: &str = r#"
+ALTER TABLE conversations ADD COLUMN workspace_path TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE workspace_preferences (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    default_workspace_path TEXT NOT NULL
+);
+INSERT INTO workspace_preferences(singleton, default_workspace_path) VALUES (1, '');
+"#;
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum MessageRole {
@@ -168,6 +178,7 @@ pub struct ConversationSummary {
     pub id: String,
     pub title: String,
     pub agent_mode: String,
+    pub workspace_path: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -216,6 +227,7 @@ pub struct ConversationDetail {
     pub id: String,
     pub title: String,
     pub agent_mode: String,
+    pub workspace_path: String,
     pub created_at: i64,
     pub updated_at: i64,
     pub messages: Vec<StoredMessage>,
@@ -257,6 +269,7 @@ pub struct ModelPromptMessage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConversationPromptContext {
     pub agent_mode: String,
+    pub workspace_path: String,
     pub snapshot: Option<ConversationPromptSnapshot>,
     pub messages: Vec<ModelPromptMessage>,
 }
@@ -269,12 +282,19 @@ pub struct AgentSubmission {
     pub mode: String,
     pub conversation_id: String,
     pub assistant_message_id: String,
+    pub workspace_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentPreferences {
     pub default_mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspacePreferences {
+    pub default_workspace_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,10 +334,24 @@ impl ConversationStore {
         })
     }
 
+    #[cfg(test)]
     pub fn bootstrap(&self) -> StoreResult<ConversationBootstrap> {
+        let fallback = std::env::current_dir()
+            .map_err(|error| format!("failed to resolve the current directory: {error}"))?
+            .to_string_lossy()
+            .into_owned();
+        self.bootstrap_with_default_workspace(&fallback)
+    }
+
+    pub fn bootstrap_with_default_workspace(
+        &self,
+        default_workspace_path: &str,
+    ) -> StoreResult<ConversationBootstrap> {
+        let default_workspace_path = normalize_workspace_path(default_workspace_path)?;
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(store_error)?;
         apply_migrations(&transaction)?;
+        initialize_workspace_paths(&transaction, &default_workspace_path)?;
         let timestamp = now_millis()?;
         transaction
             .execute(
@@ -389,6 +423,69 @@ impl ConversationStore {
         Ok(AgentPreferences {
             default_mode: mode.as_str().into(),
         })
+    }
+
+    pub fn workspace_preferences(&self) -> StoreResult<WorkspacePreferences> {
+        let default_workspace_path = self
+            .lock()?
+            .query_row(
+                "SELECT default_workspace_path
+                 FROM workspace_preferences WHERE singleton = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(store_error)?;
+        Ok(WorkspacePreferences {
+            default_workspace_path,
+        })
+    }
+
+    pub fn set_default_workspace_path(
+        &self,
+        workspace_path: &str,
+    ) -> StoreResult<WorkspacePreferences> {
+        let workspace_path = normalize_workspace_path(workspace_path)?;
+        self.lock()?
+            .execute(
+                "UPDATE workspace_preferences
+                 SET default_workspace_path = ?1 WHERE singleton = 1",
+                [&workspace_path],
+            )
+            .map_err(store_error)?;
+        Ok(WorkspacePreferences {
+            default_workspace_path: workspace_path,
+        })
+    }
+
+    pub fn set_conversation_workspace_path(
+        &self,
+        conversation_id: &str,
+        workspace_path: &str,
+    ) -> StoreResult<ConversationDetail> {
+        let workspace_path = normalize_workspace_path(workspace_path)?;
+        let mut connection = self.lock()?;
+        let transaction = connection.transaction().map_err(store_error)?;
+        conversation_summary(&transaction, conversation_id)?;
+        let active_runs: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM agent_runs
+                 WHERE conversation_id = ?1 AND status IN ('prepared', 'running')",
+                [conversation_id],
+                |row| row.get(0),
+            )
+            .map_err(store_error)?;
+        if active_runs != 0 {
+            return Err("workspace cannot change while a run is active".into());
+        }
+        transaction
+            .execute(
+                "UPDATE conversations SET workspace_path = ?1 WHERE id = ?2",
+                params![workspace_path, conversation_id],
+            )
+            .map_err(store_error)?;
+        let detail = load_conversation(&transaction, conversation_id)?;
+        transaction.commit().map_err(store_error)?;
+        Ok(detail)
     }
 
     pub fn set_conversation_agent_mode(
@@ -571,7 +668,9 @@ impl ConversationStore {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(store_error)?;
         let timestamp = now_millis()?;
-        let conversation = insert_empty_conversation(&transaction, AgentMode::Chat, timestamp)?;
+        let workspace_path = default_workspace_path(&transaction)?;
+        let conversation =
+            insert_empty_conversation(&transaction, AgentMode::Chat, &workspace_path, timestamp)?;
         if let Some(snapshot) = prompt_snapshot {
             bind_prompt_snapshot(&transaction, &conversation.id, snapshot)?;
         }
@@ -589,10 +688,21 @@ impl ConversationStore {
         self.start_new_agent_turn_with_mode(prompt, AgentMode::Chat.as_str(), prompt_snapshot)
     }
 
+    #[cfg(test)]
     pub fn start_new_agent_turn_with_mode(
         &self,
         prompt: &str,
         mode: &str,
+        prompt_snapshot: Option<&ConversationPromptSnapshot>,
+    ) -> StoreResult<StartedTurn> {
+        self.start_new_agent_turn_with_profile(prompt, mode, None, prompt_snapshot)
+    }
+
+    pub fn start_new_agent_turn_with_profile(
+        &self,
+        prompt: &str,
+        mode: &str,
+        workspace_path: Option<&str>,
         prompt_snapshot: Option<&ConversationPromptSnapshot>,
     ) -> StoreResult<StartedTurn> {
         let prompt = prompt.trim();
@@ -603,7 +713,12 @@ impl ConversationStore {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(store_error)?;
         let timestamp = now_millis()?;
-        let conversation = insert_empty_conversation(&transaction, mode, timestamp)?;
+        let workspace_path = match workspace_path {
+            Some(value) => normalize_workspace_path(value)?,
+            None => default_workspace_path(&transaction)?,
+        };
+        let conversation =
+            insert_empty_conversation(&transaction, mode, &workspace_path, timestamp)?;
         if let Some(snapshot) = prompt_snapshot {
             bind_prompt_snapshot(&transaction, &conversation.id, snapshot)?;
         }
@@ -623,9 +738,10 @@ impl ConversationStore {
             .lock()?
             .query_row(
                 "SELECT r.id, s.id, s.correlation_id, r.mode,
-                        r.conversation_id, r.assistant_message_id
+                        r.conversation_id, r.assistant_message_id, c.workspace_path
                  FROM agent_runs r
                  JOIN agent_steps s ON s.run_id = r.id
+                 JOIN conversations c ON c.id = r.conversation_id
                  WHERE r.id = ?1 AND s.id = ?2 AND r.conversation_id = ?3
                    AND r.status = 'prepared' AND s.status = 'prepared'",
                 params![run_id, step_id, conversation_id],
@@ -637,6 +753,7 @@ impl ConversationStore {
                         row.get::<_, String>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
                     ))
                 },
             )
@@ -651,6 +768,7 @@ impl ConversationStore {
             mode: correlation.3,
             conversation_id: correlation.4,
             assistant_message_id: correlation.5,
+            workspace_path: correlation.6,
         })
     }
 
@@ -1146,9 +1264,11 @@ impl ConversationStore {
         let snapshot = prompt_snapshot(&transaction, conversation_id)?;
         let messages = model_prompt_messages(&detail.messages);
         let agent_mode = detail.agent_mode;
+        let workspace_path = detail.workspace_path;
         transaction.commit().map_err(store_error)?;
         Ok(ConversationPromptContext {
             agent_mode,
+            workspace_path,
             snapshot,
             messages,
         })
@@ -1314,7 +1434,70 @@ fn apply_migrations(transaction: &Transaction<'_>) -> StoreResult<()> {
             )
             .map_err(store_error)?;
     }
+    let applied = transaction
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = 5",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(store_error)?
+        .is_some();
+    if !applied {
+        transaction
+            .execute_batch(MIGRATION_5)
+            .map_err(store_error)?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (5, ?1)",
+                [now_millis()?],
+            )
+            .map_err(store_error)?;
+    }
     Ok(())
+}
+
+fn initialize_workspace_paths(
+    transaction: &Transaction<'_>,
+    initial_workspace_path: &str,
+) -> StoreResult<()> {
+    transaction
+        .execute(
+            "UPDATE workspace_preferences
+             SET default_workspace_path = ?1
+             WHERE singleton = 1 AND default_workspace_path = ''",
+            [initial_workspace_path],
+        )
+        .map_err(store_error)?;
+    let stored_default = default_workspace_path(transaction)?;
+    transaction
+        .execute(
+            "UPDATE conversations SET workspace_path = ?1 WHERE workspace_path = ''",
+            [stored_default],
+        )
+        .map_err(store_error)?;
+    Ok(())
+}
+
+fn default_workspace_path(transaction: &Transaction<'_>) -> StoreResult<String> {
+    transaction
+        .query_row(
+            "SELECT default_workspace_path
+             FROM workspace_preferences WHERE singleton = 1",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .map_err(store_error)
+        .and_then(|value| normalize_workspace_path(&value))
+}
+
+fn normalize_workspace_path(value: &str) -> StoreResult<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        Err("workspace path must not be empty".into())
+    } else {
+        Ok(value.into())
+    }
 }
 
 fn bind_prompt_snapshot(
@@ -1405,23 +1588,27 @@ fn model_prompt_messages(messages: &[StoredMessage]) -> Vec<ModelPromptMessage> 
 fn insert_empty_conversation(
     transaction: &Transaction<'_>,
     mode: AgentMode,
+    workspace_path: &str,
     timestamp: i64,
 ) -> StoreResult<ConversationSummary> {
     let conversation = ConversationSummary {
         id: Uuid::new_v4().to_string(),
         title: "새 대화".into(),
         agent_mode: mode.as_str().into(),
+        workspace_path: workspace_path.into(),
         created_at: timestamp,
         updated_at: timestamp,
     };
     transaction
         .execute(
-            "INSERT INTO conversations(id, title, agent_mode, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO conversations(
+                id, title, agent_mode, workspace_path, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 conversation.id,
                 conversation.title,
                 conversation.agent_mode,
+                conversation.workspace_path,
                 conversation.created_at,
                 conversation.updated_at
             ],
@@ -1539,7 +1726,7 @@ fn correlation_id_for(step_id: &str) -> StoreResult<i64> {
 fn list_conversations(transaction: &Transaction<'_>) -> StoreResult<Vec<ConversationSummary>> {
     let mut statement = transaction
         .prepare(
-            "SELECT id, title, agent_mode, created_at, updated_at
+            "SELECT id, title, agent_mode, workspace_path, created_at, updated_at
              FROM conversations ORDER BY updated_at DESC, id DESC",
         )
         .map_err(store_error)?;
@@ -1549,8 +1736,9 @@ fn list_conversations(transaction: &Transaction<'_>) -> StoreResult<Vec<Conversa
                 id: row.get(0)?,
                 title: row.get(1)?,
                 agent_mode: row.get(2)?,
-                created_at: row.get(3)?,
-                updated_at: row.get(4)?,
+                workspace_path: row.get(3)?,
+                created_at: row.get(4)?,
+                updated_at: row.get(5)?,
             })
         })
         .map_err(store_error)?;
@@ -1563,7 +1751,7 @@ fn conversation_summary(
 ) -> StoreResult<ConversationSummary> {
     transaction
         .query_row(
-            "SELECT id, title, agent_mode, created_at, updated_at
+            "SELECT id, title, agent_mode, workspace_path, created_at, updated_at
              FROM conversations WHERE id = ?1",
             [id],
             |row| {
@@ -1571,8 +1759,9 @@ fn conversation_summary(
                     id: row.get(0)?,
                     title: row.get(1)?,
                     agent_mode: row.get(2)?,
-                    created_at: row.get(3)?,
-                    updated_at: row.get(4)?,
+                    workspace_path: row.get(3)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
                 })
             },
         )
@@ -1641,6 +1830,7 @@ fn load_conversation(transaction: &Transaction<'_>, id: &str) -> StoreResult<Con
         id: summary.id,
         title: summary.title,
         agent_mode: summary.agent_mode,
+        workspace_path: summary.workspace_path,
         created_at: summary.created_at,
         updated_at: summary.updated_at,
         messages,
@@ -1875,7 +2065,7 @@ mod tests {
         store.bootstrap().unwrap();
         store.bootstrap().unwrap();
 
-        assert_eq!(store.migration_count().unwrap(), 4);
+        assert_eq!(store.migration_count().unwrap(), 5);
     }
 
     #[test]
@@ -1899,6 +2089,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(submission.mode, "chat");
+    }
+
+    #[test]
+    fn workspace_defaults_seed_new_conversations_without_rewriting_existing_ones() {
+        let store = ConversationStore::open_in_memory().unwrap();
+        store
+            .bootstrap_with_default_workspace("/documents-a")
+            .unwrap();
+
+        let first = store.start_new_turn("first").unwrap();
+        assert_eq!(first.conversation.workspace_path, "/documents-a");
+
+        store.set_default_workspace_path("/documents-b").unwrap();
+        assert_eq!(
+            store
+                .load_conversation(&first.conversation.id)
+                .unwrap()
+                .workspace_path,
+            "/documents-a"
+        );
+        assert_eq!(
+            store
+                .set_conversation_workspace_path(&first.conversation.id, "/project-a")
+                .unwrap()
+                .workspace_path,
+            "/project-a"
+        );
+
+        let second = store
+            .start_new_agent_turn_with_profile("second", "chat", Some("/project"), None)
+            .unwrap();
+        assert_eq!(second.conversation.workspace_path, "/project");
+        assert_eq!(
+            store
+                .workspace_preferences()
+                .unwrap()
+                .default_workspace_path,
+            "/documents-b"
+        );
     }
 
     #[test]

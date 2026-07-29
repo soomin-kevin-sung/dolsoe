@@ -48,6 +48,12 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px
 .chat-title-input { width: min(440px, 38vw); min-width: 120px; height: 28px; padding: 0 7px; border: 1px solid var(--accent); border-radius: 4px; outline: 0; background: var(--bg-surface); font-size: 14px; font-weight: 600; }
 .header-spacer { flex: 1; }
 .header-divider { width: 1px; height: 16px; background: var(--border); }
+.workspace-trigger { display: inline-flex; width: auto; max-width: 180px; height: 30px; flex: none; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; color: var(--text-2); background: transparent; font-size: 12px; cursor: pointer; }
+.workspace-trigger:hover:not(:disabled) { border-color: var(--border); color: var(--text-1); background: var(--bg-hover); }
+.workspace-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.workspace-trigger:disabled { cursor: default; opacity: 0.55; }
+.workspace-trigger svg { flex: none; }
+.workspace-trigger span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agent-mode-menu-anchor { position: relative; flex: none; }
 .agent-mode-trigger { display: inline-flex; height: 30px; align-items: center; gap: 6px; padding: 0 8px; border: 1px solid transparent; border-radius: 6px; color: var(--text-2); background: transparent; font-size: 12px; font-weight: 600; cursor: pointer; }
 .agent-mode-trigger:hover, .agent-mode-trigger.active { border-color: var(--border); color: var(--text-1); background: var(--bg-hover); }
@@ -212,6 +218,11 @@ html[data-theme="dark"] .settings-scrim { background: rgba(0, 0, 0, 0.48); }
 .general-setting-copy small { color: var(--text-3); font-size: 11px; line-height: 1.45; }
 .general-setting-control { min-width: 0; }
 .general-setting-row .switch-control { min-width: 132px; }
+.workspace-path-control { display: grid; min-width: 0; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; }
+.workspace-path { display: flex; min-width: 0; height: 34px; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid var(--border); border-radius: 4px; color: var(--text-2); background: var(--bg-inset); }
+.workspace-path svg { flex: none; color: var(--text-3); }
+.workspace-path span { min-width: 0; overflow: hidden; font: 11px var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+.workspace-path-control .button-secondary { height: 34px; white-space: nowrap; }
 .reload-badge { display: inline-block; padding: 1px 5px; border-radius: 2px; color: var(--amber); background: var(--amber-bg); font-size: 10px; font-weight: 600; letter-spacing: 0; text-transform: none; }
 .apply-badge { display: inline-block; padding: 1px 5px; border-radius: 2px; color: var(--ready); background: var(--ready-bg); font-size: 10px; font-weight: 600; letter-spacing: 0; text-transform: none; }
 .option-wrap + .option-wrap { border-top: 1px solid var(--border); }
@@ -405,6 +416,8 @@ html[data-theme="dark"] .dialog-scrim { background: rgba(0, 0, 0, 0.5); }
 }
 
 @media (max-width: 700px) {
+  .workspace-trigger { width: 32px; justify-content: center; padding: 0; }
+  .workspace-trigger span { display: none; }
   .agent-mode-trigger span { display: none; }
   .agent-mode-trigger { width: 32px; justify-content: center; padding: 0; }
   .agent-mode-trigger > svg:last-child { display: none; }
@@ -426,6 +439,8 @@ html[data-theme="dark"] .dialog-scrim { background: rgba(0, 0, 0, 0.5); }
   .option-value-stack { grid-column: 2; grid-row: 1 / span 2; }
   .general-setting-row { grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 14px 0; }
   .general-setting-row .switch-control { justify-content: flex-start; }
+  .workspace-path-control { grid-template-columns: minmax(0, 1fr); }
+  .workspace-path-control .button-secondary { justify-self: start; }
   .persona-heading { display: grid; gap: 14px; }
   .persona-heading .switch-control { justify-content: flex-start; }
   .persona-toolbar { justify-content: flex-start; }

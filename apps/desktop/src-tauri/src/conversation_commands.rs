@@ -1,11 +1,12 @@
 use serde::Deserialize;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::conversation_store::{
     AgentPreferences, ConversationBootstrap, ConversationDetail, ConversationPromptSnapshot,
-    ConversationStore, ConversationSummary, MessageStatus, StartedTurn,
+    ConversationStore, ConversationSummary, MessageStatus, StartedTurn, WorkspacePreferences,
 };
 use crate::persona_prompt::PersonaPromptStore;
+use crate::workspace_path as workspace_paths;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,10 +44,12 @@ where
 
 #[tauri::command]
 pub async fn conversation_bootstrap(
+    app: AppHandle,
     state: State<'_, ConversationStore>,
 ) -> Result<ConversationBootstrap, String> {
+    let default_workspace_path = workspace_paths::default_for_app(&app)?;
     let store = state.inner().clone();
-    blocking(move || store.bootstrap()).await
+    blocking(move || store.bootstrap_with_default_workspace(&default_workspace_path)).await
 }
 
 #[tauri::command]
@@ -92,6 +95,7 @@ pub async fn conversation_start_new_turn(
     persona_state: State<'_, PersonaPromptStore>,
     prompt: String,
     agent_mode: Option<String>,
+    workspace_path: Option<String>,
 ) -> Result<StartedTurn, String> {
     let store = state.inner().clone();
     let persona = persona_state.inner().clone();
@@ -99,13 +103,22 @@ pub async fn conversation_start_new_turn(
         let mode = agent_mode
             .map(Ok)
             .unwrap_or_else(|| store.agent_preferences().map(|value| value.default_mode))?;
+        let workspace_path = workspace_path
+            .as_deref()
+            .map(workspace_paths::directory)
+            .transpose()?;
         let compiled = persona.compiled()?;
         let snapshot = ConversationPromptSnapshot {
             persona_id: compiled.persona_id,
             persona_revision: compiled.revision,
             system_prompt: compiled.content,
         };
-        store.start_new_agent_turn_with_mode(&prompt, &mode, Some(&snapshot))
+        store.start_new_agent_turn_with_profile(
+            &prompt,
+            &mode,
+            workspace_path.as_deref(),
+            Some(&snapshot),
+        )
     })
     .await
 }
@@ -125,6 +138,35 @@ pub async fn agent_set_default_mode(
 ) -> Result<AgentPreferences, String> {
     let store = state.inner().clone();
     blocking(move || store.set_default_agent_mode(&mode)).await
+}
+
+#[tauri::command]
+pub async fn workspace_get_preferences(
+    state: State<'_, ConversationStore>,
+) -> Result<WorkspacePreferences, String> {
+    let store = state.inner().clone();
+    blocking(move || store.workspace_preferences()).await
+}
+
+#[tauri::command]
+pub async fn workspace_set_default(
+    state: State<'_, ConversationStore>,
+    workspace_path: String,
+) -> Result<WorkspacePreferences, String> {
+    let workspace_path = workspace_paths::directory(&workspace_path)?;
+    let store = state.inner().clone();
+    blocking(move || store.set_default_workspace_path(&workspace_path)).await
+}
+
+#[tauri::command]
+pub async fn conversation_set_workspace(
+    state: State<'_, ConversationStore>,
+    conversation_id: String,
+    workspace_path: String,
+) -> Result<ConversationDetail, String> {
+    let workspace_path = workspace_paths::directory(&workspace_path)?;
+    let store = state.inner().clone();
+    blocking(move || store.set_conversation_workspace_path(&conversation_id, &workspace_path)).await
 }
 
 #[tauri::command]

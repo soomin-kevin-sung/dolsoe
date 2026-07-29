@@ -3,6 +3,7 @@ import { useState, type KeyboardEvent, type Ref } from "react";
 import { DEFAULT_AGENT_MODE, type AgentModeId } from "../services/agentModes";
 import { AgentModeMenu } from "./AgentModeMenu";
 import { IconButton } from "./IconButton";
+import { WorkspaceButton } from "./WorkspaceButton";
 
 interface Props {
   title: string; settingsOpen: boolean;
@@ -13,6 +14,9 @@ interface Props {
   agentModeDisabled?: boolean;
   onAgentModeChange?(mode: AgentModeId): void;
   onOpenAgentSettings?(): void;
+  workspacePath?: string;
+  workspaceDisabled?: boolean;
+  onWorkspaceChange?(): void;
 }
 
 export function ChatHeader({
@@ -28,6 +32,9 @@ export function ChatHeader({
   agentModeDisabled = false,
   onAgentModeChange,
   onOpenAgentSettings,
+  workspacePath,
+  workspaceDisabled = false,
+  onWorkspaceChange,
 }: Props) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(title);
@@ -56,6 +63,13 @@ export function ChatHeader({
       </div>}
       </div>
       <div className="header-spacer" />
+      {view !== "diagnostics" && workspacePath && onWorkspaceChange && (
+        <WorkspaceButton
+          path={workspacePath}
+          disabled={workspaceDisabled}
+          onChange={onWorkspaceChange}
+        />
+      )}
       {view !== "diagnostics" && (
         <AgentModeMenu
           value={agentMode}

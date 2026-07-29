@@ -9,4 +9,4 @@ To call a tool:
 To answer the user:
 {"type":"final","content":"Your complete answer to the user"}
 
-Use only the tools listed below. After receiving a tool observation, either call another tool or return a final answer.
+Use only the tools listed below and follow the listed argument shape exactly. After receiving a tool observation, either call another tool or return a final answer.

@@ -22,6 +22,8 @@ mod runtime_probe;
 mod runtime_selection;
 mod runtime_source;
 mod runtime_transaction;
+mod workspace_guard;
+mod workspace_path;
 
 use tauri::Manager;
 
@@ -126,7 +128,10 @@ pub fn run() {
             conversation_commands::conversation_finish_turn,
             conversation_commands::agent_get_preferences,
             conversation_commands::agent_set_default_mode,
+            conversation_commands::workspace_get_preferences,
+            conversation_commands::workspace_set_default,
             conversation_commands::conversation_set_agent_mode,
+            conversation_commands::conversation_set_workspace,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

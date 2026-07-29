@@ -9,6 +9,7 @@ export interface ConversationSummary {
   id: string;
   title: string;
   agentMode: AgentModeId;
+  workspacePath: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -72,6 +73,10 @@ export interface AgentPreferences {
   defaultMode: AgentModeId;
 }
 
+export interface WorkspacePreferences {
+  defaultWorkspacePath: string;
+}
+
 export const tauriConversationBindings: ConversationBindings = { invoke };
 
 export class ConversationService {
@@ -97,8 +102,16 @@ export class ConversationService {
     return this.bindings.invoke("conversation_delete", { conversationId });
   }
 
-  startNewTurn(prompt: string, agentMode: AgentModeId): Promise<StartedTurn> {
-    return this.bindings.invoke("conversation_start_new_turn", { prompt, agentMode });
+  startNewTurn(
+    prompt: string,
+    agentMode: AgentModeId,
+    workspacePath: string,
+  ): Promise<StartedTurn> {
+    return this.bindings.invoke("conversation_start_new_turn", {
+      prompt,
+      agentMode,
+      workspacePath,
+    });
   }
 
   startTurn(conversationId: string, prompt: string): Promise<StartedTurn> {
@@ -111,6 +124,24 @@ export class ConversationService {
 
   setDefaultAgentMode(mode: AgentModeId): Promise<AgentPreferences> {
     return this.bindings.invoke("agent_set_default_mode", { mode });
+  }
+
+  getWorkspacePreferences(): Promise<WorkspacePreferences> {
+    return this.bindings.invoke("workspace_get_preferences");
+  }
+
+  setDefaultWorkspace(workspacePath: string): Promise<WorkspacePreferences> {
+    return this.bindings.invoke("workspace_set_default", { workspacePath });
+  }
+
+  setConversationWorkspace(
+    conversationId: string,
+    workspacePath: string,
+  ): Promise<ConversationDetail> {
+    return this.bindings.invoke("conversation_set_workspace", {
+      conversationId,
+      workspacePath,
+    });
   }
 
   setConversationAgentMode(

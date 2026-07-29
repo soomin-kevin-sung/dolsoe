@@ -1,3 +1,5 @@
+import { Folder, FolderOpen } from "lucide-react";
+
 import type { StartPagePreference } from "../hooks/useGeneralPreferences";
 import type { ThemePreference } from "../services/runtime";
 import { SegmentedControl } from "./SegmentedControl";
@@ -6,9 +8,11 @@ interface Props {
   theme: ThemePreference;
   startPage: StartPagePreference;
   autoLoadLastModel: boolean;
+  defaultWorkspacePath?: string;
   onThemeChange(theme: ThemePreference): void;
   onStartPageChange(startPage: StartPagePreference): void;
   onAutoLoadLastModelChange(enabled: boolean): void;
+  onDefaultWorkspaceChange?(): void;
 }
 
 export function GeneralSettingsControls(props: Props) {
@@ -49,6 +53,31 @@ export function GeneralSettingsControls(props: Props) {
           </label>
         </div>
       </section>
+      {props.defaultWorkspacePath && props.onDefaultWorkspaceChange && (
+        <section className="settings-section">
+          <h3>작업 폴더</h3>
+          <div className="general-setting-row">
+            <div className="general-setting-copy">
+              <strong>새 대화 기본 폴더</strong>
+              <small>새 대화마다 독립적으로 저장됩니다.</small>
+            </div>
+            <div className="workspace-path-control">
+              <div className="workspace-path" title={props.defaultWorkspacePath}>
+                <Folder size={14} strokeWidth={1.8} aria-hidden="true" />
+                <span>{props.defaultWorkspacePath}</span>
+              </div>
+              <button
+                className="button-secondary"
+                type="button"
+                onClick={props.onDefaultWorkspaceChange}
+              >
+                <FolderOpen size={14} aria-hidden="true" />
+                변경
+              </button>
+            </div>
+          </div>
+        </section>
+      )}
     </>
   );
 }

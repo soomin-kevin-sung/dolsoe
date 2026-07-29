@@ -10,8 +10,10 @@ use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
 use crate::{
-    agent_mode::{compile_agent_system_prompt, parse_react_decision, AgentDecision, AgentMode},
-    agent_tools::{ToolGateway, ToolPreparation, ToolResult},
+    agent_mode::{
+        compile_agent_runtime_system_prompt, parse_react_decision, AgentDecision, AgentMode,
+    },
+    agent_tools::{ToolContext, ToolGateway, ToolPreparation, ToolResult},
     conversation_store::{ConversationStore, MessageStatus, PreparedAgentStep},
     llm_dto::{LlmEventDto, LlmEventKind, SubmitChatMessage, SubmitRequest, SubmitResponse},
     runtime_host::RuntimeHost,
@@ -176,6 +178,7 @@ struct ActiveRun {
     run_id: String,
     conversation_id: String,
     assistant_message_id: String,
+    workspace_path: String,
     step_id: String,
     output: Vec<u8>,
     public_answer: String,
@@ -459,7 +462,7 @@ impl AgentController {
         let mut run_loop = AgentRunLoop::for_mode(mode);
         run_loop.before_model()?;
         if mode == AgentMode::React {
-            apply_agent_protocol(mode, &mut request.messages);
+            apply_agent_protocol(mode, &mut request.messages, &submission.workspace_path);
         }
         apply_agent_output_constraint(mode, &mut request);
         request.correlation_id = submission.correlation_id;
@@ -479,6 +482,7 @@ impl AgentController {
                     run_id: submission.run_id.clone(),
                     conversation_id: submission.conversation_id.clone(),
                     assistant_message_id: submission.assistant_message_id.clone(),
+                    workspace_path: submission.workspace_path.clone(),
                     step_id: submission.step_id.clone(),
                     output: Vec::new(),
                     public_answer: String::new(),
@@ -923,7 +927,11 @@ impl AgentController {
         ) {
             return self.fail_between_steps(run, error);
         }
-        let preparation = self.inner.tool_gateway.prepare(&name, &arguments);
+        let tool_context = ToolContext::for_workspace(run.workspace_path.clone());
+        let preparation = self
+            .inner
+            .tool_gateway
+            .prepare(&name, &arguments, &tool_context);
         let action_digest = match &preparation {
             ToolPreparation::Ready(call) => call.action_digest(),
             ToolPreparation::ApprovalRequired(request) => &request.action_digest,
@@ -934,11 +942,7 @@ impl AgentController {
             return self.fail_between_steps(run, error);
         }
         let activity_id = format!("{}:tool:{}", run.run_id, run.run_loop.total_tool_calls);
-        let input = arguments
-            .get("expression")
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .unwrap_or_else(|| arguments.to_string());
+        let input = tool_input_label(&name, &arguments);
         if let Err(error) = (self.inner.activity_sink)(Self::activity(
             &run,
             AgentActivityKind::ToolStarted,
@@ -962,19 +966,13 @@ impl AgentController {
             &run.run_id,
             &name,
             &arguments.to_string(),
-            &result.model_content,
+            &result.display_content,
             result.successful,
             novel_success,
             duration_ms,
         ) {
             return self.fail_between_steps(run, error);
         }
-        let display_output = result
-            .model_content
-            .strip_prefix("Calculator result: ")
-            .or_else(|| result.model_content.strip_prefix("Calculator error: "))
-            .unwrap_or(&result.model_content)
-            .to_string();
         let tool_kind = if result.successful {
             AgentActivityKind::ToolCompleted
         } else {
@@ -986,7 +984,7 @@ impl AgentController {
             Some(activity_id),
             Some(name.clone()),
             None,
-            Some(display_output),
+            Some(result.display_content.clone()),
             Some(duration_ms),
         )) {
             return self.fail_between_steps(run, error);
@@ -1210,11 +1208,15 @@ impl AgentController {
     }
 }
 
-fn apply_agent_protocol(mode: AgentMode, messages: &mut Vec<SubmitChatMessage>) {
+fn apply_agent_protocol(
+    mode: AgentMode,
+    messages: &mut Vec<SubmitChatMessage>,
+    workspace_path: &str,
+) {
     if let Some(system) = messages.iter_mut().find(|message| message.role == "system") {
-        system.content = compile_agent_system_prompt(mode, &system.content);
+        system.content = compile_agent_runtime_system_prompt(mode, &system.content, workspace_path);
     } else {
-        let content = compile_agent_system_prompt(mode, "");
+        let content = compile_agent_runtime_system_prompt(mode, "", workspace_path);
         if content.is_empty() {
             return;
         }
@@ -1226,6 +1228,24 @@ fn apply_agent_protocol(mode: AgentMode, messages: &mut Vec<SubmitChatMessage>) 
             },
         );
     }
+}
+
+fn tool_input_label(name: &str, arguments: &Value) -> String {
+    match name {
+        "calculator" => arguments
+            .get("expression")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        "search_files" => arguments.get("query").and_then(Value::as_str).map(|query| {
+            let path = arguments.get("path").and_then(Value::as_str).unwrap_or(".");
+            format!("{query} · {path}")
+        }),
+        _ => arguments
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    }
+    .unwrap_or_else(|| arguments.to_string())
 }
 
 fn apply_agent_output_constraint(mode: AgentMode, request: &mut SubmitRequest) {
@@ -1270,7 +1290,7 @@ mod tests {
     };
     use crate::{
         agent_mode::AgentDecision,
-        agent_tools::{ToolGateway, ToolPreparation},
+        agent_tools::{ToolContext, ToolGateway, ToolPreparation},
         conversation_store::{ConversationStore, MessageStatus},
         llm_dto::{LlmEventDto, LlmEventKind, SubmitChatMessage},
     };
@@ -1293,9 +1313,11 @@ mod tests {
         let mut run_loop = AgentRunLoop::for_mode(AgentMode::React);
         run_loop.before_model().unwrap();
         let gateway = ToolGateway::builtin();
-        let ToolPreparation::Ready(call) =
-            gateway.prepare("calculator", &json!({ "expression": "2 + 2" }))
-        else {
+        let ToolPreparation::Ready(call) = gateway.prepare(
+            "calculator",
+            &json!({ "expression": "2 + 2" }),
+            &ToolContext::default(),
+        ) else {
             panic!("calculator must be prepared");
         };
         let result = gateway.execute(call);
@@ -1315,10 +1337,11 @@ mod tests {
             role: "user".into(),
             content: "question".into(),
         }];
-        apply_agent_protocol(AgentMode::React, &mut messages);
+        apply_agent_protocol(AgentMode::React, &mut messages, "/workspace");
         assert_eq!(messages[0].role, "system");
         assert!(messages[0].content.contains("\"type\":\"tool_call\""));
         assert!(messages[0].content.contains("calculator"));
+        assert!(messages[0].content.contains("/workspace"));
     }
 
     #[test]
@@ -1407,6 +1430,7 @@ mod tests {
                 run_id: submission.run_id,
                 conversation_id: submission.conversation_id,
                 assistant_message_id: submission.assistant_message_id,
+                workspace_path: submission.workspace_path,
                 step_id: submission.step_id,
                 output: b"answer".to_vec(),
                 public_answer: String::new(),
@@ -1490,6 +1514,7 @@ mod tests {
                 run_id: submission.run_id,
                 conversation_id: submission.conversation_id,
                 assistant_message_id: submission.assistant_message_id,
+                workspace_path: submission.workspace_path,
                 step_id: submission.step_id,
                 output: Vec::new(),
                 public_answer: String::new(),

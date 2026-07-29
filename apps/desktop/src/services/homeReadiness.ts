@@ -20,6 +20,7 @@ export type HomeReadinessKind =
 export interface HomeReadinessInput {
   runtimePhase: LlmPhase;
   cpuPackStatus?: RuntimePackStatus;
+  runtimePacksInitialized: boolean;
   installState: RuntimeInstallState | null;
   distributionLoading: boolean;
   distributionError: string | null;
@@ -45,6 +46,7 @@ export function resolveHomeReadiness(input: HomeReadinessInput): HomeReadinessKi
 
   const cpuReady = input.cpuPackStatus === "ready";
   if (!cpuReady) {
+    if (!input.runtimePacksInitialized) return "runtime-checking";
     if (input.distributionLoading) return "runtime-checking";
     if (input.distributionError) return `runtime-failed-${classifyRuntimeFailure(input.distributionError)}`;
     if (input.cpuPackStatus === "repair-required" || input.cpuPackStatus === "unavailable") return "runtime-failed-recovery";
