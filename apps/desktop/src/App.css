@@ -555,8 +555,8 @@ body { font-size: 14px; }
 .home-dolsoe-mark { display: block; width: 54px; height: 54px; margin: 0 auto; object-fit: cover; border: 1px solid var(--border); border-radius: 50%; background: var(--bg-inset); }
 .home-focus-main h1, .home-setup-intro h1 { margin: 12px 0 5px; font-size: 24px; font-weight: 600; letter-spacing: 0; line-height: 1.35; }
 .home-privacy-copy, .home-setup-intro p { display: flex; align-items: center; justify-content: center; gap: 5px; margin: 0; color: var(--text-3); font-size: 12px; line-height: 18px; }
-.home-prompt-composer { margin-top: 22px; padding: 12px 12px 9px; border: 1px solid var(--border-strong); border-radius: 8px; text-align: left; background: var(--bg-surface); box-shadow: var(--shadow-soft); }
-.home-prompt-composer:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow-soft); }
+.home-prompt-composer { margin-top: 22px; padding: 12px 12px 9px; border: 1px solid var(--border-strong); border-radius: 8px; text-align: left; background: var(--bg-surface); }
+.home-prompt-composer:focus-within { border-color: var(--accent); }
 .home-prompt-composer textarea { width: 100%; min-height: 64px; resize: none; padding: 3px 4px; border: 0; outline: 0; background: transparent; line-height: 1.55; }
 .home-prompt-composer textarea::placeholder { color: var(--text-3); }
 .home-prompt-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 5px; }
@@ -630,8 +630,7 @@ button.agent-activity-toggle:hover { color: var(--text-1); }
 
 .composer-area { padding: 0 34px 12px; }
 .composer-inner { width: min(100%, 720px); }
-.composer { min-height: 54px; padding: 9px 9px 9px 13px; border-radius: 8px; background: var(--bg-surface); box-shadow: var(--shadow-soft); }
-.composer.disabled { box-shadow: none; }
+.composer { min-height: 54px; padding: 9px 9px 9px 13px; border-radius: 8px; background: var(--bg-surface); }
 .composer textarea { min-height: 30px; line-height: 1.55; }
 .send-button { border-radius: 6px; }
 .composer-meta { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 6px; }
