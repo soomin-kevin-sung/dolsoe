@@ -23,6 +23,7 @@ struct EngineStep {
 class InferenceEngine {
 public:
     virtual ~InferenceEngine() = default;
+    virtual std::vector<uint8_t> format_chat(const std::vector<ChatMessage>& messages) = 0;
     virtual uint64_t start(EngineRequest request) = 0;
     virtual std::vector<EngineStep> decode(const std::vector<llw_handle_t>& active) = 0;
     virtual void cleanup(llw_handle_t handle, uint32_t seq_id) = 0;

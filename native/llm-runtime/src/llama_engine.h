@@ -98,6 +98,7 @@ public:
     LlamaEngine(std::shared_ptr<LlamaApi> api, ModelConfig config,
                 std::function<bool(float)> progress);
     ~LlamaEngine() override;
+    std::vector<uint8_t> format_chat(const std::vector<ChatMessage>& messages) override;
     uint64_t start(EngineRequest request) override;
     std::vector<EngineStep> decode(const std::vector<llw_handle_t>& active) override;
     void cleanup(llw_handle_t handle, uint32_t seq_id) override;

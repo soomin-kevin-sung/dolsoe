@@ -522,6 +522,11 @@ uint64_t LlamaEngine::start(EngineRequest request) {
     return prompt_tokens;
 }
 
+std::vector<uint8_t> LlamaEngine::format_chat(const std::vector<ChatMessage>& messages) {
+    std::lock_guard lock(mutex_);
+    return format_chat_prompt(*api_, model_, messages);
+}
+
 std::vector<EngineStep> LlamaEngine::decode(const std::vector<llw_handle_t>& active) {
     std::lock_guard lock(mutex_);
     std::vector<SequenceView> views;

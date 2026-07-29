@@ -1755,9 +1755,97 @@ impl InferenceRuntime {
     }
 }
 
+fn chat_messages_to_ffi(messages: &[ChatMessage]) -> Vec<sys::ChatMessage> {
+    messages
+        .iter()
+        .map(|message| sys::ChatMessage {
+            struct_size: std::mem::size_of::<sys::ChatMessage>() as u32,
+            flags: 0,
+            role: sys::Bytes {
+                struct_size: std::mem::size_of::<sys::Bytes>() as u32,
+                flags: 0,
+                data: message.role.as_ptr(),
+                len: message.role.len() as u64,
+                reserved: [0; 8],
+            },
+            content: sys::Bytes {
+                struct_size: std::mem::size_of::<sys::Bytes>() as u32,
+                flags: 0,
+                data: message.content.as_ptr(),
+                len: message.content.len() as u64,
+                reserved: [0; 8],
+            },
+            reserved: [0; 8],
+        })
+        .collect()
+}
+
 impl Model {
     pub fn handle(&self) -> u64 {
         self.state.handle
+    }
+
+    pub fn format_chat(&self, messages: &[ChatMessage]) -> Result<String, Error> {
+        if messages.is_empty() {
+            return Err(Error::InvalidInput(
+                "chat formatting requires at least one message".into(),
+            ));
+        }
+        let chat_ffi = chat_messages_to_ffi(messages);
+        let _guard = self
+            .state
+            .runtime
+            .call_lock
+            .lock()
+            .expect("runtime call lock poisoned");
+        let mut output = sys::Buffer::default();
+        let mut raw_error = sys::Error::default();
+        let code = unsafe {
+            (self.state.runtime.api.model_format_chat)(
+                self.state.runtime.runtime,
+                self.state.handle,
+                chat_ffi.as_ptr(),
+                chat_ffi.len() as u32,
+                &mut output,
+                &mut raw_error,
+            )
+        };
+        if code != sys::OK && code != sys::ERR_BUFFER_TOO_SMALL {
+            return Err(runtime_error(code, &raw_error));
+        }
+        let required = usize::try_from(output.len)
+            .map_err(|_| Error::InvalidInput("formatted chat length is invalid".into()))?;
+        if required > sys::MAX_PROMPT_BYTES as usize {
+            return Err(Error::InvalidInput(
+                "formatted chat exceeds the prompt byte bound".into(),
+            ));
+        }
+        let mut bytes = vec![0_u8; required];
+        output.data = bytes.as_mut_ptr();
+        output.capacity = bytes.len() as u64;
+        raw_error = sys::Error::default();
+        check_result(
+            unsafe {
+                (self.state.runtime.api.model_format_chat)(
+                    self.state.runtime.runtime,
+                    self.state.handle,
+                    chat_ffi.as_ptr(),
+                    chat_ffi.len() as u32,
+                    &mut output,
+                    &mut raw_error,
+                )
+            },
+            &raw_error,
+        )?;
+        let written = usize::try_from(output.len)
+            .map_err(|_| Error::InvalidInput("formatted chat length is invalid".into()))?;
+        if written > bytes.len() {
+            return Err(Error::InvalidInput(
+                "runtime returned an oversized formatted chat".into(),
+            ));
+        }
+        bytes.truncate(written);
+        String::from_utf8(bytes).map_err(|_| Error::InvalidUtf8)
     }
 
     pub fn submit(
@@ -1849,28 +1937,7 @@ impl Model {
                 reserved: [0; 8],
             })
             .collect();
-        let chat_ffi: Vec<sys::ChatMessage> = messages
-            .iter()
-            .map(|message| sys::ChatMessage {
-                struct_size: std::mem::size_of::<sys::ChatMessage>() as u32,
-                flags: 0,
-                role: sys::Bytes {
-                    struct_size: std::mem::size_of::<sys::Bytes>() as u32,
-                    flags: 0,
-                    data: message.role.as_ptr(),
-                    len: message.role.len() as u64,
-                    reserved: [0; 8],
-                },
-                content: sys::Bytes {
-                    struct_size: std::mem::size_of::<sys::Bytes>() as u32,
-                    flags: 0,
-                    data: message.content.as_ptr(),
-                    len: message.content.len() as u64,
-                    reserved: [0; 8],
-                },
-                reserved: [0; 8],
-            })
-            .collect();
+        let chat_ffi = chat_messages_to_ffi(messages);
         let params = sys::RequestParams {
             struct_size: std::mem::size_of::<sys::RequestParams>() as u32,
             flags: 0,

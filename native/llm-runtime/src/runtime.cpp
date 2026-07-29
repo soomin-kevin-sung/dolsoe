@@ -73,6 +73,20 @@ int module_anchor{};
 #ifdef LLW_RUNTIME_TESTING
 class RuntimeTestEngine final : public InferenceEngine {
 public:
+    std::vector<uint8_t> format_chat(const std::vector<ChatMessage>& messages) override {
+        std::string formatted;
+        for (const auto& message : messages) {
+            formatted.append("<");
+            formatted.append(message.role);
+            formatted.append(">");
+            formatted.append(message.content);
+            formatted.append("</");
+            formatted.append(message.role);
+            formatted.append(">\n");
+        }
+        formatted.append("<assistant>");
+        return {formatted.begin(), formatted.end()};
+    }
     uint64_t start(EngineRequest request) override { return request.prompt.size(); }
     std::vector<EngineStep> decode(const std::vector<llw_handle_t>& active) override {
         std::vector<EngineStep> result;
@@ -239,37 +253,12 @@ void validate_model(const llw_model_load_params_t& params) {
         throw std::invalid_argument("model option is outside its declared bounds");
 }
 
-void validate_request(const llw_request_params_t& params) {
-    if (params.struct_size < sizeof(params) || params.flags != 0 || params.reserved0 != 0 ||
-        params.reserved1 != 0 ||
-        !zeroed(params.reserved)) throw std::invalid_argument("invalid request structure");
-    if (!params.prompt || params.prompt_len < 1 || params.prompt_len > LLW_MAX_PROMPT_BYTES ||
-        params.max_new_tokens < 1 || params.max_new_tokens > 1048576 ||
-        !std::isfinite(params.temperature) || params.temperature < 0 || params.temperature > 10 ||
-        params.top_k < 0 || params.top_k > 100000 || !std::isfinite(params.top_p) ||
-        params.top_p < 0 || params.top_p > 1 || !std::isfinite(params.min_p) ||
-        params.min_p < 0 || params.min_p > 1 || params.repeat_last_n < 0 ||
-        params.repeat_last_n > 262144 || !std::isfinite(params.repeat_penalty) ||
-        params.repeat_penalty < 0 || params.repeat_penalty > 10 ||
-        !std::isfinite(params.frequency_penalty) || params.frequency_penalty < -2 ||
-        params.frequency_penalty > 2 || !std::isfinite(params.presence_penalty) ||
-        params.presence_penalty < -2 || params.presence_penalty > 2 ||
-        params.stop_count > LLW_MAX_STOP_SEQUENCES ||
-        (params.stop_count != 0 && !params.stop_sequences) ||
-        params.chat_message_count > LLW_MAX_CHAT_MESSAGES ||
-        (params.chat_message_count != 0 && !params.chat_messages) ||
-        (params.output_grammar_len == 0) != (params.output_grammar == nullptr) ||
-        params.output_grammar_len > LLW_MAX_GRAMMAR_BYTES)
-        throw std::invalid_argument("request option is outside its declared bounds");
-    if (params.output_grammar_len != 0 &&
-        (!valid_utf8(params.output_grammar, params.output_grammar_len) ||
-         std::find(params.output_grammar,
-                   params.output_grammar + params.output_grammar_len,
-                   uint8_t{0}) != params.output_grammar + params.output_grammar_len))
-        throw std::invalid_argument("invalid output grammar");
+void validate_chat_messages(const llw_chat_message_t* messages, uint32_t count) {
+    if (count > LLW_MAX_CHAT_MESSAGES || (count != 0 && !messages))
+        throw std::invalid_argument("chat message count is outside its declared bounds");
     uint64_t chat_total = 0;
-    for (uint32_t index = 0; index < params.chat_message_count; ++index) {
-        const llw_chat_message_t& message = params.chat_messages[index];
+    for (uint32_t index = 0; index < count; ++index) {
+        const llw_chat_message_t& message = messages[index];
         const llw_bytes_t& role = message.role;
         const llw_bytes_t& content = message.content;
         if (message.struct_size < sizeof(message) || message.flags != 0 ||
@@ -290,6 +279,49 @@ void validate_request(const llw_request_params_t& params) {
         if (chat_total > LLW_MAX_PROMPT_BYTES)
             throw std::invalid_argument("chat message bytes exceed total bound");
     }
+}
+
+std::vector<ChatMessage> copy_chat_messages(
+    const llw_chat_message_t* messages, uint32_t count) {
+    std::vector<ChatMessage> copied;
+    copied.reserve(count);
+    for (uint32_t index = 0; index < count; ++index) {
+        const auto& message = messages[index];
+        copied.push_back({
+            std::string(reinterpret_cast<const char*>(message.role.data), message.role.len),
+            std::string(reinterpret_cast<const char*>(message.content.data), message.content.len),
+        });
+    }
+    return copied;
+}
+
+void validate_request(const llw_request_params_t& params) {
+    if (params.struct_size < sizeof(params) || params.flags != 0 || params.reserved0 != 0 ||
+        params.reserved1 != 0 ||
+        !zeroed(params.reserved)) throw std::invalid_argument("invalid request structure");
+    if (!params.prompt || params.prompt_len < 1 || params.prompt_len > LLW_MAX_PROMPT_BYTES ||
+        params.max_new_tokens < 1 || params.max_new_tokens > 1048576 ||
+        !std::isfinite(params.temperature) || params.temperature < 0 || params.temperature > 10 ||
+        params.top_k < 0 || params.top_k > 100000 || !std::isfinite(params.top_p) ||
+        params.top_p < 0 || params.top_p > 1 || !std::isfinite(params.min_p) ||
+        params.min_p < 0 || params.min_p > 1 || params.repeat_last_n < 0 ||
+        params.repeat_last_n > 262144 || !std::isfinite(params.repeat_penalty) ||
+        params.repeat_penalty < 0 || params.repeat_penalty > 10 ||
+        !std::isfinite(params.frequency_penalty) || params.frequency_penalty < -2 ||
+        params.frequency_penalty > 2 || !std::isfinite(params.presence_penalty) ||
+        params.presence_penalty < -2 || params.presence_penalty > 2 ||
+        params.stop_count > LLW_MAX_STOP_SEQUENCES ||
+        (params.stop_count != 0 && !params.stop_sequences) ||
+        (params.output_grammar_len == 0) != (params.output_grammar == nullptr) ||
+        params.output_grammar_len > LLW_MAX_GRAMMAR_BYTES)
+        throw std::invalid_argument("request option is outside its declared bounds");
+    if (params.output_grammar_len != 0 &&
+        (!valid_utf8(params.output_grammar, params.output_grammar_len) ||
+         std::find(params.output_grammar,
+                   params.output_grammar + params.output_grammar_len,
+                   uint8_t{0}) != params.output_grammar + params.output_grammar_len))
+        throw std::invalid_argument("invalid output grammar");
+    validate_chat_messages(params.chat_messages, params.chat_message_count);
     uint64_t total = 0;
     for (uint32_t index = 0; index < params.stop_count; ++index) {
         const llw_bytes_t& stop = params.stop_sequences[index];
@@ -303,7 +335,7 @@ void validate_request(const llw_request_params_t& params) {
 }
 
 std::string option_schema() {
-    std::string schema = std::string(R"json({"abiMinor":3,"backendPack":")json") + pack_name() +
+    std::string schema = std::string(R"json({"abiMinor":4,"backendPack":")json") + pack_name() +
         R"json(","model":{"modelPath":{"type":"utf8Bytes","minBytes":1,"maxBytes":32768,"default":null,"apply":"modelReload"},"backend":{"type":"enum","values":{"auto":0,"cpu":1,"cuda":2,"vulkan":3},"default":0,"apply":"modelReload"},"deviceIndex":{"type":"uint32","min":0,"max":255,"default":0,"apply":"modelReload"},"contextTokensPerSlot":{"type":"uint32","min":512,"max":262144,"default":4096,"apply":"modelReload"},"logicalBatchTokens":{"type":"uint32","min":1,"max":8192,"default":512,"apply":"modelReload"},"physicalBatchTokens":{"type":"uint32","min":1,"maxField":"logicalBatchTokens","default":128,"apply":"modelReload"},"nThreads":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nThreadsBatch":{"type":"int32","min":1,"max":256,"default":8,"apply":"modelReload"},"nGpuLayers":{"type":"int32","min":-1,"max":65535,"default":0,"apply":"modelReload"},"useMmap":{"type":"boolean","default":true,"apply":"modelReload"},"useMlock":{"type":"boolean","default":false,"apply":"modelReload"},"checkTensors":{"type":"boolean","default":false,"apply":"modelReload"}},"scheduler":{"slotCount":{"type":"uint32","min":1,"max":4,"default":1,"apply":"runtimeRestart"},"requestQueueCapacity":{"type":"uint32","min":1,"max":1024,"default":16,"apply":"runtimeRestart"},"eventQueueCapacity":{"type":"uint32","min":16,"max":65536,"default":1024,"apply":"runtimeRestart"}},"request":{"promptBytes":{"type":"bytes","minBytes":1,"maxBytes":16777216,"default":null,"apply":"nextRequest"},"chatMessages":{"type":"messageArray","minCount":0,"maxCount":128,"roles":["system","user","assistant"],"maxTotalBytes":16777216,"default":[],"apply":"nextRequest"},"maxNewTokens":{"type":"uint32","min":1,"max":1048576,"default":256,"apply":"nextRequest"},"seed":{"type":"uint32","min":0,"max":4294967295,"default":4294967295,"apply":"nextRequest"},"temperature":{"type":"float32","min":0.0,"max":10.0,"default":0.8,"apply":"nextRequest"},"topK":{"type":"int32","min":0,"max":100000,"default":40,"apply":"nextRequest"},"topP":{"type":"float32","min":0.0,"max":1.0,"default":0.95,"apply":"nextRequest"},"minP":{"type":"float32","min":0.0,"max":1.0,"default":0.05,"apply":"nextRequest"},"repeatLastN":{"type":"int32","min":0,"max":262144,"default":64,"apply":"nextRequest"},"repeatPenalty":{"type":"float32","min":0.0,"max":10.0,"default":1.1,"apply":"nextRequest"},"frequencyPenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"presencePenalty":{"type":"float32","min":-2.0,"max":2.0,"default":0.0,"apply":"nextRequest"},"stopSequences":{"type":"bytesArray","minCount":0,"maxCount":8,"minBytesEach":1,"maxBytesEach":256,"maxTotalBytes":2048,"default":[],"apply":"nextRequest"},"outputGrammar":{"type":"utf8Bytes","minBytes":0,"maxBytes":65536,"default":null,"apply":"nextRequest"}}})json";
     return schema;
 }
@@ -631,6 +663,32 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_unload(
             runtime->model_handle = 0;
             runtime->model_unloading = false;
         }
+        return LLW_OK;
+    });
+}
+
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_format_chat(
+    llw_runtime_t* runtime, llw_handle_t model,
+    const llw_chat_message_t* messages, uint32_t message_count,
+    llw_buffer_t* out, llw_error_t* error) {
+    return guarded(error, [&] {
+        if (!runtime || model == 0 || !out || out->struct_size < sizeof(*out) ||
+            out->flags != 0 || !zeroed(out->reserved))
+            throw std::invalid_argument("invalid chat format call");
+        if (message_count == 0)
+            throw std::invalid_argument("chat formatting requires at least one message");
+        validate_chat_messages(messages, message_count);
+        std::lock_guard lock(runtime->mutex);
+        if (runtime->model_unloading || !runtime->engine || runtime->model_handle != model)
+            return fail(error, LLW_ERR_INVALID_STATE, "requested model is not loaded");
+        const auto formatted = runtime->engine->format_chat(
+            copy_chat_messages(messages, message_count));
+        if (formatted.size() > LLW_MAX_PROMPT_BYTES)
+            return fail(error, LLW_ERR_INVALID_ARGUMENT, "formatted chat exceeds prompt byte bound");
+        out->len = formatted.size();
+        if (!out->data || out->capacity < formatted.size())
+            return fail(error, LLW_ERR_BUFFER_TOO_SMALL, "chat prompt buffer is too small");
+        std::memcpy(out->data, formatted.data(), formatted.size());
         return LLW_OK;
     });
 }

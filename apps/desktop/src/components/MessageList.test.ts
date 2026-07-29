@@ -8,6 +8,7 @@ import {
   isCpuRuntimeRecoveryError,
   isNearScrollBottom,
   MessageList,
+  shouldShowStreamingCursor,
   shouldShowEmptyContent,
 } from "./MessageList";
 
@@ -74,5 +75,42 @@ describe("message auto-scroll", () => {
 
     expect(getLatestUserMessageId(messages)).toBe("user-2");
     expect(getLatestUserMessageId(messages.filter((message) => message.role === "assistant"))).toBeNull();
+  });
+});
+
+describe("streaming cursor", () => {
+  const agentRun = {
+    runId: "run-1",
+    assistantMessageId: "assistant-1",
+    mode: "react" as const,
+    status: "running" as const,
+    startedAt: 1,
+    finishedAt: null,
+    tools: [],
+  };
+
+  it("stays hidden while an agent is working without answer text", () => {
+    expect(shouldShowStreamingCursor({
+      status: "streaming",
+      content: "",
+      agentRun: { ...agentRun, phase: "thinking" },
+    })).toBe(false);
+    expect(shouldShowStreamingCursor({
+      status: "streaming",
+      content: "내부 작업",
+      agentRun: { ...agentRun, phase: "choosing-tool" },
+    })).toBe(false);
+  });
+
+  it("appears only while user-facing answer text is streaming", () => {
+    expect(shouldShowStreamingCursor({
+      status: "streaming",
+      content: "답변을 작성",
+    })).toBe(true);
+    expect(shouldShowStreamingCursor({
+      status: "streaming",
+      content: "답변을 작성",
+      agentRun: { ...agentRun, phase: "writing" },
+    })).toBe(true);
   });
 });

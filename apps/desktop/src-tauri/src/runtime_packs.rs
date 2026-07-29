@@ -493,7 +493,7 @@ mod tests {
     fn probed_runtime_identity_must_match_current_baseline() {
         let mut probe = probed_cpu("CPU 0");
         probe.llama_cpp_commit = "571d0d540df04f25298d0e159e520d9fc62ed121".into();
-        probe.abi_minor = 3;
+        probe.abi_minor = 4;
         assert!(validate_probed_pack("cpu", &probe).is_ok());
 
         probe.llama_cpp_commit = "stale-commit".into();

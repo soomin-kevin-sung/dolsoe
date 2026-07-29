@@ -31,7 +31,7 @@
 #endif
 
 #define LLW_ABI_MAJOR 1u
-#define LLW_ABI_MINOR 3u
+#define LLW_ABI_MINOR 4u
 
 typedef uint64_t llw_handle_t;
 typedef int32_t llw_result_t;
@@ -378,6 +378,15 @@ LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_load(
     llw_handle_t* out_model, llw_error_t* out_error);
 LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_unload(
     llw_runtime_t* runtime, llw_handle_t model, llw_error_t* out_error);
+/*
+ * Formats ordered chat messages with the loaded model's default GGUF chat template.
+ * The output includes the assistant generation prompt, matching llw_request_submit.
+ * On LLW_ERR_BUFFER_TOO_SMALL, out_prompt->len contains the required byte count.
+ */
+LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_model_format_chat(
+    llw_runtime_t* runtime, llw_handle_t model,
+    const llw_chat_message_t* messages, uint32_t message_count,
+    llw_buffer_t* out_prompt, llw_error_t* out_error);
 LLW_EXTERN_C LLW_EXPORT llw_result_t LLW_CALL llw_request_submit(
     llw_runtime_t* runtime, const llw_request_params_t* params,
     llw_handle_t* out_request, llw_error_t* out_error);

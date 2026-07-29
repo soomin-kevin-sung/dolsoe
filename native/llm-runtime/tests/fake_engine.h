@@ -13,6 +13,14 @@
 
 class FakeEngine final : public InferenceEngine {
 public:
+    std::vector<uint8_t> format_chat(const std::vector<ChatMessage>& messages) override {
+        std::vector<uint8_t> formatted;
+        for (const auto& message : messages) {
+            formatted.insert(formatted.end(), message.content.begin(), message.content.end());
+        }
+        return formatted;
+    }
+
     uint64_t start(EngineRequest request) override {
         std::lock_guard lock(mutex_);
         if (request.prompt == rejected_prompt_)

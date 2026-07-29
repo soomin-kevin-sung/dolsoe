@@ -6,7 +6,7 @@ compile_error!("llm-runtime-sys supports only 64-bit targets");
 use std::ffi::{c_char, c_void};
 
 pub const ABI_MAJOR: u32 = 1;
-pub const ABI_MINOR: u32 = 3;
+pub const ABI_MINOR: u32 = 4;
 pub const MAX_GRAMMAR_BYTES: u64 = 65_536;
 pub const OK: i32 = 0;
 pub const ERR_INVALID_ARGUMENT: i32 = 1;
@@ -544,6 +544,14 @@ pub type RuntimeGetOptionSchemaFn =
 pub type ModelLoadFn =
     unsafe extern "C" fn(*mut Runtime, *const ModelLoadParams, *mut Handle, *mut Error) -> i32;
 pub type ModelUnloadFn = unsafe extern "C" fn(*mut Runtime, Handle, *mut Error) -> i32;
+pub type ModelFormatChatFn = unsafe extern "C" fn(
+    *mut Runtime,
+    Handle,
+    *const ChatMessage,
+    u32,
+    *mut Buffer,
+    *mut Error,
+) -> i32;
 pub type RequestSubmitFn =
     unsafe extern "C" fn(*mut Runtime, *const RequestParams, *mut Handle, *mut Error) -> i32;
 pub type RequestCancelFn = unsafe extern "C" fn(*mut Runtime, Handle, *mut Error) -> i32;
@@ -563,6 +571,7 @@ pub struct Api {
     pub runtime_get_option_schema: RuntimeGetOptionSchemaFn,
     pub model_load: ModelLoadFn,
     pub model_unload: ModelUnloadFn,
+    pub model_format_chat: ModelFormatChatFn,
     pub request_submit: RequestSubmitFn,
     pub request_cancel: RequestCancelFn,
     pub get_scheduler_snapshot: GetSchedulerSnapshotFn,
@@ -614,6 +623,8 @@ impl Api {
         };
         let model_load = unsafe { *library.get::<ModelLoadFn>(b"llw_model_load\0")? };
         let model_unload = unsafe { *library.get::<ModelUnloadFn>(b"llw_model_unload\0")? };
+        let model_format_chat =
+            unsafe { *library.get::<ModelFormatChatFn>(b"llw_model_format_chat\0")? };
         let request_submit = unsafe { *library.get::<RequestSubmitFn>(b"llw_request_submit\0")? };
         let request_cancel = unsafe { *library.get::<RequestCancelFn>(b"llw_request_cancel\0")? };
         let get_scheduler_snapshot =
@@ -631,6 +642,7 @@ impl Api {
             runtime_get_option_schema,
             model_load,
             model_unload,
+            model_format_chat,
             request_submit,
             request_cancel,
             get_scheduler_snapshot,
@@ -658,6 +670,7 @@ mod tests {
             "llw_runtime_get_option_schema\\0",
             "llw_model_load\\0",
             "llw_model_unload\\0",
+            "llw_model_format_chat\\0",
             "llw_request_submit\\0",
             "llw_request_cancel\\0",
             "llw_get_scheduler_snapshot\\0",
@@ -770,7 +783,7 @@ mod tests {
 
     #[test]
     fn ffi_struct_layouts_match_x64_c_contract() {
-        assert_eq!(ABI_MINOR, 3);
+        assert_eq!(ABI_MINOR, 4);
         assert_layout!(Error, 592);
         assert_offset!(Error, struct_size, 0);
         assert_offset!(Error, code, 4);

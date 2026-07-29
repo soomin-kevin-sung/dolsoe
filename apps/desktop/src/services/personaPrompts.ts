@@ -36,7 +36,9 @@ export interface ConversationPromptPreview {
   revision: string;
   source: "conversation-snapshot" | "active-persona";
   messages: PromptPreviewMessage[];
-  formattedPrompt: string;
+  structuredPrompt: string;
+  finalPrompt: string | null;
+  finalPromptError: string | null;
   characterCount: number;
   estimatedTokens: number;
 }

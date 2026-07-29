@@ -3,7 +3,9 @@ use tauri::State;
 
 use crate::agent_mode::{compile_agent_runtime_system_prompt, AgentMode};
 use crate::conversation_store::{ConversationPromptSnapshot, ConversationStore};
+use crate::llm_dto::SubmitChatMessage;
 use crate::persona_prompt::{PersonaPromptDraft, PersonaPromptStateDto, PersonaPromptStore};
+use crate::runtime_host::RuntimeHost;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -19,7 +21,9 @@ pub struct ConversationPromptPreviewDto {
     pub revision: String,
     pub source: String,
     pub messages: Vec<PromptPreviewMessageDto>,
-    pub formatted_prompt: String,
+    pub structured_prompt: String,
+    pub final_prompt: Option<String>,
+    pub final_prompt_error: Option<String>,
     pub character_count: usize,
     pub estimated_tokens: usize,
 }
@@ -72,10 +76,12 @@ pub async fn persona_reset_defaults(
 pub async fn persona_preview_conversation(
     state: State<'_, PersonaPromptStore>,
     conversation_state: State<'_, ConversationStore>,
+    runtime_state: State<'_, RuntimeHost>,
     conversation_id: String,
 ) -> Result<ConversationPromptPreviewDto, String> {
     let persona = state.inner().clone();
     let conversations = conversation_state.inner().clone();
+    let runtime = runtime_state.inner().clone();
     blocking(move || {
         let context = conversations.model_prompt_context(&conversation_id)?;
         let agent_mode = AgentMode::parse(&context.agent_mode)?;
@@ -114,18 +120,32 @@ pub async fn persona_preview_conversation(
                     content: message.content,
                 }),
         );
-        let formatted_prompt = format_prompt_messages(&messages);
+        let structured_prompt = format_prompt_messages(&messages);
+        let runtime_messages = messages
+            .iter()
+            .map(|message| SubmitChatMessage {
+                role: message.role.clone(),
+                content: message.content.clone(),
+            })
+            .collect();
+        let (final_prompt, final_prompt_error) = match runtime.format_chat(runtime_messages) {
+            Ok(prompt) => (Some(prompt), None),
+            Err(error) => (None, Some(error)),
+        };
+        let measured_prompt = final_prompt.as_deref().unwrap_or(&structured_prompt);
         Ok(ConversationPromptPreviewDto {
             persona_id: snapshot.persona_id,
             revision: snapshot.persona_revision,
             source: source.into(),
-            character_count: formatted_prompt.chars().count(),
-            estimated_tokens: if formatted_prompt.is_empty() {
+            character_count: measured_prompt.chars().count(),
+            estimated_tokens: if measured_prompt.is_empty() {
                 0
             } else {
-                formatted_prompt.len().div_ceil(4)
+                measured_prompt.len().div_ceil(4)
             },
-            formatted_prompt,
+            structured_prompt,
+            final_prompt,
+            final_prompt_error,
             messages,
         })
     })

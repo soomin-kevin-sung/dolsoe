@@ -345,6 +345,27 @@ int test_debug_model_fixture_loads() {
     llw_handle_t handle{};
     CHECK(llw_model_load(runtime, &model, &handle, &error) == LLW_OK);
     CHECK(handle != 0);
+    const std::string role = "user";
+    const std::string content = "hello";
+    llw_chat_message_t message{};
+    message.struct_size = sizeof(message);
+    message.role.struct_size = sizeof(message.role);
+    message.role.data = reinterpret_cast<const uint8_t*>(role.data());
+    message.role.len = role.size();
+    message.content.struct_size = sizeof(message.content);
+    message.content.data = reinterpret_cast<const uint8_t*>(content.data());
+    message.content.len = content.size();
+    llw_buffer_t prompt{};
+    prompt.struct_size = sizeof(prompt);
+    CHECK(llw_model_format_chat(runtime, handle, &message, 1, &prompt, &error) ==
+          LLW_ERR_BUFFER_TOO_SMALL);
+    CHECK(prompt.len > 0);
+    std::vector<uint8_t> prompt_bytes(static_cast<size_t>(prompt.len));
+    prompt.data = prompt_bytes.data();
+    prompt.capacity = prompt_bytes.size();
+    CHECK(llw_model_format_chat(runtime, handle, &message, 1, &prompt, &error) == LLW_OK);
+    CHECK(std::string(prompt_bytes.begin(), prompt_bytes.end()) ==
+          "<user>hello</user>\n<assistant>");
     CHECK(llw_model_unload(runtime, handle, &error) == LLW_OK);
     llw_runtime_destroy(runtime);
     return 0;
@@ -632,7 +653,7 @@ int test_callback_reentrant_unload_is_rejected_before_transition() {
 int main() {
     static_assert(sizeof(void*) == 8);
     static_assert(LLW_ABI_MAJOR == 1u);
-    static_assert(LLW_ABI_MINOR == 3u);
+    static_assert(LLW_ABI_MINOR == 4u);
     static_assert(sizeof(llw_handle_t) == sizeof(std::uint64_t));
     static_assert(sizeof(llw_result_t) == sizeof(std::int32_t));
     static_assert(LLW_OK == 0);

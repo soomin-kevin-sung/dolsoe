@@ -71,15 +71,25 @@ export default function MockApp() {
             status: agentPreview,
             startedAt: 1,
             finishedAt: agentPreview === "complete" ? 2 : null,
-            phase: agentPreview === "running" ? "writing" : undefined,
-            tools: [{
-              activityId: "preview-calculator",
-              toolName: "calculator",
-              status: "complete",
-              input: "(4096 * 2) / 1024",
-              output: "8",
-              durationMs: 3,
-            }],
+            phase: agentPreview === "running" ? "choosing-tool" : undefined,
+            tools: [
+              {
+                activityId: "preview-list-files",
+                toolName: "list_files",
+                status: "complete",
+                input: ".",
+                output: "Cargo.toml, apps, crates, native",
+                durationMs: 82,
+              },
+              {
+                activityId: "preview-search-files",
+                toolName: "search_files",
+                status: agentPreview === "running" ? "running" : "complete",
+                input: '{"query":"bundle","path":"."}',
+                output: agentPreview === "running" ? "" : "apps/desktop/src-tauri/tauri.conf.json",
+                durationMs: agentPreview === "running" ? 0 : 1714,
+              },
+            ],
           },
         };
         break;

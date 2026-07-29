@@ -72,6 +72,12 @@ impl RuntimeHost {
     pub fn submit(&self, request: SubmitRequest) -> Result<SubmitResponse, String> {
         self.worker()?.submit(request)
     }
+    pub fn format_chat(
+        &self,
+        messages: Vec<crate::llm_dto::SubmitChatMessage>,
+    ) -> Result<String, String> {
+        self.worker()?.format_chat(messages)
+    }
     pub fn cancel(&self, handle: u64) -> Result<(), String> {
         self.worker()?.cancel(handle)
     }

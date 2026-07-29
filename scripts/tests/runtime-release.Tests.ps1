@@ -47,7 +47,7 @@ try {
   $baseline = Get-Content -Raw -Encoding UTF8 $baselinePath | ConvertFrom-Json
   Assert-True ($baseline.releaseTag -eq 'b10068') 'Unexpected llama.cpp baseline tag.'
   Assert-True ($baseline.commit -eq '571d0d540df04f25298d0e159e520d9fc62ed121') 'Unexpected llama.cpp baseline commit.'
-  Assert-True ($baseline.abiMajor -eq 1 -and $baseline.abiMinor -eq 3) 'Unexpected bridge ABI baseline.'
+  Assert-True ($baseline.abiMajor -eq 1 -and $baseline.abiMinor -eq 4) 'Unexpected bridge ABI baseline.'
   Assert-True (@($baseline.headers).Count -eq 7) 'Pinned llama.cpp header SDK must contain seven public headers.'
   foreach ($header in @($baseline.headers)) {
     Assert-True ([string]$header.sha256 -match '^[0-9a-f]{64}$') "Pinned header hash is malformed: $($header.path)"

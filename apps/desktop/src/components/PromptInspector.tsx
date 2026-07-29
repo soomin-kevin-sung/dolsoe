@@ -18,6 +18,8 @@ interface Props {
   onClose(): void;
 }
 
+type InspectorView = "final" | "messages";
+
 export function PromptInspector({ open, conversationId, conversationTitle, onClose }: Props) {
   const service = useMemo(() => new PersonaPromptService(), []);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -25,6 +27,7 @@ export function PromptInspector({ open, conversationId, conversationTitle, onClo
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [view, setView] = useState<InspectorView>("final");
 
   async function refresh() {
     if (!conversationId) return;
@@ -43,6 +46,7 @@ export function PromptInspector({ open, conversationId, conversationTitle, onClo
     if (!open || !conversationId) return;
     setPreview(null);
     setCopied(false);
+    setView("final");
     void refresh();
     const focusFrame = requestAnimationFrame(() => closeRef.current?.focus());
     return () => cancelAnimationFrame(focusFrame);
@@ -61,9 +65,16 @@ export function PromptInspector({ open, conversationId, conversationTitle, onClo
 
   if (!open || !conversationId) return null;
 
+  const activePrompt = preview
+    ? view === "final" ? preview.finalPrompt ?? "" : preview.structuredPrompt
+    : "";
+  const activeBytes = new TextEncoder().encode(activePrompt).length;
+  const activeCharacters = Array.from(activePrompt).length;
+  const activeEstimatedTokens = activePrompt ? Math.ceil(activeBytes / 4) : 0;
+
   async function copyPrompt() {
-    if (!preview) return;
-    await navigator.clipboard.writeText(preview.formattedPrompt);
+    if (!activePrompt) return;
+    await navigator.clipboard.writeText(activePrompt);
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   }
@@ -84,23 +95,38 @@ export function PromptInspector({ open, conversationId, conversationTitle, onClo
           ? preview.source === "conversation-snapshot" ? "대화 스냅샷" : "활성 페르소나"
           : "확인 중"}</span>
         <span>{preview?.messages.length ?? 0}개 메시지</span>
-        <span>{preview?.characterCount.toLocaleString("ko-KR") ?? 0}자</span>
-        <span>약 {preview?.estimatedTokens.toLocaleString("ko-KR") ?? 0} 토큰</span>
+        <span>{activeCharacters.toLocaleString("ko-KR")}자</span>
+        <span>약 {activeEstimatedTokens.toLocaleString("ko-KR")} 토큰</span>
         {preview && <code>{preview.personaId} · {preview.revision.slice(0, 10)}</code>}
       </div>
+      <div className="prompt-inspector-tabs" role="tablist" aria-label="모델 입력 표시 방식">
+        <button type="button" role="tab" aria-selected={view === "final"} className={view === "final" ? "selected" : ""} onClick={() => setView("final")}>
+          최종 모델 입력
+        </button>
+        <button type="button" role="tab" aria-selected={view === "messages"} className={view === "messages" ? "selected" : ""} onClick={() => setView("messages")}>
+          구조화 메시지
+        </button>
+      </div>
       <p className="prompt-inspector-note">
-        GGUF 모델의 채팅 템플릿을 적용하기 전, 런타임에 전달되는 구조화 메시지입니다.
+        {view === "final"
+          ? "현재 로드된 GGUF의 채팅 템플릿과 assistant generation prompt까지 적용된 토큰화 직전 문자열입니다."
+          : "GGUF 채팅 템플릿을 적용하기 전, 런타임에 전달되는 역할별 구조화 메시지입니다."}
       </p>
       <div className="prompt-inspector-body">
         {loading && <div className="prompt-inspector-state">현재 대화 컨텍스트를 조립하는 중...</div>}
         {error && <div className="prompt-inspector-state error" role="alert">{error}</div>}
-        {!loading && !error && preview && <pre>{preview.formattedPrompt || "전달할 메시지가 없습니다."}</pre>}
+        {!loading && !error && preview && view === "final" && preview.finalPromptError
+          ? <div className="prompt-inspector-state error" role="alert">{preview.finalPromptError}</div>
+          : null}
+        {!loading && !error && preview && !(view === "final" && preview.finalPromptError)
+          ? <pre>{activePrompt || "전달할 메시지가 없습니다."}</pre>
+          : null}
       </div>
       <footer className="prompt-inspector-footer">
         <button className="button-secondary" type="button" disabled={loading} onClick={() => void refresh()}>
           <RefreshCw size={14} aria-hidden="true" />새로고침
         </button>
-        <button className="button-secondary" type="button" disabled={!preview} onClick={() => void copyPrompt()}>
+        <button className="button-secondary" type="button" disabled={!activePrompt} onClick={() => void copyPrompt()}>
           {copied ? <Check size={14} aria-hidden="true" /> : <Clipboard size={14} aria-hidden="true" />}
           {copied ? "복사됨" : "전체 복사"}
         </button>

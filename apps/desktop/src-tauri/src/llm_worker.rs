@@ -10,8 +10,8 @@ use llm_runtime::{
 };
 
 use crate::llm_dto::{
-    LlmEventDto, LlmMetricsDto, LlmPhase, LlmStatusDto, LoadModelRequest, SubmitRequest,
-    SubmitResponse,
+    LlmEventDto, LlmMetricsDto, LlmPhase, LlmStatusDto, LoadModelRequest, SubmitChatMessage,
+    SubmitRequest, SubmitResponse,
 };
 use crate::runtime_path::RuntimePackResolver;
 
@@ -294,6 +294,7 @@ enum WorkerCommand {
     GetStatus(Sender<WorkerResult<LlmStatusDto>>),
     LoadModel(LoadModelRequest, Sender<WorkerResult<LlmStatusDto>>),
     UnloadModel(Sender<WorkerResult<LlmStatusDto>>),
+    FormatChat(Vec<SubmitChatMessage>, Sender<WorkerResult<String>>),
     Submit(SubmitRequest, Sender<WorkerResult<SubmitResponse>>),
     Cancel(u64, Sender<WorkerResult<()>>),
     GetMetrics(Sender<WorkerResult<LlmMetricsDto>>),
@@ -549,6 +550,34 @@ impl NativeState {
         result
     }
 
+    fn format_chat(&self, messages: Vec<SubmitChatMessage>) -> WorkerResult<String> {
+        if messages.is_empty() {
+            return Err("chat formatting requires at least one message".into());
+        }
+        if messages.len() > 128
+            || messages.iter().any(|message| {
+                !matches!(message.role.as_str(), "system" | "user" | "assistant")
+                    || message.content.is_empty()
+            })
+        {
+            return Err("chat messages are invalid".into());
+        }
+        let model = self
+            .model
+            .as_ref()
+            .ok_or_else(|| "최종 모델 입력을 보려면 모델이 로드되어 있어야 합니다.".to_string())?;
+        let messages = messages
+            .into_iter()
+            .map(|message| ChatMessage {
+                role: message.role,
+                content: message.content,
+            })
+            .collect::<Vec<_>>();
+        model
+            .format_chat(&messages)
+            .map_err(|error| error.to_string())
+    }
+
     fn cancel(&mut self, handle: u64) -> WorkerResult<()> {
         let first = self
             .guard
@@ -735,6 +764,10 @@ impl WorkerHandle {
         self.call(|response| WorkerCommand::Submit(request, response))
     }
 
+    pub fn format_chat(&self, messages: Vec<SubmitChatMessage>) -> WorkerResult<String> {
+        self.call(|response| WorkerCommand::FormatChat(messages, response))
+    }
+
     pub fn cancel(&self, handle: u64) -> WorkerResult<()> {
         self.call(|response| WorkerCommand::Cancel(handle, response))
     }
@@ -757,6 +790,10 @@ fn worker_loop(receiver: Receiver<WorkerCommand>, resolver: RuntimePackResolver,
             }
             Ok(WorkerCommand::UnloadModel(response)) => {
                 let result = state.unload();
+                let _ = response.send(result);
+            }
+            Ok(WorkerCommand::FormatChat(messages, response)) => {
+                let result = state.format_chat(messages);
                 let _ = response.send(result);
             }
             Ok(WorkerCommand::Submit(request, response)) => {
