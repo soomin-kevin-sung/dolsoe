@@ -55,6 +55,12 @@ export function shouldShowStreamingCursor(
   return !message.agentRun || message.agentRun.phase === "writing";
 }
 
+export function shouldShowAgentActivity(
+  message: Pick<Message, "agentRun">,
+): boolean {
+  return Boolean(message.agentRun?.tools.length);
+}
+
 export function isCpuRuntimeRecoveryError(error?: string | null): boolean {
   return Boolean(error && (
     error.includes("CPU runtime is unavailable")
@@ -116,7 +122,7 @@ export function MessageList({ conversationId, state, messages, modelName, backen
           <span className="assistant-mark" aria-hidden="true"><img src={dolsoeIconUrl} alt="" /></span>
           <div className="assistant-content">
             <div className="message-author">돌쇠</div>
-            {message.agentRun && <AgentActivityPanel run={message.agentRun} />}
+            {shouldShowAgentActivity(message) && <AgentActivityPanel run={message.agentRun!} />}
             <div className="message-text">{message.content}{shouldShowStreamingCursor(message) && <span className="streaming-cursor" />}</div>
             {message.status === "cancelled" && <div className="stopped-line"><Square size={12} fill="currentColor" />생성이 중지되었습니다 · {message.stopDetail ?? "토큰 87개 생성됨"}</div>}
             {message.status === "interrupted" && <div className="stopped-line"><Square size={12} fill="currentColor" />생성이 중단되었습니다 · {message.stopDetail ?? "토큰 87개 생성됨"}</div>}

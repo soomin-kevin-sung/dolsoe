@@ -8,6 +8,7 @@ import {
   isCpuRuntimeRecoveryError,
   isNearScrollBottom,
   MessageList,
+  shouldShowAgentActivity,
   shouldShowStreamingCursor,
   shouldShowEmptyContent,
 } from "./MessageList";
@@ -112,5 +113,62 @@ describe("streaming cursor", () => {
       content: "답변을 작성",
       agentRun: { ...agentRun, phase: "writing" },
     })).toBe(true);
+  });
+});
+
+describe("agent activity visibility", () => {
+  const agentRun = {
+    runId: "run-1",
+    assistantMessageId: "assistant-1",
+    mode: "react" as const,
+    status: "complete" as const,
+    startedAt: 1,
+    finishedAt: 2,
+    phase: "writing" as const,
+    tools: [],
+  };
+
+  it("hides answer-only ReAct runs", () => {
+    expect(shouldShowAgentActivity({ agentRun })).toBe(false);
+    const markup = renderToStaticMarkup(createElement(MessageList, {
+      state: "ready",
+      messages: [{
+        id: "assistant-1",
+        role: "assistant",
+        content: "도구 없이 바로 답합니다.",
+        status: "complete",
+        agentRun,
+      }],
+    }));
+
+    expect(markup).not.toContain("agent-activity");
+  });
+
+  it("shows ReAct runs that used a tool", () => {
+    const toolRun = {
+      ...agentRun,
+      tools: [{
+        activityId: "tool-1",
+        toolName: "calculator",
+        status: "complete" as const,
+        input: "{\"expression\":\"2 + 2\"}",
+        output: "4",
+        durationMs: 1,
+      }],
+    };
+    expect(shouldShowAgentActivity({ agentRun: toolRun })).toBe(true);
+
+    const markup = renderToStaticMarkup(createElement(MessageList, {
+      state: "ready",
+      messages: [{
+        id: "assistant-1",
+        role: "assistant",
+        content: "결과는 4입니다.",
+        status: "complete",
+        agentRun: toolRun,
+      }],
+    }));
+
+    expect(markup).toContain("agent-activity");
   });
 });

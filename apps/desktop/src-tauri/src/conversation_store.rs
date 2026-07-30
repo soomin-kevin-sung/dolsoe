@@ -115,6 +115,14 @@ CREATE TABLE workspace_preferences (
 INSERT INTO workspace_preferences(singleton, default_workspace_path) VALUES (1, '');
 "#;
 
+const MIGRATION_6: &str = r#"
+ALTER TABLE agent_steps ADD COLUMN prompt_revision TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_steps ADD COLUMN prompt_hash TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_steps ADD COLUMN system_instructions TEXT NOT NULL DEFAULT '';
+ALTER TABLE agent_steps ADD COLUMN output_grammar TEXT;
+ALTER TABLE agent_steps ADD COLUMN include_workspace INTEGER NOT NULL DEFAULT 0;
+"#;
+
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum MessageRole {
@@ -283,6 +291,12 @@ pub struct AgentSubmission {
     pub conversation_id: String,
     pub assistant_message_id: String,
     pub workspace_path: String,
+    pub stage: String,
+    pub prompt_revision: String,
+    pub prompt_hash: String,
+    pub system_instructions: String,
+    pub output_grammar: Option<String>,
+    pub include_workspace: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -302,6 +316,12 @@ pub struct PreparedAgentStep {
     pub run_id: String,
     pub step_id: String,
     pub correlation_id: u64,
+    pub stage: String,
+    pub prompt_revision: String,
+    pub prompt_hash: String,
+    pub system_instructions: String,
+    pub output_grammar: Option<String>,
+    pub include_workspace: bool,
 }
 
 #[derive(Clone)]
@@ -738,7 +758,9 @@ impl ConversationStore {
             .lock()?
             .query_row(
                 "SELECT r.id, s.id, s.correlation_id, r.mode,
-                        r.conversation_id, r.assistant_message_id, c.workspace_path
+                        r.conversation_id, r.assistant_message_id, c.workspace_path,
+                        s.stage, s.prompt_revision, s.prompt_hash,
+                        s.system_instructions, s.output_grammar, s.include_workspace
                  FROM agent_runs r
                  JOIN agent_steps s ON s.run_id = r.id
                  JOIN conversations c ON c.id = r.conversation_id
@@ -754,6 +776,12 @@ impl ConversationStore {
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
                         row.get::<_, String>(6)?,
+                        row.get::<_, String>(7)?,
+                        row.get::<_, String>(8)?,
+                        row.get::<_, String>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, bool>(12)?,
                     ))
                 },
             )
@@ -769,6 +797,12 @@ impl ConversationStore {
             conversation_id: correlation.4,
             assistant_message_id: correlation.5,
             workspace_path: correlation.6,
+            stage: correlation.7,
+            prompt_revision: correlation.8,
+            prompt_hash: correlation.9,
+            system_instructions: correlation.10,
+            output_grammar: correlation.11,
+            include_workspace: correlation.12,
         })
     }
 
@@ -1043,18 +1077,17 @@ impl ConversationStore {
     ) -> StoreResult<PreparedAgentStep> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(store_error)?;
-        let run_exists = transaction
+        let mode = transaction
             .query_row(
-                "SELECT 1 FROM agent_runs WHERE id = ?1 AND status = 'running'",
+                "SELECT mode FROM agent_runs WHERE id = ?1 AND status = 'running'",
                 [run_id],
-                |_| Ok(()),
+                |row| row.get::<_, String>(0),
             )
             .optional()
             .map_err(store_error)?
-            .is_some();
-        if !run_exists {
-            return Err("running agent run was not found".into());
-        }
+            .ok_or_else(|| "running agent run was not found".to_string())?;
+        let mode = AgentMode::parse(&mode)?;
+        let prompt = mode.prompt_snapshot(stage)?;
         let step_index: i64 = transaction
             .query_row(
                 "SELECT COALESCE(MAX(step_index), -1) + 1 FROM agent_steps WHERE run_id = ?1",
@@ -1069,14 +1102,21 @@ impl ConversationStore {
             .execute(
                 "INSERT INTO agent_steps(
                     id, run_id, step_index, kind, stage, status, correlation_id,
-                    output_content, started_at, updated_at
-                 ) VALUES (?1, ?2, ?3, 'model', ?4, 'prepared', ?5, '', ?6, ?6)",
+                    output_content, prompt_revision, prompt_hash, system_instructions,
+                    output_grammar, include_workspace, started_at, updated_at
+                 ) VALUES (?1, ?2, ?3, 'model', ?4, 'prepared', ?5, '',
+                           ?6, ?7, ?8, ?9, ?10, ?11, ?11)",
                 params![
                     step_id,
                     run_id,
                     step_index,
                     stage,
                     correlation_id,
+                    prompt.revision,
+                    prompt.prompt_hash,
+                    prompt.system_instructions,
+                    prompt.output_grammar,
+                    prompt.include_workspace,
                     timestamp
                 ],
             )
@@ -1087,6 +1127,12 @@ impl ConversationStore {
             step_id,
             correlation_id: u64::try_from(correlation_id)
                 .map_err(|_| "stored agent correlation id is invalid".to_string())?,
+            stage: prompt.stage,
+            prompt_revision: prompt.revision,
+            prompt_hash: prompt.prompt_hash,
+            system_instructions: prompt.system_instructions,
+            output_grammar: prompt.output_grammar,
+            include_workspace: prompt.include_workspace,
         })
     }
 
@@ -1454,6 +1500,26 @@ fn apply_migrations(transaction: &Transaction<'_>) -> StoreResult<()> {
             )
             .map_err(store_error)?;
     }
+    let applied = transaction
+        .query_row(
+            "SELECT 1 FROM schema_migrations WHERE version = 6",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(store_error)?
+        .is_some();
+    if !applied {
+        transaction
+            .execute_batch(MIGRATION_6)
+            .map_err(store_error)?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (6, ?1)",
+                [now_millis()?],
+            )
+            .map_err(store_error)?;
+    }
     Ok(())
 }
 
@@ -1671,6 +1737,7 @@ fn attach_agent_run(
     mode: AgentMode,
     timestamp: i64,
 ) -> StoreResult<()> {
+    let prompt = mode.initial_prompt_snapshot();
     let run_id = Uuid::new_v4().to_string();
     let step_id = Uuid::new_v4().to_string();
     let correlation_id = correlation_id_for(&step_id)?;
@@ -1698,13 +1765,20 @@ fn attach_agent_run(
         .execute(
             "INSERT INTO agent_steps(
                 id, run_id, step_index, kind, stage, status, correlation_id,
-                output_content, started_at, updated_at
-             ) VALUES (?1, ?2, 0, 'model', ?3, 'prepared', ?4, '', ?5, ?5)",
+                output_content, prompt_revision, prompt_hash, system_instructions,
+                output_grammar, include_workspace, started_at, updated_at
+             ) VALUES (?1, ?2, 0, 'model', ?3, 'prepared', ?4, '',
+                       ?5, ?6, ?7, ?8, ?9, ?10, ?10)",
             params![
                 step_id,
                 run_id,
-                mode.initial_stage(),
+                prompt.stage,
                 correlation_id,
+                prompt.revision,
+                prompt.prompt_hash,
+                prompt.system_instructions,
+                prompt.output_grammar,
+                prompt.include_workspace,
                 timestamp
             ],
         )
@@ -2065,7 +2139,7 @@ mod tests {
         store.bootstrap().unwrap();
         store.bootstrap().unwrap();
 
-        assert_eq!(store.migration_count().unwrap(), 5);
+        assert_eq!(store.migration_count().unwrap(), 6);
     }
 
     #[test]
@@ -2089,6 +2163,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(submission.mode, "chat");
+        assert_eq!(submission.stage, "chat-response");
+        assert_eq!(submission.prompt_revision, "chat-response/v1");
+        assert_eq!(submission.prompt_hash.len(), 64);
+        assert!(submission.system_instructions.contains("# Chat 실행 규칙"));
+        assert!(submission.output_grammar.is_none());
+        assert!(!submission.include_workspace);
     }
 
     #[test]
@@ -2180,6 +2260,17 @@ mod tests {
             )
             .unwrap();
         assert_eq!(next_submission.mode, "react");
+        assert_eq!(next_submission.stage, "react-decision");
+        assert_eq!(next_submission.prompt_revision, "react-decision/v2");
+        assert_eq!(next_submission.prompt_hash.len(), 64);
+        assert!(next_submission
+            .system_instructions
+            .contains("# ReAct 실행 규칙"));
+        assert!(next_submission
+            .output_grammar
+            .as_deref()
+            .is_some_and(|grammar| grammar.contains(r#"\"tool_call\""#)));
+        assert!(next_submission.include_workspace);
 
         store
             .finish_agent_step(

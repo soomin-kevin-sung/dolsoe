@@ -11,7 +11,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{
     agent_mode::{
-        compile_agent_runtime_system_prompt, parse_react_decision, AgentDecision, AgentMode,
+        compile_system_prompt_from_snapshot, parse_react_decision, AgentDecision, AgentMode,
+        AgentStageSnapshot,
     },
     agent_tools::{ToolContext, ToolGateway, ToolPreparation, ToolResult},
     conversation_store::{ConversationStore, MessageStatus, PreparedAgentStep},
@@ -179,6 +180,7 @@ struct ActiveRun {
     conversation_id: String,
     assistant_message_id: String,
     workspace_path: String,
+    persona_prompt: String,
     step_id: String,
     output: Vec<u8>,
     public_answer: String,
@@ -461,10 +463,27 @@ impl AgentController {
         let mode = AgentMode::parse(&submission.mode)?;
         let mut run_loop = AgentRunLoop::for_mode(mode);
         run_loop.before_model()?;
-        if mode == AgentMode::React {
-            apply_agent_protocol(mode, &mut request.messages, &submission.workspace_path);
-        }
-        apply_agent_output_constraint(mode, &mut request);
+        let persona_prompt = request
+            .messages
+            .iter()
+            .find(|message| message.role == "system")
+            .map(|message| message.content.clone())
+            .unwrap_or_default();
+        let prompt_snapshot = AgentStageSnapshot {
+            stage: submission.stage.clone(),
+            revision: submission.prompt_revision.clone(),
+            system_instructions: submission.system_instructions.clone(),
+            output_grammar: submission.output_grammar.clone(),
+            prompt_hash: submission.prompt_hash.clone(),
+            include_workspace: submission.include_workspace,
+        };
+        apply_agent_protocol(
+            &mut request.messages,
+            &persona_prompt,
+            &prompt_snapshot,
+            &submission.workspace_path,
+        );
+        apply_agent_output_constraint(prompt_snapshot.output_grammar.as_deref(), &mut request);
         request.correlation_id = submission.correlation_id;
 
         {
@@ -483,6 +502,7 @@ impl AgentController {
                     conversation_id: submission.conversation_id.clone(),
                     assistant_message_id: submission.assistant_message_id.clone(),
                     workspace_path: submission.workspace_path.clone(),
+                    persona_prompt,
                     step_id: submission.step_id.clone(),
                     output: Vec::new(),
                     public_answer: String::new(),
@@ -1058,6 +1078,20 @@ impl AgentController {
             Err(error) => return self.fail_between_steps(run, error),
         };
         run.step_id = prepared.step_id.clone();
+        let prompt_snapshot = AgentStageSnapshot {
+            stage: prepared.stage.clone(),
+            revision: prepared.prompt_revision.clone(),
+            system_instructions: prepared.system_instructions.clone(),
+            output_grammar: prepared.output_grammar.clone(),
+            prompt_hash: prepared.prompt_hash.clone(),
+            include_workspace: prepared.include_workspace,
+        };
+        apply_agent_protocol(
+            &mut run.messages,
+            &run.persona_prompt,
+            &prompt_snapshot,
+            &run.workspace_path,
+        );
         run.output.clear();
         run.public_answer.clear();
         run.current_request_handle = None;
@@ -1076,6 +1110,7 @@ impl AgentController {
         request.agent_step_id = Some(prepared.step_id.clone());
         request.correlation_id = prepared.correlation_id;
         request.messages = run.messages.clone();
+        apply_agent_output_constraint(prompt_snapshot.output_grammar.as_deref(), &mut request);
         request.prompt = run
             .messages
             .last()
@@ -1209,14 +1244,16 @@ impl AgentController {
 }
 
 fn apply_agent_protocol(
-    mode: AgentMode,
     messages: &mut Vec<SubmitChatMessage>,
+    persona_prompt: &str,
+    prompt_snapshot: &AgentStageSnapshot,
     workspace_path: &str,
 ) {
+    let content =
+        compile_system_prompt_from_snapshot(persona_prompt, prompt_snapshot, Some(workspace_path));
     if let Some(system) = messages.iter_mut().find(|message| message.role == "system") {
-        system.content = compile_agent_runtime_system_prompt(mode, &system.content, workspace_path);
+        system.content = content;
     } else {
-        let content = compile_agent_runtime_system_prompt(mode, "", workspace_path);
         if content.is_empty() {
             return;
         }
@@ -1248,8 +1285,8 @@ fn tool_input_label(name: &str, arguments: &Value) -> String {
     .unwrap_or_else(|| arguments.to_string())
 }
 
-fn apply_agent_output_constraint(mode: AgentMode, request: &mut SubmitRequest) {
-    request.output_grammar = mode.output_grammar().map(str::to_owned);
+fn apply_agent_output_constraint(output_grammar: Option<&str>, request: &mut SubmitRequest) {
+    request.output_grammar = output_grammar.map(str::to_owned);
 }
 
 fn is_terminal(kind: LlmEventKind) -> bool {
@@ -1337,8 +1374,10 @@ mod tests {
             role: "user".into(),
             content: "question".into(),
         }];
-        apply_agent_protocol(AgentMode::React, &mut messages, "/workspace");
+        let prompt = AgentMode::React.initial_prompt_snapshot();
+        apply_agent_protocol(&mut messages, "persona", &prompt, "/workspace");
         assert_eq!(messages[0].role, "system");
+        assert!(messages[0].content.starts_with("persona\n\n"));
         assert!(messages[0].content.contains("\"type\":\"tool_call\""));
         assert!(messages[0].content.contains("calculator"));
         assert!(messages[0].content.contains("/workspace"));
@@ -1356,13 +1395,13 @@ mod tests {
         }))
         .unwrap();
 
-        apply_agent_output_constraint(AgentMode::React, &mut request);
+        apply_agent_output_constraint(AgentMode::React.output_grammar(), &mut request);
         assert!(request
             .output_grammar
             .as_deref()
             .is_some_and(|grammar| grammar.contains(r#"\"tool_call\""#)));
 
-        apply_agent_output_constraint(AgentMode::Chat, &mut request);
+        apply_agent_output_constraint(AgentMode::Chat.output_grammar(), &mut request);
         assert_eq!(request.output_grammar, None);
     }
 
@@ -1431,6 +1470,7 @@ mod tests {
                 conversation_id: submission.conversation_id,
                 assistant_message_id: submission.assistant_message_id,
                 workspace_path: submission.workspace_path,
+                persona_prompt: String::new(),
                 step_id: submission.step_id,
                 output: b"answer".to_vec(),
                 public_answer: String::new(),
@@ -1515,6 +1555,7 @@ mod tests {
                 conversation_id: submission.conversation_id,
                 assistant_message_id: submission.assistant_message_id,
                 workspace_path: submission.workspace_path,
+                persona_prompt: String::new(),
                 step_id: submission.step_id,
                 output: Vec::new(),
                 public_answer: String::new(),

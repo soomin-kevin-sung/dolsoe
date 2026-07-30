@@ -242,8 +242,8 @@ fn compile_prompt(
         return Ok(String::new());
     }
     let mut compiled = format!(
-        "# {} system prompt\n\n\
-         아래 문서는 시스템 지침입니다. 문서가 충돌하면 Soul 지침을 페르소나 표현보다 우선합니다.",
+        "# {} 시스템 지침\n\n\
+         다음 지침을 모든 답변과 작업에 적용합니다. 지침이 충돌하면 핵심 원칙(Soul)을 페르소나 표현보다 우선합니다.",
         manifest.name
     );
     for document in documents {
@@ -402,6 +402,13 @@ mod tests {
         );
         assert!(state.compiled_prompt.contains(DEFAULT_SOUL.trim()));
         assert!(state.compiled_prompt.contains(DEFAULT_DOLSOE.trim()));
+        assert!(state.compiled_prompt.starts_with("# 돌쇠 시스템 지침"));
+        assert!(state
+            .compiled_prompt
+            .contains("불필요한 확인 질문이나 예고로 미루지 말고 바로 처리"));
+        assert!(state
+            .compiled_prompt
+            .contains("확인하지 않은 내용을 확인한 것처럼 말하지 않는다"));
         assert_eq!(state.revision.len(), 64);
     }
 

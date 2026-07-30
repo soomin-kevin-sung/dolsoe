@@ -52,7 +52,7 @@ const CALCULATOR: ToolDescriptor = ToolDescriptor {
 const LIST_FILES: ToolDescriptor = ToolDescriptor {
     name: "list_files",
     description:
-        "Lists files and subdirectories directly inside a directory in the current workspace.",
+        "Lists user-relevant files and subdirectories directly inside a directory in the current workspace. Inaccessible external links and hidden Windows system entries are omitted.",
     arguments: r#"{"path":"a workspace-relative directory path, or . for the workspace root"}"#,
     capabilities: FILE_READ_ONLY,
 };
@@ -209,9 +209,14 @@ pub fn react_tool_definitions() -> String {
         ));
     }
     output.push_str(
-        "\nUse workspace-relative paths. Call a tool only when its result is needed to answer accurately.",
+        "\nUse workspace-relative paths. You must call the appropriate tool when the answer depends on current workspace contents, file state, search results, or an exact calculation. Do not claim an inspection or calculation without a matching tool observation.",
     );
     output
+}
+
+#[cfg(test)]
+pub fn registered_tool_names() -> impl Iterator<Item = &'static str> {
+    REGISTERED_TOOLS.iter().map(|descriptor| descriptor.name)
 }
 
 pub fn tool_action_digest(name: &str, arguments: &Value) -> String {
@@ -289,57 +294,82 @@ fn list_files(guard: &WorkspaceGuard, arguments: &Value) -> Result<(String, Stri
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| format!("failed to list `{requested}`: {error}"))?;
     entries.sort_by_key(|entry| entry.file_name().to_string_lossy().to_lowercase());
-    let truncated = entries.len() > MAX_LIST_ENTRIES;
-    let entries = entries
-        .into_iter()
-        .take(MAX_LIST_ENTRIES)
-        .map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            let symlink_metadata = entry
-                .metadata()
-                .map_err(|error| format!("failed to inspect `{name}`: {error}"))?;
-            let resolved = match guard.resolve_existing_path(&entry.path()) {
-                Ok(path) => path,
-                Err(_) => {
-                    return Ok(json!({
-                        "name": name,
-                        "type": "external_link",
-                        "accessible": false,
-                    }));
-                }
-            };
-            let metadata = fs::metadata(&resolved)
-                .map_err(|error| format!("failed to inspect `{name}`: {error}"))?;
-            let kind = if metadata.is_dir() {
-                "directory"
-            } else if metadata.is_file() {
-                "file"
-            } else {
-                "other"
-            };
-            Ok(json!({
-                "name": name,
-                "type": kind,
-                "size": metadata.is_file().then_some(metadata.len()),
-                "link": symlink_metadata.file_type().is_symlink(),
-            }))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let mut omitted_external_links = 0usize;
+    let mut omitted_hidden_or_system = 0usize;
+    let mut visible_entries = Vec::new();
+    for entry in entries {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let entry_metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| format!("failed to inspect `{name}`: {error}"))?;
+        if is_hidden_or_system(&entry_metadata) {
+            omitted_hidden_or_system += 1;
+            continue;
+        }
+        let resolved = match guard.resolve_existing_path(&entry.path()) {
+            Ok(path) => path,
+            Err(_) => {
+                omitted_external_links += 1;
+                continue;
+            }
+        };
+        let metadata = fs::metadata(&resolved)
+            .map_err(|error| format!("failed to inspect `{name}`: {error}"))?;
+        let kind = if metadata.is_dir() {
+            "directory"
+        } else if metadata.is_file() {
+            "file"
+        } else {
+            "other"
+        };
+        visible_entries.push(json!({
+            "name": name,
+            "type": kind,
+            "size": metadata.is_file().then_some(metadata.len()),
+            "link": entry_metadata.file_type().is_symlink(),
+        }));
+    }
+    let truncated = visible_entries.len() > MAX_LIST_ENTRIES;
+    visible_entries.truncate(MAX_LIST_ENTRIES);
     let relative = guard.relative_display(&directory)?;
     let model = json!({
         "path": relative,
-        "entries": entries,
+        "entries": visible_entries,
         "truncated": truncated,
     })
     .to_string();
+    let omitted = omitted_external_links + omitted_hidden_or_system;
     Ok((
         model,
         format!(
-            "{}개 항목 확인{}",
-            entries.len(),
-            if truncated { " (일부만 표시)" } else { "" }
+            "{}개 항목 확인{}{}",
+            visible_entries.len(),
+            if truncated { " (일부만 표시)" } else { "" },
+            if omitted > 0 {
+                format!(" · 숨김/외부 항목 {omitted}개 제외")
+            } else {
+                String::new()
+            },
         ),
     ))
+}
+
+#[cfg(windows)]
+fn is_hidden_or_system(metadata: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    windows_attributes_are_hidden_or_system(metadata.file_attributes())
+}
+
+#[cfg(not(windows))]
+fn is_hidden_or_system(_metadata: &fs::Metadata) -> bool {
+    false
+}
+
+fn windows_attributes_are_hidden_or_system(attributes: u32) -> bool {
+    const FILE_ATTRIBUTE_HIDDEN: u32 = 0x2;
+    const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
+
+    attributes & (FILE_ATTRIBUTE_HIDDEN | FILE_ATTRIBUTE_SYSTEM) != 0
 }
 
 fn read_file(guard: &WorkspaceGuard, arguments: &Value) -> Result<(String, String), String> {
@@ -650,7 +680,8 @@ mod tests {
     use tempfile::tempdir;
 
     use super::{
-        react_tool_definitions, ToolContext, ToolGateway, ToolPreparation, MAX_SEARCH_RESULTS,
+        react_tool_definitions, windows_attributes_are_hidden_or_system, ToolContext, ToolGateway,
+        ToolPreparation, MAX_SEARCH_RESULTS,
     };
 
     fn execute(
@@ -757,6 +788,32 @@ mod tests {
         assert!(info.model_content.contains(r#""type":"file""#));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn list_files_omits_hidden_windows_entries() {
+        use std::fs::OpenOptions;
+        use std::os::windows::fs::OpenOptionsExt;
+
+        let workspace = tempdir().unwrap();
+        fs::write(workspace.path().join("visible.txt"), "visible").unwrap();
+        OpenOptions::new()
+            .write(true)
+            .create(true)
+            .attributes(0x2)
+            .open(workspace.path().join("hidden.txt"))
+            .unwrap();
+        let result = execute(
+            &ToolGateway::builtin(),
+            &ToolContext::for_workspace(workspace.path().to_string_lossy()),
+            "list_files",
+            json!({ "path": "." }),
+        );
+
+        assert!(result.model_content.contains("visible.txt"));
+        assert!(!result.model_content.contains("hidden.txt"));
+        assert!(result.display_content.contains("숨김/외부 항목 1개 제외"));
+    }
+
     #[test]
     fn workspace_tools_reject_paths_outside_the_workspace() {
         let workspace = tempdir().unwrap();
@@ -789,6 +846,16 @@ mod tests {
             assert!(definitions.contains(name));
         }
         assert!(definitions.contains(r#"{"expression":"a mathematical expression"}"#));
+        assert!(definitions.contains("You must call the appropriate tool"));
         assert_eq!(MAX_SEARCH_RESULTS, 100);
+    }
+
+    #[test]
+    fn windows_hidden_and_system_attributes_are_not_user_relevant() {
+        assert!(windows_attributes_are_hidden_or_system(0x2));
+        assert!(windows_attributes_are_hidden_or_system(0x4));
+        assert!(windows_attributes_are_hidden_or_system(0x6));
+        assert!(!windows_attributes_are_hidden_or_system(0));
+        assert!(!windows_attributes_are_hidden_or_system(0x20));
     }
 }
