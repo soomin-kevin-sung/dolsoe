@@ -800,7 +800,7 @@ mod tests {
         fs::write(workspace.path().join("visible.txt"), "visible").unwrap();
         OpenOptions::new()
             .write(true)
-            .create(true)
+            .create_new(true)
             .attributes(0x2)
             .open(workspace.path().join("hidden.txt"))
             .unwrap();

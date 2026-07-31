@@ -324,6 +324,17 @@ pub struct PreparedAgentStep {
     pub include_workspace: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentToolStepRecord<'a> {
+    pub run_id: &'a str,
+    pub tool_name: &'a str,
+    pub arguments_json: &'a str,
+    pub output: &'a str,
+    pub successful: bool,
+    pub reset_progress: bool,
+    pub duration_ms: u64,
+}
+
 #[derive(Clone)]
 pub struct ConversationStore {
     connection: Arc<Mutex<Connection>>,
@@ -1136,22 +1147,13 @@ impl ConversationStore {
         })
     }
 
-    pub fn record_agent_tool_step(
-        &self,
-        run_id: &str,
-        tool_name: &str,
-        arguments_json: &str,
-        output: &str,
-        successful: bool,
-        reset_progress: bool,
-        duration_ms: u64,
-    ) -> StoreResult<()> {
+    pub fn record_agent_tool_step(&self, step: AgentToolStepRecord<'_>) -> StoreResult<()> {
         let mut connection = self.lock()?;
         let transaction = connection.transaction().map_err(store_error)?;
         let run_exists = transaction
             .query_row(
                 "SELECT 1 FROM agent_runs WHERE id = ?1 AND status = 'running'",
-                [run_id],
+                [step.run_id],
                 |_| Ok(()),
             )
             .optional()
@@ -1163,14 +1165,14 @@ impl ConversationStore {
         let step_index: i64 = transaction
             .query_row(
                 "SELECT COALESCE(MAX(step_index), -1) + 1 FROM agent_steps WHERE run_id = ?1",
-                [run_id],
+                [step.run_id],
                 |row| row.get(0),
             )
             .map_err(store_error)?;
         let step_id = Uuid::new_v4().to_string();
         let correlation_id = correlation_id_for(&step_id)?;
         let timestamp = now_millis()?;
-        let duration_ms = i64::try_from(duration_ms).unwrap_or(i64::MAX);
+        let duration_ms = i64::try_from(step.duration_ms).unwrap_or(i64::MAX);
         let started_at = timestamp.saturating_sub(duration_ms);
         transaction
             .execute(
@@ -1181,20 +1183,20 @@ impl ConversationStore {
                  ) VALUES (?1, ?2, ?3, 'tool', ?4, ?5, ?6, ?7, ?8, ?9, ?9, ?10, ?11)",
                 params![
                     step_id,
-                    run_id,
+                    step.run_id,
                     step_index,
-                    format!("tool:{tool_name}"),
-                    if successful { "complete" } else { "error" },
+                    format!("tool:{}", step.tool_name),
+                    if step.successful { "complete" } else { "error" },
                     correlation_id,
-                    output,
+                    step.output,
                     started_at,
                     timestamp,
-                    if successful {
+                    if step.successful {
                         "tool-complete"
                     } else {
                         "tool-error"
                     },
-                    arguments_json,
+                    step.arguments_json,
                 ],
             )
             .map_err(store_error)?;
@@ -1205,7 +1207,7 @@ impl ConversationStore {
                      progress_step_count = CASE WHEN ?1 THEN 0 ELSE progress_step_count END,
                      updated_at = ?2
                  WHERE id = ?3",
-                params![reset_progress, timestamp, run_id],
+                params![step.reset_progress, timestamp, step.run_id],
             )
             .map_err(store_error)?;
         transaction.commit().map_err(store_error)?;

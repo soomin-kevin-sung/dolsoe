@@ -15,7 +15,9 @@ use crate::{
         AgentStageSnapshot,
     },
     agent_tools::{ToolContext, ToolGateway, ToolPreparation, ToolResult},
-    conversation_store::{ConversationStore, MessageStatus, PreparedAgentStep},
+    conversation_store::{
+        AgentToolStepRecord, ConversationStore, MessageStatus, PreparedAgentStep,
+    },
     llm_dto::{LlmEventDto, LlmEventKind, SubmitChatMessage, SubmitRequest, SubmitResponse},
     runtime_host::RuntimeHost,
 };
@@ -982,15 +984,20 @@ impl AgentController {
         };
         let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         let novel_success = run.run_loop.record_tool_result(&result);
-        if let Err(error) = self.inner.store.record_agent_tool_step(
-            &run.run_id,
-            &name,
-            &arguments.to_string(),
-            &result.model_content,
-            result.successful,
-            novel_success,
-            duration_ms,
-        ) {
+        let arguments_json = arguments.to_string();
+        if let Err(error) = self
+            .inner
+            .store
+            .record_agent_tool_step(AgentToolStepRecord {
+                run_id: &run.run_id,
+                tool_name: &name,
+                arguments_json: &arguments_json,
+                output: &result.model_content,
+                successful: result.successful,
+                reset_progress: novel_success,
+                duration_ms,
+            })
+        {
             return self.fail_between_steps(run, error);
         }
         let tool_kind = if result.successful {
