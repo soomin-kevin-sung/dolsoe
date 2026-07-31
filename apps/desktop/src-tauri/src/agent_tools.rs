@@ -334,6 +334,8 @@ fn list_files(guard: &WorkspaceGuard, arguments: &Value) -> Result<(String, Stri
     let model = json!({
         "path": relative,
         "entries": visible_entries,
+        "omittedHiddenOrSystem": omitted_hidden_or_system,
+        "omittedExternalLinks": omitted_external_links,
         "truncated": truncated,
     })
     .to_string();

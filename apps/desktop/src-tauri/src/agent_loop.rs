@@ -986,7 +986,7 @@ impl AgentController {
             &run.run_id,
             &name,
             &arguments.to_string(),
-            &result.display_content,
+            &result.model_content,
             result.successful,
             novel_success,
             duration_ms,
@@ -1004,7 +1004,7 @@ impl AgentController {
             Some(activity_id),
             Some(name.clone()),
             None,
-            Some(result.display_content.clone()),
+            Some(result.model_content.clone()),
             Some(duration_ms),
         )) {
             return self.fail_between_steps(run, error);

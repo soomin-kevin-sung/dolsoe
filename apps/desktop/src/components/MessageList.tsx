@@ -51,8 +51,12 @@ export function getLatestUserMessageId(messages: Message[]): string | null {
 export function shouldShowStreamingCursor(
   message: Pick<Message, "status" | "content" | "agentRun">,
 ): boolean {
-  if (message.status !== "streaming" || message.content.length === 0) return false;
-  return !message.agentRun || message.agentRun.phase === "writing";
+  if (message.status !== "streaming") return false;
+  if (!message.agentRun) return true;
+  if (message.agentRun.phase === "writing") {
+    return message.content.length > 0 || message.agentRun.tools.length === 0;
+  }
+  return message.content.length === 0 && message.agentRun.tools.length === 0;
 }
 
 export function shouldShowAgentActivity(
@@ -120,9 +124,11 @@ export function MessageList({ conversationId, state, messages, modelName, backen
       ) : (
         <div className="message assistant assistant-rich" data-long-message={message.id === "long" || undefined} key={message.id}>
           <span className="assistant-mark" aria-hidden="true"><img src={dolsoeIconUrl} alt="" /></span>
-          <div className="assistant-content">
+          <div className={`assistant-content ${shouldShowAgentActivity(message) ? "has-agent-activity" : ""}`}>
             <div className="message-author">돌쇠</div>
-            {shouldShowAgentActivity(message) && <AgentActivityPanel run={message.agentRun!} />}
+            {shouldShowAgentActivity(message) && (
+              <AgentActivityPanel messageStatus={message.status} run={message.agentRun!} />
+            )}
             <div className="message-text">{message.content}{shouldShowStreamingCursor(message) && <span className="streaming-cursor" />}</div>
             {message.status === "cancelled" && <div className="stopped-line"><Square size={12} fill="currentColor" />생성이 중지되었습니다 · {message.stopDetail ?? "토큰 87개 생성됨"}</div>}
             {message.status === "interrupted" && <div className="stopped-line"><Square size={12} fill="currentColor" />생성이 중단되었습니다 · {message.stopDetail ?? "토큰 87개 생성됨"}</div>}

@@ -90,20 +90,43 @@ describe("streaming cursor", () => {
     tools: [],
   };
 
-  it("stays hidden while an agent is working without answer text", () => {
+  it("appears while the first ReAct decision is pending", () => {
     expect(shouldShowStreamingCursor({
       status: "streaming",
       content: "",
       agentRun: { ...agentRun, phase: "thinking" },
-    })).toBe(false);
+    })).toBe(true);
     expect(shouldShowStreamingCursor({
       status: "streaming",
-      content: "내부 작업",
+      content: "",
       agentRun: { ...agentRun, phase: "choosing-tool" },
+    })).toBe(true);
+  });
+
+  it("stays hidden after a tool activity card appears", () => {
+    expect(shouldShowStreamingCursor({
+      status: "streaming",
+      content: "",
+      agentRun: {
+        ...agentRun,
+        phase: "choosing-tool",
+        tools: [{
+          activityId: "tool-1",
+          toolName: "list_files",
+          status: "running",
+          input: ".",
+          output: "",
+          durationMs: 0,
+        }],
+      },
     })).toBe(false);
   });
 
-  it("appears only while user-facing answer text is streaming", () => {
+  it("appears while user-facing answer text is streaming", () => {
+    expect(shouldShowStreamingCursor({
+      status: "streaming",
+      content: "",
+    })).toBe(true);
     expect(shouldShowStreamingCursor({
       status: "streaming",
       content: "답변을 작성",
@@ -112,6 +135,37 @@ describe("streaming cursor", () => {
       status: "streaming",
       content: "답변을 작성",
       agentRun: { ...agentRun, phase: "writing" },
+    })).toBe(true);
+    expect(shouldShowStreamingCursor({
+      status: "streaming",
+      content: "",
+      agentRun: { ...agentRun, phase: "writing" },
+    })).toBe(true);
+  });
+
+  it("waits for answer text before showing the cursor again after tool activity", () => {
+    const toolRun = {
+      ...agentRun,
+      phase: "writing" as const,
+      tools: [{
+        activityId: "tool-1",
+        toolName: "list_files",
+        status: "complete" as const,
+        input: ".",
+        output: "README.md",
+        durationMs: 12,
+      }],
+    };
+
+    expect(shouldShowStreamingCursor({
+      status: "streaming",
+      content: "",
+      agentRun: toolRun,
+    })).toBe(false);
+    expect(shouldShowStreamingCursor({
+      status: "streaming",
+      content: "파일이 있습니다.",
+      agentRun: toolRun,
     })).toBe(true);
   });
 });
@@ -170,5 +224,11 @@ describe("agent activity visibility", () => {
     }));
 
     expect(markup).toContain("agent-activity");
+    expect(markup).toContain("assistant-content has-agent-activity");
+    expect(markup).toContain("agent-activity is-complete is-collapsed");
+    expect(markup.indexOf('<div class="message-author">돌쇠</div>'))
+      .toBeLessThan(markup.indexOf('<section class="agent-activity'));
+    expect(markup.indexOf('<section class="agent-activity'))
+      .toBeLessThan(markup.indexOf('<div class="message-text">결과는 4입니다.</div>'));
   });
 });

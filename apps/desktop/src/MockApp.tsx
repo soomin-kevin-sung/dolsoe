@@ -59,7 +59,7 @@ export default function MockApp() {
     if (longMessage) {
       value.push({ id: "long", role: "assistant", content: "긴메시지".repeat(120), status: "complete" });
     }
-    if (agentPreview === "running" || agentPreview === "complete") {
+    if (agentPreview === "running" || agentPreview === "complete" || agentPreview === "single") {
       for (let index = value.length - 1; index >= 0; index -= 1) {
         if (value[index].role !== "assistant") continue;
         value[index] = {
@@ -68,9 +68,9 @@ export default function MockApp() {
             runId: "preview-react-run",
             assistantMessageId: value[index].id,
             mode: "react",
-            status: agentPreview,
+            status: agentPreview === "running" ? "running" : "complete",
             startedAt: 1,
-            finishedAt: agentPreview === "complete" ? 2 : null,
+            finishedAt: agentPreview === "running" ? null : 2,
             phase: agentPreview === "running" ? "choosing-tool" : undefined,
             tools: [
               {
@@ -78,17 +78,17 @@ export default function MockApp() {
                 toolName: "list_files",
                 status: "complete",
                 input: ".",
-                output: "Cargo.toml, apps, crates, native",
+                output: "Cargo.toml\npackage.json\napps/\ncrates/\nnative/",
                 durationMs: 82,
               },
-              {
+              ...(agentPreview === "single" ? [] : [{
                 activityId: "preview-search-files",
                 toolName: "search_files",
-                status: agentPreview === "running" ? "running" : "complete",
+                status: agentPreview === "running" ? "running" as const : "complete" as const,
                 input: '{"query":"bundle","path":"."}',
                 output: agentPreview === "running" ? "" : "apps/desktop/src-tauri/tauri.conf.json",
                 durationMs: agentPreview === "running" ? 0 : 1714,
-              },
+              }]),
             ],
           },
         };
