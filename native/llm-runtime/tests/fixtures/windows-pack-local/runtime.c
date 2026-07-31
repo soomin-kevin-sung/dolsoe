@@ -76,6 +76,19 @@ LLW_EXPORT llw_result_t LLW_CALL llw_model_unload(
     return LLW_ERR_UNSUPPORTED;
 }
 
+LLW_EXPORT llw_result_t LLW_CALL llw_model_format_chat(
+    llw_runtime_t* runtime, llw_handle_t model,
+    const llw_chat_message_t* messages, uint32_t message_count,
+    llw_buffer_t* out_prompt, llw_error_t* out_error) {
+    (void)runtime;
+    (void)model;
+    (void)messages;
+    (void)message_count;
+    (void)out_prompt;
+    (void)out_error;
+    return LLW_ERR_UNSUPPORTED;
+}
+
 LLW_EXPORT llw_result_t LLW_CALL llw_request_submit(
     llw_runtime_t* runtime, const llw_request_params_t* params,
     llw_handle_t* out_request, llw_error_t* out_error) {
